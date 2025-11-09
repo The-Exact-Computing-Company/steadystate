@@ -152,7 +152,6 @@ async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
 
-    // FIX: Pass `None` as the third argument for the override_dir.
     let resp: UpResponse = request_with_auth(
         client,
         |c, jwt| {
@@ -230,7 +229,6 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // FIX: Pass `None` as the second argument for the override_dir.
         Commands::Refresh => match perform_refresh(&client, None).await {
             Ok(_) => println!("Token refreshed."),
             Err(e) => {
@@ -246,7 +244,8 @@ async fn main() -> Result<()> {
         }
         Commands::Up { repo, json } => {
             if let Err(e) = up(&client, repo, json).await {
-                error!("up failed: {:#}",.
+                // ** THIS IS THE FIX ** (Removed the stray period)
+                error!("up failed: {:#}", e);
                 std::process::exit(1);
             }
         }
