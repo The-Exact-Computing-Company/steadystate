@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result}; // Added `anyhow` for the new error
+use anyhow::{anyhow, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use jwt_simple::prelude::*;
 use keyring::Entry;
@@ -16,14 +16,275 @@ use crate::config::{
 };
 use crate::session::{read_session, remove_session, write_session, Session};
 
-// ... (The file is identical from here down to `store_refresh_token`)
-// ... (No changes needed in device_login, perform_refresh, request_with_auth, etc.)
+#[derive(Deserialize)]
+struct DeviceResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: Option<u64>,
+}
 
-// --- SNIP --- //
+#[derive(Deserialize)]
+struct PollResponse {
+    status: Option<String>,
+    jwt: Option<String>,
+    refresh_token: Option<String>,
+    refresh_expires_at: Option<u64>,
+    login: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct UpResponse {
+    pub id: String,
+    pub ssh_url: String,
+}
+
+/// Initiates OAuth device flow authentication.
+pub async fn device_login(client: &Client) -> Result<()> {
+    let url = format!("{}/auth/device", &*BACKEND_URL);
+    let resp = send_with_retries(|| client.post(&url)).await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("device code request failed ({}): {}", status, body);
+    }
+
+    let dr: DeviceResponse = resp.json().await.context("parse device response")?;
+
+    println!("Open the verification URL and enter the code:");
+    println!("\n  {}\n", dr.verification_uri);
+    println!("Code: {}\n", dr.user_code);
+
+    if let Err(e) = open::that(&dr.verification_uri) {
+        warn!("open browser failed: {}", e);
+    }
+
+    let poll_url = format!("{}/auth/poll", &*BACKEND_URL);
+    let interval = dr.interval.unwrap_or(5).max(1);
+    let max_interval_secs = DEVICE_POLL_MAX_INTERVAL_SECS.max(interval);
+    let device_code = dr.device_code.clone();
+    let expires_in = dr.expires_in;
+
+    println!("Waiting for authorization (press Ctrl+C to cancel)...");
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::with_template("{spinner} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"]),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    let start = Instant::now();
+
+    let poll_loop = async {
+        let mut current_interval_secs = interval;
+        loop {
+            spinner.set_message(format!(
+                "Authorizing... {}s elapsed",
+                start.elapsed().as_secs()
+            ));
+            select! {
+                _ = signal::ctrl_c() => {
+                    spinner.finish_and_clear();
+                    println!("\nCancelled by user");
+                    return Ok(());
+                }
+                _ = time::sleep(Duration::from_secs(current_interval_secs)) => {
+                    let poll = send_with_retries(|| {
+                        client
+                            .get(&poll_url)
+                            .query(&[("device_code", device_code.clone())])
+                            .timeout(Duration::from_secs(DEVICE_POLL_REQUEST_TIMEOUT_SECS))
+                    })
+                    .await
+                    .context("poll request failed")?;
+
+                    if poll.status().as_u16() == 202 {
+                        current_interval_secs = current_interval_secs
+                            .saturating_mul(3)
+                            .saturating_div(2)
+                            .clamp(interval, max_interval_secs);
+                        continue;
+                    }
+
+                    let out: PollResponse = poll.json().await.context("parse poll response")?;
+
+                    if let Some(status) = out.status.as_deref() {
+                        match status {
+                            "pending" => {
+                                current_interval_secs = current_interval_secs
+                                    .saturating_mul(3)
+                                    .saturating_div(2)
+                                    .clamp(interval, max_interval_secs);
+                                continue;
+                            }
+                            "complete" => {
+                                spinner.finish_and_clear();
+                                let jwt = out.jwt.context("server did not return jwt")?;
+                                let refresh = out
+                                    .refresh_token
+                                    .context("no refresh token returned")?;
+                                let login = out.login.context("no login returned")?;
+
+                                store_refresh_token(&login, &refresh).await?;
+
+                                let session = Session::new(login.clone(), jwt.clone());
+                                write_session(&session, None).await?;
+                                println!("✅ Logged in as {}", login);
+                                return Ok(());
+                            }
+                            other => {
+                                warn!("unexpected status: {}", other);
+                                continue;
+                            }
+                        }
+                    } else if let Some(err) = out.error {
+                        match err.as_str() {
+                            "authorization_pending" => {
+                                current_interval_secs = current_interval_secs
+                                    .saturating_mul(3)
+                                    .saturating_div(2)
+                                    .clamp(interval, max_interval_secs);
+                                continue;
+                            }
+                            "slow_down" => {
+                                current_interval_secs = (current_interval_secs + 5)
+                                    .clamp(interval, max_interval_secs);
+                                continue;
+                            }
+                            "access_denied" => {
+                                spinner.finish_and_clear();
+                                anyhow::bail!("authorization denied by user");
+                            }
+                            _ => {
+                                spinner.finish_and_clear();
+                                anyhow::bail!("authorization error: {}", err);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    match time::timeout(Duration::from_secs(expires_in), poll_loop).await {
+        Ok(res) => res,
+        Err(_) => {
+            spinner.finish_and_clear();
+            anyhow::bail!("device code expired")
+        }
+    }
+}
+
+/// Refreshes JWT using stored refresh token.
+pub async fn perform_refresh(client: &Client, override_dir: Option<&PathBuf>) -> Result<String> {
+    let session = read_session(override_dir)
+        .await
+        .context("No active session found. Run 'steadystate login' first.")?;
+
+    let username = session.login.clone();
+    let refresh = get_refresh_token(&username).await?.ok_or_else(|| {
+        anyhow::anyhow!("no refresh token in keychain; run `steadystate login` again")
+    })?;
+
+    let url = format!("{}/auth/refresh", &*BACKEND_URL);
+    let resp = send_with_retries(|| {
+        client
+            .post(&url)
+            .json(&serde_json::json!({ "refresh_token": refresh.clone() }))
+    })
+    .await
+    .context("auth/refresh request failed")?;
+
+    if resp.status().as_u16() == 401 {
+        let _ = delete_refresh_token(&username).await;
+        let _ = remove_session(override_dir).await;
+        anyhow::bail!("Refresh token expired. Run 'steadystate login' to authenticate again.");
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            if let Ok(body) = resp.text().await {
+                debug!("refresh failed body: {}", body);
+            }
+        }
+        anyhow::bail!("refresh failed with status {}", status);
+    }
+
+    let body: serde_json::Value = resp.json().await.context("parse refresh response")?;
+    let jwt = body
+        .get("jwt")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no jwt in refresh response"))?
+        .to_string();
+
+    let new_session = Session::new(username.clone(), jwt.clone());
+    write_session(&new_session, override_dir).await?;
+    Ok(jwt)
+}
+
+/// Makes authenticated request with automatic token refresh.
+pub async fn request_with_auth<T, F>(
+    client: &Client,
+    builder_fn: F,
+    override_dir: Option<&PathBuf>,
+) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+    F: Fn(&Client, &str) -> reqwest::RequestBuilder,
+{
+    let session = read_session(override_dir)
+        .await
+        .context("No active session found. Run 'steadystate login' first.")?;
+    let mut jwt = session.jwt.clone();
+
+    if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
+        info!("JWT near expiry, refreshing proactively");
+        jwt = perform_refresh(client, override_dir).await?;
+    }
+
+    let resp = send_with_retries(|| builder_fn(client, &jwt)).await?;
+
+    if resp.status().as_u16() == 401 {
+        info!("Got 401, attempting token refresh");
+        jwt = perform_refresh(client, override_dir).await?;
+        time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+        let resp2 = send_with_retries(|| builder_fn(client, &jwt)).await?;
+
+        if !resp2.status().is_success() {
+            let status = resp2.status();
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                if let Ok(body) = resp2.text().await {
+                    debug!("request retry body: {}", body);
+                }
+            }
+            anyhow::bail!("request failed after retry with status {}", status);
+        }
+
+        let body = resp2.json::<T>().await.context("parse response")?;
+        return Ok(body);
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            if let Ok(body) = resp.text().await {
+                debug!("request body: {}", body);
+            }
+        }
+        anyhow::bail!("request failed with status {}", status);
+    }
+
+    let body = resp.json::<T>().await.context("parse response")?;
+    Ok(body)
+}
 
 /// Extracts expiry timestamp from JWT (no signature verification).
 pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
-    // Note: This only extracts expiry for refresh logic. JWT signature is validated server-side.
     let parts: Vec<&str> = jwt.split('.').collect();
     if parts.len() != 3 {
         warn!("Invalid JWT format");
@@ -40,13 +301,7 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
 
     match serde_json::from_slice::<serde_json::Value>(&payload_bytes) {
         Ok(payload) => match payload.get("exp") {
-            Some(value) => match value.as_u64() {
-                Some(exp) => Some(exp),
-                None => {
-                    warn!("JWT exp claim is not a positive integer");
-                    None
-                }
-            },
+            Some(value) => value.as_u64(),
             None => {
                 warn!("JWT missing exp claim");
                 None
@@ -61,12 +316,9 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
 
 /// Stores refresh token in the OS keychain.
 pub async fn store_refresh_token(username: &str, token: &str) -> Result<()> {
-    // ** THE FIX IS HERE **
-    // Enforce that empty tokens are invalid at the application level.
     if token.is_empty() {
         return Err(anyhow!("refresh token cannot be empty"));
     }
-
     let username = username.to_string();
     let token = token.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
@@ -133,12 +385,6 @@ where
 
     unreachable!("retry loop should return before exhausting attempts");
 }
-
-
-// --- SNIP --- //
-
-// ... (The rest of the file, including all tests, remains unchanged)
-// ... (The `test_keychain_store_empty_token` test will now pass everywhere because our function now correctly returns an error)
 
 #[cfg(test)]
 mod tests {
@@ -312,140 +558,4 @@ mod tests {
 
     #[tokio::test]
     async fn test_keychain_store_empty_token() {
-        let _ctx = TestContext::new();
-        let username = "empty_token_user";
-
-        // Keyring doesn't support empty passwords on some backends.
-        // We enforce this rule in our function, so it should always fail.
-        let result = store_refresh_token(username, "").await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_keychain_store_special_chars() {
-        let _ctx = TestContext::new();
-        let username = "special_chars_user";
-        let token = "token!@#$%^&*(){}[]|\\:;\"'<>,.?/~`";
-
-        store_refresh_token(username, token)
-            .await
-            .expect("store special token");
-        let retrieved = get_refresh_token(username)
-            .await
-            .expect("get token")
-            .expect("token present");
-
-        assert_eq!(retrieved, token);
-
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-    }
-
-    #[tokio::test]
-    async fn test_keychain_multiple_users() {
-        let _ctx = TestContext::new();
-
-        store_refresh_token("user1", "token1")
-            .await
-            .expect("store user1");
-        store_refresh_token("user2", "token2")
-            .await
-            .expect("store user2");
-        store_refresh_token("user3", "token3")
-            .await
-            .expect("store user3");
-
-        let tok1 = get_refresh_token("user1")
-            .await
-            .expect("get user1")
-            .expect("user1 present");
-        let tok2 = get_refresh_token("user2")
-            .await
-            .expect("get user2")
-            .expect("user2 present");
-        let tok3 = get_refresh_token("user3")
-            .await
-            .expect("get user3")
-            .expect("user3 present");
-
-        assert_eq!(tok1, "token1");
-        assert_eq!(tok2, "token2");
-        assert_eq!(tok3, "token3");
-
-        delete_refresh_token("user1").await.expect("delete user1");
-        delete_refresh_token("user2").await.expect("delete user2");
-        delete_refresh_token("user3").await.expect("delete user3");
-    }
-
-    #[tokio::test]
-    async fn test_keychain_delete_then_get() {
-        let _ctx = TestContext::new();
-        let username = "delete_then_get_user";
-
-        store_refresh_token(username, "token")
-            .await
-            .expect("store token");
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-
-        let result = get_refresh_token(username).await.expect("get token");
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_keychain_store_very_long_token() {
-        let _ctx = TestContext::new();
-        let username = "long_token_user";
-        let token = "a".repeat(10_000);
-
-        store_refresh_token(username, &token)
-            .await
-            .expect("store long token");
-        let retrieved = get_refresh_token(username)
-            .await
-            .expect("get token")
-            .expect("token present");
-
-        assert_eq!(retrieved, token);
-
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-    }
-
-    // ============================================================================
-    // Integration Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_perform_refresh_without_session() {
-        let ctx = TestContext::new();
-        let client = Client::new();
-
-        let result = perform_refresh(&client, Some(&ctx.path)).await;
-        assert!(result.is_err());
-        let err_msg = format!("{:#}", result.unwrap_err());
-        assert!(err_msg.contains("No active session found"));
-    }
-
-    #[tokio::test]
-    async fn test_perform_refresh_without_refresh_token() {
-        let ctx = TestContext::new();
-        let client = Client::new();
-
-        let session = Session::new("test_user".to_string(), "fake_jwt".to_string());
-        write_session(&session, Some(&ctx.path))
-            .await
-            .expect("write session");
-
-        let result = perform_refresh(&client, Some(&ctx.path)).await;
-        assert!(result.is_err());
-        let err_msg = format!("{:#}", result.unwrap_err());
-        assert!(err_msg.contains("no refresh token"));
-
-        // Clean up
-        let _ = crate::session::remove_session(Some(&ctx.path)).await;
-    }
-}
+        let _ctx
