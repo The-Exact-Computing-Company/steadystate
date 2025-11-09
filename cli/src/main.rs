@@ -68,7 +68,6 @@ struct WhoamiOutput {
 }
 
 async fn whoami(json_output: bool) -> Result<()> {
-    // FIX: Pass `None` to use the default session path.
     match read_session(None).await {
         Ok(sess) => {
             if json_output {
@@ -112,7 +111,6 @@ async fn whoami(json_output: bool) -> Result<()> {
 }
 
 async fn logout(client: &Client) -> Result<()> {
-    // FIX: Pass `None` to use the default session path.
     let session = match read_session(None).await {
         Ok(s) => s,
         Err(_) => {
@@ -144,7 +142,6 @@ async fn logout(client: &Client) -> Result<()> {
     }
 
     let _ = delete_refresh_token(&username).await;
-    // FIX: Pass `None` to use the default session path.
     let _ = remove_session(None).await;
     println!("Logged out (local tokens removed).");
     Ok(())
@@ -155,11 +152,16 @@ async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
 
-    let resp: UpResponse = request_with_auth(client, |c, jwt| {
-        c.post(format!("{}/sessions", &*BACKEND_URL))
-            .bearer_auth(jwt)
-            .json(&serde_json::json!({ "repo": repo.clone() }))
-    })
+    // FIX: Pass `None` as the third argument for the override_dir.
+    let resp: UpResponse = request_with_auth(
+        client,
+        |c, jwt| {
+            c.post(format!("{}/sessions", &*BACKEND_URL))
+                .bearer_auth(jwt)
+                .json(&serde_json::json!({ "repo": repo.clone() }))
+        },
+        None,
+    )
     .await?;
 
     if json {
@@ -228,7 +230,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Refresh => match perform_refresh(&client).await {
+        // FIX: Pass `None` as the second argument for the override_dir.
+        Commands::Refresh => match perform_refresh(&client, None).await {
             Ok(_) => println!("Token refreshed."),
             Err(e) => {
                 error!("refresh failed: {:#}", e);
@@ -243,11 +246,11 @@ async fn main() -> Result<()> {
         }
         Commands::Up { repo, json } => {
             if let Err(e) = up(&client, repo, json).await {
-                error!("up failed: {:#}", e);
+                error!("up failed: {:#}",.
                 std::process::exit(1);
             }
         }
     }
 
     Ok(())
-                }
+}
