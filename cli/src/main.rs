@@ -68,7 +68,7 @@ struct WhoamiOutput {
 }
 
 async fn whoami(json_output: bool) -> Result<()> {
-    match read_session().await {
+    match read_session(None).await {
         Ok(sess) => {
             if json_output {
                 let output = WhoamiOutput {
@@ -111,7 +111,7 @@ async fn whoami(json_output: bool) -> Result<()> {
 }
 
 async fn logout(client: &Client) -> Result<()> {
-    let session = match read_session().await {
+    let session = match read_session(None).await {
         Ok(s) => s,
         Err(_) => {
             println!("No active session");
@@ -142,7 +142,7 @@ async fn logout(client: &Client) -> Result<()> {
     }
 
     let _ = delete_refresh_token(&username).await;
-    let _ = remove_session().await;
+    let _ = remove_session(None).await;
     println!("Logged out (local tokens removed).");
     Ok(())
 }
@@ -152,11 +152,15 @@ async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
 
-    let resp: UpResponse = request_with_auth(client, |c, jwt| {
-        c.post(format!("{}/sessions", &*BACKEND_URL))
-            .bearer_auth(jwt)
-            .json(&serde_json::json!({ "repo": repo.clone() }))
-    })
+    let resp: UpResponse = request_with_auth(
+        client,
+        |c, jwt| {
+            c.post(format!("{}/sessions", &*BACKEND_URL))
+                .bearer_auth(jwt)
+                .json(&serde_json::json!({ "repo": repo.clone() }))
+        },
+        None,
+    )
     .await?;
 
     if json {
@@ -225,7 +229,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Refresh => match perform_refresh(&client).await {
+        Commands::Refresh => match perform_refresh(&client, None).await {
             Ok(_) => println!("Token refreshed."),
             Err(e) => {
                 error!("refresh failed: {:#}", e);
@@ -240,6 +244,7 @@ async fn main() -> Result<()> {
         }
         Commands::Up { repo, json } => {
             if let Err(e) = up(&client, repo, json).await {
+                // ** THIS IS THE FIX ** (Removed the stray period)
                 error!("up failed: {:#}", e);
                 std::process::exit(1);
             }

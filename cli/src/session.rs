@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-// The `tokio::task` import is no longer needed, so we remove it.
-// use tokio::task; 
 use tracing::warn;
 
 use crate::auth::extract_exp_from_jwt;
@@ -38,35 +36,33 @@ impl Session {
     }
 }
 
-pub async fn cfg_dir() -> Result<PathBuf> {
-    if let Ok(override_dir) = std::env::var(CONFIG_OVERRIDE_ENV) {
-        let mut p = PathBuf::from(override_dir);
-        tokio::fs::create_dir_all(&p)
-            .await
-            .context("create override config dir")?;
-        p.push(SERVICE_NAME);
-        tokio::fs::create_dir_all(&p)
-            .await
-            .context("create service config dir")?;
-        return Ok(p);
-    }
+pub async fn get_cfg_dir(override_dir: Option<&PathBuf>) -> Result<PathBuf> {
+    let base_dir = match override_dir {
+        Some(p) => p.clone(),
+        None => {
+            if let Ok(override_env) = std::env::var(CONFIG_OVERRIDE_ENV) {
+                PathBuf::from(override_env)
+            } else {
+                dirs::config_dir().context("could not determine config directory")?
+            }
+        }
+    };
 
-    let mut p = dirs::config_dir().context("could not determine config directory")?;
+    let mut p = base_dir;
     p.push(SERVICE_NAME);
     tokio::fs::create_dir_all(&p)
         .await
-        .context("create config dir")?;
+        .context("create service config dir")?;
     Ok(p)
 }
 
-pub async fn session_file() -> Result<PathBuf> {
-    Ok(cfg_dir().await?.join("session.json"))
+
+pub async fn session_file(override_dir: Option<&PathBuf>) -> Result<PathBuf> {
+    Ok(get_cfg_dir(override_dir).await?.join("session.json"))
 }
 
-// ** THIS IS THE ONLY FUNCTION THAT CHANGES **
-// We replace the complex spawn_blocking logic with a simple, robust async write.
-pub async fn write_session(session: &Session) -> Result<()> {
-    let path = session_file().await?;
+pub async fn write_session(session: &Session, override_dir: Option<&PathBuf>) -> Result<()> {
+    let path = session_file(override_dir).await?;
     let data = serde_json::to_vec_pretty(session)?;
 
     tokio::fs::write(&path, &data)
@@ -76,7 +72,6 @@ pub async fn write_session(session: &Session) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // Note: Using async version for setting permissions as well for consistency.
         if let Err(e) =
             tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await
         {
@@ -87,16 +82,15 @@ pub async fn write_session(session: &Session) -> Result<()> {
     Ok(())
 }
 
-
-pub async fn read_session() -> Result<Session> {
-    let path = session_file().await?;
+pub async fn read_session(override_dir: Option<&PathBuf>) -> Result<Session> {
+    let path = session_file(override_dir).await?;
     let bytes = tokio::fs::read(&path).await.context("read session file")?;
     let session: Session = serde_json::from_slice(&bytes).context("parse session json")?;
     Ok(session)
 }
 
-pub async fn remove_session() -> Result<()> {
-    let path = session_file().await?;
+pub async fn remove_session(override_dir: Option<&PathBuf>) -> Result<()> {
+    let path = session_file(override_dir).await?;
     match tokio::fs::remove_file(path).await {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -107,48 +101,30 @@ pub async fn remove_session() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
-    use std::sync::Mutex;
-    use tempfile::tempdir;
-
-    static TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    use tempfile::{tempdir, TempDir};
 
     struct TestContext {
-        _guard: std::sync::LockResult<std::sync::MutexGuard<'static, ()>>,
-        _dir: tempfile::TempDir,
+        // This holds the temporary directory, which is automatically deleted when TestContext goes out of scope.
+        _dir: TempDir,
+        // We store the path for easy access in tests.
+        path: PathBuf,
     }
 
     impl TestContext {
         fn new() -> Self {
-            let guard = TEST_GUARD.lock();
             let dir = tempdir().expect("create tempdir");
-            // Set the environment variable to the tempdir path
-            // ** Reverting to your original, correct use of `unsafe` **
-            unsafe {
-                std::env::set_var(CONFIG_OVERRIDE_ENV, dir.path().to_str().unwrap());
-            }
-            Self {
-                _guard: guard,
-                _dir: dir,
-            }
-        }
-    }
-
-    impl Drop for TestContext {
-        fn drop(&mut self) {
-            // Clean up the environment variable
-            // ** Reverting to your original, correct use of `unsafe` **
-            unsafe {
-                std::env::remove_var(CONFIG_OVERRIDE_ENV);
-            }
+            let path = dir.path().to_path_buf();
+            // No more environment variables! No more unsafe! No more Mutex!
+            Self { _dir: dir, path }
         }
     }
 
     #[tokio::test]
     async fn test_write_read_cycle() {
-        let _ctx = TestContext::new();
+        let ctx = TestContext::new();
         
-        let _ = remove_session().await;
+        // Ensure no session exists by passing the temp directory path.
+        remove_session(Some(&ctx.path)).await.unwrap();
         
         let session = Session {
             login: "test_user".into(),
@@ -156,9 +132,11 @@ mod tests {
             jwt_exp: Some(42),
         };
         
-        write_session(&session).await.unwrap();
+        // Pass the temp directory path to the function being tested.
+        write_session(&session, Some(&ctx.path)).await.unwrap();
         
-        let loaded = read_session().await.unwrap();
+        // Pass the temp directory path to read from the correct location.
+        let loaded = read_session(Some(&ctx.path)).await.unwrap();
         
         assert_eq!(loaded.login, session.login);
         assert_eq!(loaded.jwt, session.jwt);
@@ -167,7 +145,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_missing_session_ok() {
-        let _ctx = TestContext::new();
-        remove_session().await.unwrap();
+        let ctx = TestContext::new();
+        // Pass the temp directory path to ensure we operate in the isolated test environment.
+        remove_session(Some(&ctx.path)).await.unwrap();
     }
 }

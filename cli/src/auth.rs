@@ -1,6 +1,7 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use jwt_simple::prelude::*;
 use keyring::Entry;
@@ -13,7 +14,7 @@ use crate::config::{
     BACKEND_URL, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
     JWT_REFRESH_BUFFER_SECS, MAX_NETWORK_RETRIES, RETRY_DELAY_MS, SERVICE_NAME,
 };
-use crate::session::{Session, read_session, remove_session, write_session};
+use crate::session::{read_session, remove_session, write_session, Session};
 
 #[derive(Deserialize)]
 struct DeviceResponse {
@@ -131,7 +132,7 @@ pub async fn device_login(client: &Client) -> Result<()> {
                                 store_refresh_token(&login, &refresh).await?;
 
                                 let session = Session::new(login.clone(), jwt.clone());
-                                write_session(&session).await?;
+                                write_session(&session, None).await?;
                                 println!("✅ Logged in as {}", login);
                                 return Ok(());
                             }
@@ -179,8 +180,8 @@ pub async fn device_login(client: &Client) -> Result<()> {
 }
 
 /// Refreshes JWT using stored refresh token.
-pub async fn perform_refresh(client: &Client) -> Result<String> {
-    let session = read_session()
+pub async fn perform_refresh(client: &Client, override_dir: Option<&PathBuf>) -> Result<String> {
+    let session = read_session(override_dir)
         .await
         .context("No active session found. Run 'steadystate login' first.")?;
 
@@ -200,13 +201,12 @@ pub async fn perform_refresh(client: &Client) -> Result<String> {
 
     if resp.status().as_u16() == 401 {
         let _ = delete_refresh_token(&username).await;
-        let _ = remove_session().await;
+        let _ = remove_session(override_dir).await;
         anyhow::bail!("Refresh token expired. Run 'steadystate login' to authenticate again.");
     }
 
     if !resp.status().is_success() {
         let status = resp.status();
-        // Debug logs may include sensitive response bodies (JWTs).
         if tracing::enabled!(tracing::Level::DEBUG) {
             if let Ok(body) = resp.text().await {
                 debug!("refresh failed body: {}", body);
@@ -223,37 +223,40 @@ pub async fn perform_refresh(client: &Client) -> Result<String> {
         .to_string();
 
     let new_session = Session::new(username.clone(), jwt.clone());
-    write_session(&new_session).await?;
+    write_session(&new_session, override_dir).await?;
     Ok(jwt)
 }
 
 /// Makes authenticated request with automatic token refresh.
-pub async fn request_with_auth<T, F>(client: &Client, builder_fn: F) -> Result<T>
+pub async fn request_with_auth<T, F>(
+    client: &Client,
+    builder_fn: F,
+    override_dir: Option<&PathBuf>,
+) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
     F: Fn(&Client, &str) -> reqwest::RequestBuilder,
 {
-    let session = read_session()
+    let session = read_session(override_dir)
         .await
         .context("No active session found. Run 'steadystate login' first.")?;
     let mut jwt = session.jwt.clone();
 
     if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
         info!("JWT near expiry, refreshing proactively");
-        jwt = perform_refresh(client).await?;
+        jwt = perform_refresh(client, override_dir).await?;
     }
 
     let resp = send_with_retries(|| builder_fn(client, &jwt)).await?;
 
     if resp.status().as_u16() == 401 {
         info!("Got 401, attempting token refresh");
-        jwt = perform_refresh(client).await?;
+        jwt = perform_refresh(client, override_dir).await?;
         time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
         let resp2 = send_with_retries(|| builder_fn(client, &jwt)).await?;
 
         if !resp2.status().is_success() {
             let status = resp2.status();
-            // Debug logs may include sensitive response bodies (JWTs).
             if tracing::enabled!(tracing::Level::DEBUG) {
                 if let Ok(body) = resp2.text().await {
                     debug!("request retry body: {}", body);
@@ -268,7 +271,6 @@ where
 
     if !resp.status().is_success() {
         let status = resp.status();
-        // Debug logs may include sensitive response bodies (JWTs).
         if tracing::enabled!(tracing::Level::DEBUG) {
             if let Ok(body) = resp.text().await {
                 debug!("request body: {}", body);
@@ -283,7 +285,6 @@ where
 
 /// Extracts expiry timestamp from JWT (no signature verification).
 pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
-    // Note: This only extracts expiry for refresh logic. JWT signature is validated server-side.
     let parts: Vec<&str> = jwt.split('.').collect();
     if parts.len() != 3 {
         warn!("Invalid JWT format");
@@ -299,19 +300,7 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
     };
 
     match serde_json::from_slice::<serde_json::Value>(&payload_bytes) {
-        Ok(payload) => match payload.get("exp") {
-            Some(value) => match value.as_u64() {
-                Some(exp) => Some(exp),
-                None => {
-                    warn!("JWT exp claim is not a positive integer");
-                    None
-                }
-            },
-            None => {
-                warn!("JWT missing exp claim");
-                None
-            }
-        },
+        Ok(payload) => payload.get("exp").and_then(|v| v.as_u64()),
         Err(e) => {
             warn!("Failed to parse JWT payload: {}", e);
             None
@@ -321,6 +310,9 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
 
 /// Stores refresh token in the OS keychain.
 pub async fn store_refresh_token(username: &str, token: &str) -> Result<()> {
+    if token.is_empty() {
+        return Err(anyhow!("refresh token cannot be empty"));
+    }
     let username = username.to_string();
     let token = token.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
@@ -389,41 +381,20 @@ where
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
-    use std::sync::Mutex;
-    use tempfile::TempDir;
-
-    // Ensures tests don't interfere with each other by running serially
-    // Uses LockResult to handle poisoned mutex from panics
-    static TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    use tempfile::{tempdir, TempDir};
 
     struct TestContext {
-        _guard: std::sync::LockResult<std::sync::MutexGuard<'static, ()>>,
         _dir: TempDir,
+        path: PathBuf,
     }
 
     impl TestContext {
         fn new() -> Self {
-            let guard = TEST_GUARD.lock();
-            let dir = tempfile::tempdir().expect("create tempdir");
-            unsafe {
-                std::env::set_var(crate::config::CONFIG_OVERRIDE_ENV, dir.path().to_str().unwrap());
-            }
-            Self {
-                _guard: guard,
-                _dir: dir,
-            }
-        }
-    }
-
-    impl Drop for TestContext {
-        fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var(crate::config::CONFIG_OVERRIDE_ENV);
-            }
+            let dir = tempdir().expect("create tempdir");
+            let path = dir.path().to_path_buf();
+            Self { _dir: dir, path }
         }
     }
 
@@ -584,7 +555,6 @@ mod tests {
         let _ctx = TestContext::new();
         let username = "empty_token_user";
 
-        // Keyring doesn't support empty passwords, so this should fail
         let result = store_refresh_token(username, "").await;
         assert!(result.is_err());
     }
@@ -689,10 +659,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_perform_refresh_without_session() {
-        let _ctx = TestContext::new();
+        let ctx = TestContext::new();
         let client = Client::new();
 
-        let result = perform_refresh(&client).await;
+        let result = perform_refresh(&client, Some(&ctx.path)).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(err_msg.contains("No active session found"));
@@ -700,18 +670,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_perform_refresh_without_refresh_token() {
-        let _ctx = TestContext::new();
+        let ctx = TestContext::new();
         let client = Client::new();
 
         let session = Session::new("test_user".to_string(), "fake_jwt".to_string());
-        write_session(&session).await.expect("write session");
+        write_session(&session, Some(&ctx.path))
+            .await
+            .expect("write session");
 
-        let result = perform_refresh(&client).await;
+        let result = perform_refresh(&client, Some(&ctx.path)).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(err_msg.contains("no refresh token"));
         
         // Clean up
-        let _ = crate::session::remove_session().await;
+        let _ = crate::session::remove_session(Some(&ctx.path)).await;
     }
 }
