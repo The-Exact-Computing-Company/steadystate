@@ -1,29 +1,39 @@
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use dirs::config_dir;
-use jwt_simple::prelude::*;
-use keyring::Entry;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration};
-use tokio::{select, signal, task, time};
-use tracing::{Level, debug, error, info, warn};
+//! SteadyState CLI - Manage reproducible development environments
+//!
+//! This CLI provides commands for authentication and session management.
+//! See README.md for usage examples.
 
-const SERVICE_NAME: &str = "steadystate";
-const BACKEND_ENV: &str = "STEADYSTATE_BACKEND"; // e.g. https://api.steadystate.dev
-const DEFAULT_BACKEND: &str = "http://localhost:8080";
-const JWT_REFRESH_BUFFER_SECS: u64 = 60;
-const DEVICE_POLL_MAX_INTERVAL_SECS: u64 = 30;
-const DEVICE_POLL_REQUEST_TIMEOUT_SECS: u64 = 10;
+mod auth;
+mod config;
+mod session;
+
+use anyhow::{Context, Result};
+use clap::{CommandFactory, Parser, Subcommand};
+use reqwest::{Client, Url};
+use serde::Serialize;
+use tokio::time::Duration;
+use tracing::{error, info, warn};
+
+use auth::{
+    UpResponse, delete_refresh_token, device_login, get_refresh_token, perform_refresh,
+    request_with_auth,
+};
+use config::{BACKEND_URL, CLI_VERSION, HTTP_TIMEOUT_SECS, USER_AGENT};
+use session::{read_session, remove_session};
 
 #[derive(Parser)]
 #[command(
     name = "steadystate",
-    about = "SteadyState CLI — Exact reproducible dev envs"
+    about = "SteadyState CLI — Exact reproducible dev envs",
+    disable_version_flag = true,
+    version = CLI_VERSION
 )]
 struct Cli {
+    #[arg(long = "version", short = 'v')]
+    version: bool,
+
     #[command(subcommand)]
-    cmd: Commands,
+    cmd: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -50,432 +60,11 @@ enum Commands {
     },
 }
 
-#[derive(Deserialize)]
-struct DeviceResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    expires_in: u64,
-    interval: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct PollResponse {
-    status: Option<String>,
-    jwt: Option<String>,
-    refresh_token: Option<String>,
-    refresh_expires_at: Option<u64>,
-    login: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Session {
-    login: String,
-    jwt: String,
-    jwt_exp: Option<u64>, // epoch seconds
-}
-
-#[derive(Deserialize, Serialize)]
-struct UpResponse {
-    id: String,
-    ssh_url: String,
-}
-
 #[derive(Serialize)]
 struct WhoamiOutput {
     logged_in: bool,
     login: Option<String>,
     jwt_expires_at: Option<u64>,
-}
-
-fn backend_url() -> String {
-    std::env::var(BACKEND_ENV).unwrap_or_else(|_| DEFAULT_BACKEND.to_string())
-}
-
-async fn cfg_dir() -> Result<PathBuf> {
-    let mut p = config_dir().context("could not determine config directory")?;
-    p.push("steadystate");
-    tokio::fs::create_dir_all(&p)
-        .await
-        .context("create config dir")?;
-    Ok(p)
-}
-
-async fn session_file() -> Result<PathBuf> {
-    Ok(cfg_dir().await?.join("session.json"))
-}
-
-async fn write_session(session: &Session) -> Result<()> {
-    let p = session_file().await?;
-    let data = serde_json::to_vec_pretty(session)?;
-    // Write with temp file then atomically rename
-    let tmp = p.with_extension("tmp");
-    tokio::fs::write(&tmp, &data)
-        .await
-        .context("write session tmp file")?;
-    // set strict permissions on unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .await
-            .ok(); // non-fatal if fails
-    }
-    tokio::fs::rename(tmp, &p)
-        .await
-        .context("rename session file")?;
-    Ok(())
-}
-
-async fn read_session() -> Result<Session> {
-    let p = session_file().await?;
-    let bytes = tokio::fs::read(&p).await.context("read session file")?;
-    let s: Session = serde_json::from_slice(&bytes).context("parse session json")?;
-    Ok(s)
-}
-
-async fn remove_session() -> Result<()> {
-    let p = session_file().await?;
-    // Just attempt removal, ignore NotFound
-    match tokio::fs::remove_file(p).await {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).context("remove session file"),
-    }
-}
-
-// Keychain helpers (blocking; run in spawn_blocking)
-async fn store_refresh_token(username: &str, token: &str) -> Result<()> {
-    let username = username.to_string();
-    let token = token.to_string();
-    task::spawn_blocking(move || -> Result<()> {
-        let entry = Entry::new(SERVICE_NAME, &username)
-            .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {}", e))?;
-        entry
-            .set_password(&token)
-            .map_err(|e| anyhow::anyhow!("keyring set_password failed: {}", e))?;
-        Ok(())
-    })
-    .await?
-}
-
-async fn get_refresh_token(username: &str) -> Result<Option<String>> {
-    let username = username.to_string();
-    task::spawn_blocking(move || -> Result<Option<String>> {
-        let entry = Entry::new(SERVICE_NAME, &username)
-            .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {}", e))?;
-        match entry.get_password() {
-            Ok(tok) => Ok(Some(tok)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => {
-                warn!("keyring get_password error: {}", err);
-                Ok(None)
-            }
-        }
-    })
-    .await?
-}
-
-async fn delete_refresh_token(username: &str) -> Result<()> {
-    let username = username.to_string();
-    task::spawn_blocking(move || -> Result<()> {
-        if let Ok(entry) = Entry::new(SERVICE_NAME, &username) {
-            let _ = entry.delete_credential();
-        }
-        Ok(())
-    })
-    .await?
-}
-
-fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
-    // JWT format is: header.payload.signature
-    let parts: Vec<&str> = jwt.split('.').collect();
-    if parts.len() != 3 {
-        warn!("Invalid JWT format");
-        return None;
-    }
-
-    // Decode the payload (second part) using base64url decoding
-    let payload_bytes = match Base64UrlSafeNoPadding::decode_to_vec(parts[1], None) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!("Failed to decode JWT payload: {:?}", e);
-            return None;
-        }
-    };
-
-    // Parse the JSON payload to extract 'exp' claim
-    match serde_json::from_slice::<serde_json::Value>(&payload_bytes) {
-        Ok(payload) => match payload.get("exp") {
-            Some(value) => match value.as_u64() {
-                Some(exp) => Some(exp),
-                None => {
-                    warn!("JWT exp claim is not a positive integer");
-                    None
-                }
-            },
-            None => {
-                warn!("JWT missing exp claim");
-                None
-            }
-        },
-        Err(e) => {
-            warn!("Failed to parse JWT payload: {}", e);
-            None
-        }
-    }
-}
-
-async fn device_login(client: &Client) -> Result<()> {
-    let url = format!("{}/auth/device", backend_url());
-    let resp = client
-        .post(&url)
-        .send()
-        .await
-        .context("request device code from backend")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("device code request failed ({}): {}", status, body);
-    }
-
-    let dr: DeviceResponse = resp.json().await.context("parse device response")?;
-
-    println!("Open the verification URL and enter the code:");
-    println!("\n  {}\n", dr.verification_uri);
-    println!("Code: {}\n", dr.user_code);
-
-    // Try to open browser; non-fatal if fails
-    if let Err(e) = open::that(&dr.verification_uri) {
-        debug!("open browser failed: {}", e);
-    }
-
-    let poll_url = format!("{}/auth/poll", backend_url());
-    let interval = dr.interval.unwrap_or(5).max(1);
-    let max_interval_secs = DEVICE_POLL_MAX_INTERVAL_SECS.max(interval);
-    let device_code = dr.device_code.clone();
-    let expires_in = dr.expires_in;
-
-    println!("Waiting for authorization (press Ctrl+C to cancel)...");
-
-    let poll_loop = async {
-        let mut current_interval_secs = interval;
-        loop {
-            select! {
-                _ = signal::ctrl_c() => {
-                    println!("\nCancelled by user");
-                    return Ok(());
-                }
-                _ = time::sleep(Duration::from_secs(current_interval_secs)) => {
-                    let poll = client
-                        .get(&poll_url)
-                        .query(&[("device_code", &device_code)])
-                        .timeout(Duration::from_secs(DEVICE_POLL_REQUEST_TIMEOUT_SECS))
-                        .send()
-                        .await
-                        .context("poll request failed")?;
-
-                    // If pending, backend returns 202
-                    if poll.status().as_u16() == 202 {
-                        current_interval_secs = current_interval_secs
-                            .saturating_mul(3)
-                            .saturating_div(2)
-                            .clamp(interval, max_interval_secs);
-                        continue;
-                    }
-
-                    let out: PollResponse = poll.json().await.context("parse poll response")?;
-
-                    if let Some(status) = out.status.as_deref() {
-                        match status {
-                            "pending" => {
-                                current_interval_secs = current_interval_secs
-                                    .saturating_mul(3)
-                                    .saturating_div(2)
-                                    .clamp(interval, max_interval_secs);
-                                continue;
-                            }
-                            "complete" => {
-                                let jwt = out.jwt.context("server did not return jwt")?;
-                                let refresh = out
-                                    .refresh_token
-                                    .context("no refresh token returned")?;
-                                let login = out.login.context("no login returned")?;
-
-                                // store refresh token in keychain
-                                store_refresh_token(&login, &refresh).await?;
-
-                                // write session file with jwt + expiry
-                                let jwt_exp = extract_exp_from_jwt(&jwt);
-                                let session = Session {
-                                    login: login.clone(),
-                                    jwt: jwt.clone(),
-                                    jwt_exp,
-                                };
-                                write_session(&session).await?;
-                                println!("✅ Logged in as {}", login);
-                                return Ok(());
-                            }
-                            other => {
-                                warn!("unexpected status: {}", other);
-                                continue;
-                            }
-                        }
-                    } else if let Some(err) = out.error {
-                        match err.as_str() {
-                            "authorization_pending" => {
-                                current_interval_secs = current_interval_secs
-                                    .saturating_mul(3)
-                                    .saturating_div(2)
-                                    .clamp(interval, max_interval_secs);
-                                continue;
-                            }
-                            "slow_down" => {
-                                current_interval_secs = (current_interval_secs + 5)
-                                    .clamp(interval, max_interval_secs);
-                                continue;
-                            }
-                            "access_denied" => {
-                                anyhow::bail!("authorization denied by user");
-                            }
-                            _ => {
-                                anyhow::bail!("authorization error: {}", err);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    match time::timeout(Duration::from_secs(expires_in), poll_loop).await {
-        Ok(res) => res,
-        Err(_) => anyhow::bail!("device code expired"),
-    }
-}
-
-async fn perform_refresh(client: &Client) -> Result<String> {
-    // read session for username
-    let session = read_session()
-        .await
-        .context("no existing session; run `steadystate login`")?;
-
-    let username = session.login.clone();
-    let refresh = get_refresh_token(&username).await?.ok_or_else(|| {
-        anyhow::anyhow!("no refresh token in keychain; run `steadystate login` again")
-    })?;
-
-    let url = format!("{}/auth/refresh", backend_url());
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({ "refresh_token": refresh }))
-        .send()
-        .await
-        .context("auth/refresh request failed")?;
-
-    if resp.status().as_u16() == 401 {
-        // refresh invalid: remove keychain entry and session
-        let _ = delete_refresh_token(&username).await;
-        let _ = remove_session().await;
-        anyhow::bail!("refresh token invalid; you must run `steadystate login` again");
-    }
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        if tracing::enabled!(Level::DEBUG) {
-            if let Ok(body) = resp.text().await {
-                debug!("refresh failed body: {}", body);
-            }
-        }
-        anyhow::bail!("refresh failed with status {}", status);
-    }
-
-    let body: serde_json::Value = resp.json().await.context("parse refresh response")?;
-    let jwt = body
-        .get("jwt")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no jwt in refresh response"))?
-        .to_string();
-
-    // update stored session
-    let jwt_exp = extract_exp_from_jwt(&jwt);
-    let new_session = Session {
-        login: username.clone(),
-        jwt: jwt.clone(),
-        jwt_exp,
-    };
-    write_session(&new_session).await?;
-    Ok(jwt)
-}
-
-/// Generic helper to make an authenticated request; refreshes JWT proactively when near expiry.
-async fn request_with_auth<T, F>(client: &Client, builder_fn: F) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-    F: Fn(&Client, &str) -> reqwest::RequestBuilder,
-{
-    // read session
-    let session = read_session()
-        .await
-        .context("no session found; please login")?;
-    let mut jwt = session.jwt.clone();
-
-    // check expiry within buffer window
-    let mut need_refresh = false;
-    if let Some(exp) = session.jwt_exp {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        if exp <= now + JWT_REFRESH_BUFFER_SECS {
-            need_refresh = true;
-        }
-    }
-
-    if need_refresh {
-        info!("JWT near expiry, refreshing proactively");
-        jwt = perform_refresh(client).await?;
-    }
-
-    let req = builder_fn(client, &jwt);
-    let resp = req.send().await.context("request failed")?;
-
-    // if 401, try one refresh and retry once
-    if resp.status().as_u16() == 401 {
-        info!("Got 401, attempting token refresh");
-        jwt = perform_refresh(client).await?;
-        time::sleep(Duration::from_millis(500)).await;
-        let req2 = builder_fn(client, &jwt);
-        let resp2 = req2.send().await.context("request retry failed")?;
-
-        if !resp2.status().is_success() {
-            let status = resp2.status();
-            if tracing::enabled!(Level::DEBUG) {
-                if let Ok(body) = resp2.text().await {
-                    debug!("request retry body: {}", body);
-                }
-            }
-            anyhow::bail!("request failed after retry with status {}", status);
-        }
-
-        let body = resp2.json::<T>().await.context("parse response")?;
-        return Ok(body);
-    }
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        if tracing::enabled!(Level::DEBUG) {
-            if let Ok(body) = resp.text().await {
-                debug!("request body: {}", body);
-            }
-        }
-        anyhow::bail!("request failed with status {}", status);
-    }
-
-    let body = resp.json::<T>().await.context("parse response")?;
-    Ok(body)
 }
 
 async fn whoami(json_output: bool) -> Result<()> {
@@ -484,7 +73,7 @@ async fn whoami(json_output: bool) -> Result<()> {
             if json_output {
                 let output = WhoamiOutput {
                     logged_in: true,
-                    login: Some(sess.login),
+                    login: Some(sess.login.clone()),
                     jwt_expires_at: sess.jwt_exp,
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
@@ -514,7 +103,7 @@ async fn whoami(json_output: bool) -> Result<()> {
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("Not logged in. Run `steadystate login`");
+                println!("No active session found. Run 'steadystate login' first.");
             }
             Ok(())
         }
@@ -522,7 +111,6 @@ async fn whoami(json_output: bool) -> Result<()> {
 }
 
 async fn logout(client: &Client) -> Result<()> {
-    // read session for username and maybe JWT
     let session = match read_session().await {
         Ok(s) => s,
         Err(_) => {
@@ -532,14 +120,14 @@ async fn logout(client: &Client) -> Result<()> {
     };
     let username = session.login.clone();
 
-    // attempt to revoke on backend if refresh token exists
     if let Some(refresh) = get_refresh_token(&username).await? {
-        let url = format!("{}/auth/revoke", backend_url());
-        match client
-            .post(&url)
-            .json(&serde_json::json!({ "refresh_token": refresh }))
-            .send()
-            .await
+        let url = format!("{}/auth/revoke", &*BACKEND_URL);
+        match auth::send_with_retries(|| {
+            client
+                .post(&url)
+                .json(&serde_json::json!({ "refresh_token": refresh.clone() }))
+        })
+        .await
         {
             Ok(resp) if resp.status().is_success() => {
                 info!("Refresh token revoked on server");
@@ -548,12 +136,11 @@ async fn logout(client: &Client) -> Result<()> {
                 warn!("Server revoke returned status: {}", resp.status());
             }
             Err(e) => {
-                warn!("Failed to revoke on server: {}", e);
+                warn!("Failed to revoke on server: {:#}", e);
             }
         }
     }
 
-    // delete local artifacts
     let _ = delete_refresh_token(&username).await;
     let _ = remove_session().await;
     println!("Logged out (local tokens removed).");
@@ -561,8 +148,12 @@ async fn logout(client: &Client) -> Result<()> {
 }
 
 async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
+    Url::parse(&repo).context(
+        "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
+    )?;
+
     let resp: UpResponse = request_with_auth(client, |c, jwt| {
-        c.post(format!("{}/sessions", backend_url()))
+        c.post(format!("{}/sessions", &*BACKEND_URL))
             .bearer_auth(jwt)
             .json(&serde_json::json!({ "repo": repo.clone() }))
     })
@@ -580,7 +171,6 @@ async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Init tracing subscriber (RUST_LOG controls level)
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -588,16 +178,43 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if std::env::var("RUST_LOG")
+        .ok()
+        .map(|value| value.to_lowercase().contains("debug"))
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "⚠️ Debug logging is enabled; JWTs and refresh tokens may appear in logs. Proceed carefully."
+        );
+    }
+
     let cli = Cli::parse();
+
+    if cli.version {
+        println!("SteadyState CLI version {}", CLI_VERSION);
+        return Ok(());
+    }
+
+    let cmd = match cli.cmd {
+        Some(cmd) => cmd,
+        None => {
+            Cli::command().print_help().ok();
+            println!();
+            return Ok(());
+        }
+    };
+
     let client = Client::builder()
-        .user_agent("SteadyStateCLI/0.2")
-        .timeout(Duration::from_secs(30))
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .context("create http client")?;
 
-    match cli.cmd {
+    match cmd {
         Commands::Login => {
-            if let Err(e) = device_login(&client).await {
+            if let Err(e) = device_login(&client).await.context(
+                "Failed to reach backend. Check network connectivity and the STEADYSTATE_BACKEND environment variable.",
+            ) {
                 error!("login failed: {:#}", e);
                 std::process::exit(1);
             }
