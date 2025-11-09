@@ -1,0 +1,37 @@
+[package]
+name = "steadystate"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# HTTP client, pure-Rust TLS
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# JWT library, pure Rust only
+jwt-simple = { version = "0.12", default-features = false, features = ["pure-rust"] }
+
+# Serialization / deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Secure credential storage
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native"] }
+
+# Platform directories (config, cache, etc.)
+dirs = "6.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Open URLs in default browser
+open = "5.3"
