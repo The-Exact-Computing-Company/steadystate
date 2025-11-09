@@ -1,0 +1,30 @@
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+name: unit-tests-cli
+
+permissions:
+  contents: read
+
+jobs:
+  devtools_test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create this folder to silence warning
+        run: mkdir -p ~/.nix-defexpr/channels
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Run unit tests
+        run: nix develop . -c cargo test -p steadystate
