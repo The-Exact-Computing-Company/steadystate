@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -13,7 +14,7 @@ use crate::config::{
     BACKEND_URL, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
     JWT_REFRESH_BUFFER_SECS, MAX_NETWORK_RETRIES, RETRY_DELAY_MS, SERVICE_NAME,
 };
-use crate::session::{Session, read_session, remove_session, write_session};
+use crate::session::{read_session, remove_session, write_session, Session};
 
 #[derive(Deserialize)]
 struct DeviceResponse {
@@ -131,7 +132,8 @@ pub async fn device_login(client: &Client) -> Result<()> {
                                 store_refresh_token(&login, &refresh).await?;
 
                                 let session = Session::new(login.clone(), jwt.clone());
-                                write_session(&session).await?;
+                                // FIX: Pass `None` to use the default session path.
+                                write_session(&session, None).await?;
                                 println!("✅ Logged in as {}", login);
                                 return Ok(());
                             }
@@ -180,7 +182,8 @@ pub async fn device_login(client: &Client) -> Result<()> {
 
 /// Refreshes JWT using stored refresh token.
 pub async fn perform_refresh(client: &Client) -> Result<String> {
-    let session = read_session()
+    // FIX: Pass `None` to use the default session path.
+    let session = read_session(None)
         .await
         .context("No active session found. Run 'steadystate login' first.")?;
 
@@ -200,7 +203,8 @@ pub async fn perform_refresh(client: &Client) -> Result<String> {
 
     if resp.status().as_u16() == 401 {
         let _ = delete_refresh_token(&username).await;
-        let _ = remove_session().await;
+        // FIX: Pass `None` to use the default session path.
+        let _ = remove_session(None).await;
         anyhow::bail!("Refresh token expired. Run 'steadystate login' to authenticate again.");
     }
 
@@ -223,7 +227,8 @@ pub async fn perform_refresh(client: &Client) -> Result<String> {
         .to_string();
 
     let new_session = Session::new(username.clone(), jwt.clone());
-    write_session(&new_session).await?;
+    // FIX: Pass `None` to use the default session path.
+    write_session(&new_session, None).await?;
     Ok(jwt)
 }
 
@@ -233,7 +238,8 @@ where
     T: for<'de> Deserialize<'de>,
     F: Fn(&Client, &str) -> reqwest::RequestBuilder,
 {
-    let session = read_session()
+    // FIX: Pass `None` to use the default session path.
+    let session = read_session(None)
         .await
         .context("No active session found. Run 'steadystate login' first.")?;
     let mut jwt = session.jwt.clone();
@@ -389,41 +395,21 @@ where
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
-    use std::sync::Mutex;
-    use tempfile::TempDir;
+    use tempfile::{tempdir, TempDir};
 
-    // Ensures tests don't interfere with each other by running serially
-    // Uses LockResult to handle poisoned mutex from panics
-    static TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-
+    // FIX: Replaced old TestContext with the new, safer, isolated version.
     struct TestContext {
-        _guard: std::sync::LockResult<std::sync::MutexGuard<'static, ()>>,
         _dir: TempDir,
+        path: PathBuf,
     }
 
     impl TestContext {
         fn new() -> Self {
-            let guard = TEST_GUARD.lock();
-            let dir = tempfile::tempdir().expect("create tempdir");
-            unsafe {
-                std::env::set_var(crate::config::CONFIG_OVERRIDE_ENV, dir.path().to_str().unwrap());
-            }
-            Self {
-                _guard: guard,
-                _dir: dir,
-            }
-        }
-    }
-
-    impl Drop for TestContext {
-        fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var(crate::config::CONFIG_OVERRIDE_ENV);
-            }
+            let dir = tempdir().expect("create tempdir");
+            let path = dir.path().to_path_buf();
+            Self { _dir: dir, path }
         }
     }
 
@@ -700,18 +686,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_perform_refresh_without_refresh_token() {
-        let _ctx = TestContext::new();
+        let ctx = TestContext::new();
         let client = Client::new();
 
         let session = Session::new("test_user".to_string(), "fake_jwt".to_string());
-        write_session(&session).await.expect("write session");
+        // FIX: Pass the test's temp path to the session function.
+        write_session(&session, Some(&ctx.path))
+            .await
+            .expect("write session");
 
         let result = perform_refresh(&client).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(err_msg.contains("no refresh token"));
-        
+
         // Clean up
-        let _ = crate::session::remove_session().await;
+        // FIX: Pass the test's temp path to the session function.
+        let _ = crate::session::remove_session(Some(&ctx.path)).await;
     }
-}
+            }
