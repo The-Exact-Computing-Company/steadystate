@@ -40,6 +40,14 @@ enum Commands {
     Refresh,
     /// Logout: revoke refresh token and clear local session
     Logout,
+    /// Create a remote development session for the provided repository URL
+    Up {
+        /// Repository URL used for the remote session
+        repo: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Deserialize)]
@@ -66,6 +74,12 @@ struct Session {
     login: String,
     jwt: String,
     jwt_exp: Option<u64>, // epoch seconds
+}
+
+#[derive(Deserialize, Serialize)]
+struct UpResponse {
+    id: String,
+    ssh_url: String,
 }
 
 #[derive(Serialize)]
@@ -546,6 +560,24 @@ async fn logout(client: &Client) -> Result<()> {
     Ok(())
 }
 
+async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
+    let resp: UpResponse = request_with_auth(client, |c, jwt| {
+        c.post(format!("{}/sessions", backend_url()))
+            .bearer_auth(jwt)
+            .json(&serde_json::json!({ "repo": repo.clone() }))
+    })
+    .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        println!("✅ Session created: {}", resp.id);
+        println!("SSH: {}", resp.ssh_url);
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Init tracing subscriber (RUST_LOG controls level)
@@ -586,6 +618,12 @@ async fn main() -> Result<()> {
         Commands::Logout => {
             if let Err(e) = logout(&client).await {
                 error!("logout failed: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Up { repo, json } => {
+            if let Err(e) = up(&client, repo, json).await {
+                error!("up failed: {:#}", e);
                 std::process::exit(1);
             }
         }
