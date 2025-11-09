@@ -130,14 +130,16 @@ mod tests {
 
     struct TestContext {
         _guard: std::sync::MutexGuard<'static, ()>,
-        _dir: tempdir::TempDir,
+        _dir: tempfile::TempDir,
     }
 
     impl TestContext {
         fn new() -> Self {
             let guard = TEST_GUARD.lock().unwrap();
             let dir = tempdir().expect("create tempdir");
-            std::env::set_var(CONFIG_OVERRIDE_ENV, dir.path().to_str().unwrap());
+            unsafe {
+                std::env::set_var(CONFIG_OVERRIDE_ENV, dir.path().to_str().unwrap());
+            }
             Self {
                 _guard: guard,
                 _dir: dir,
@@ -147,7 +149,9 @@ mod tests {
 
     impl Drop for TestContext {
         fn drop(&mut self) {
-            std::env::remove_var(CONFIG_OVERRIDE_ENV);
+            unsafe {
+                std::env::remove_var(CONFIG_OVERRIDE_ENV);
+            }
         }
     }
 

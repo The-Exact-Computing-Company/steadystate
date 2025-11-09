@@ -393,9 +393,11 @@ mod tests {
     use super::*;
 
     fn build_jwt(payload: serde_json::Value) -> String {
-        let header = Base64UrlSafeNoPadding::encode_to_string(r#"{"alg":"none"}"#.as_bytes());
+        let header = Base64UrlSafeNoPadding::encode_to_string(r#"{"alg":"none"}"#.as_bytes())
+            .expect("encode header");
         let payload_str = serde_json::to_string(&payload).unwrap();
-        let payload_enc = Base64UrlSafeNoPadding::encode_to_string(payload_str.as_bytes());
+        let payload_enc = Base64UrlSafeNoPadding::encode_to_string(payload_str.as_bytes())
+            .expect("encode payload");
         format!("{}.{}.", header, payload_enc)
     }
 
