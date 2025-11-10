@@ -58,13 +58,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-
-    /// (For integration testing only) Stores a token in the keychain.
-    #[command(hide = true)]
-    TestSetupKeychain {
-        username: String,
-        token: String,
-    },
 }
 
 #[derive(Serialize)]
@@ -215,8 +208,6 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Reverted to the simple, correct client builder.
-    // The pool_max_idle_per_host workaround is no longer needed with mockito.
     let client = Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -257,10 +248,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::TestSetupKeychain { username, token } => {
-            auth::store_refresh_token(&username, &token).await?;
-        }
     }
 
     Ok(())
-}
+        }
