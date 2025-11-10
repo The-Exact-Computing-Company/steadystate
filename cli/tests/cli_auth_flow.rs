@@ -33,18 +33,21 @@ fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Ou
 
 // --- Mock Server using `rouille` ---
 
-struct MockServer {
+// FIX: Make the MockServer struct generic over the handler type `F`.
+struct MockServer<F>
+where
+    F: Fn(&rouille::Request) -> rouille::Response + Send + Sync + 'static,
+{
     addr: String,
-    // The handle to the server. When this is dropped, the server shuts down.
-    _handle: rouille::Server<()>,
+    _handle: rouille::Server<F>,
 }
 
-impl MockServer {
-    fn new<F>(handler: F) -> Self
-    where
-        F: Fn(&rouille::Request) -> rouille::Response + Send + Sync + 'static,
-    {
-        // rouille::Server::new will find an available port on 127.0.0.1
+// FIX: Implement the `new` function for the generic MockServer.
+impl<F> MockServer<F>
+where
+    F: Fn(&rouille::Request) -> rouille::Response + Send + Sync + 'static,
+{
+    fn new(handler: F) -> Self {
         let server = rouille::Server::new("127.0.0.1:0", handler).unwrap();
         let addr = server.server_addr().to_string();
 
@@ -77,7 +80,8 @@ fn up_handles_401_then_refreshes_then_succeeds() {
                 (0, "/sessions") => {
                     assert_eq!(request.method(), "POST");
                     assert_eq!(request.header("Authorization").unwrap(), "Bearer OLD_JWT");
-                    rouille::Response::empty_401()
+                    // FIX: Use the correct method to create a 401 response.
+                    rouille::Response::text("Unauthorized").with_status_code(401)
                 }
                 (1, "/auth/refresh") => {
                     assert_eq!(request.method(), "POST");
@@ -167,6 +171,7 @@ fn logout_removes_session_and_revokes_refresh() {
 
         assert_eq!(json_body["refresh_token"], "MY_REFRESH_TOKEN");
 
+        // Use the idiomatic empty 204 No Content response
         rouille::Response::empty_204()
     });
 
