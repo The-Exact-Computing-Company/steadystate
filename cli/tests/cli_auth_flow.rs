@@ -119,7 +119,7 @@ fn up_handles_401_then_refreshes_then_succeeds() {
         match call {
             0 => {
                 assert!(req.starts_with("POST /sessions"), "Expected /sessions, got: {}", req);
-                assert!(req.contains("bearer OLD_JWT"));
+                assert!(req.contains("Authorization: Bearer OLD_JWT"));
                 let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
                 stream.write_all(resp.as_bytes()).unwrap();
             }
@@ -131,7 +131,7 @@ fn up_handles_401_then_refreshes_then_succeeds() {
             }
             2 => {
                 assert!(req.starts_with("POST /sessions"), "Expected retry to /sessions, got: {}", req);
-                assert!(req.contains("bearer NEW_JWT"));
+                assert!(req.contains("Authorization: Bearer NEW_JWT"));
                 let body = r#"{"id":"abc","ssh_url":"ssh://ok"}"#;
                 let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
                 stream.write_all(resp.as_bytes()).unwrap();
@@ -174,7 +174,7 @@ fn up_forces_refresh_when_jwt_expired() {
             }
             1 => {
                 assert!(req.starts_with("POST /sessions"), "Expected /sessions, got: {}", req);
-                assert!(req.contains("bearer FRESH"));
+                assert!(req.contains("Authorization: Bearer FRESH"));
                 let body = r#"{"id":"abc","ssh_url":"ssh://ok"}"#;
                 let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
                 stream.write_all(resp.as_bytes()).unwrap();
