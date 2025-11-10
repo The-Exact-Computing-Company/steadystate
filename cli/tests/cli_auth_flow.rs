@@ -2,7 +2,13 @@ use std::fs;
 use std::process::Output;
 use tempfile::TempDir;
 use mockito::{Matcher, Server};
-// Import the function we just made public
+
+// FIX: Integration tests import from the crate root, not an internal module path.
+// Assuming your crate's library name is `steadystate` and `auth` is a public module.
+// If your library is not public, we need to adjust this.
+// For now, let's assume `auth` is a public module in `lib.rs` or `main.rs`.
+// If not, we might need to add `pub mod auth;` to your `main.rs`.
+// Let's try the direct import first.
 use steadystate::auth::store_refresh_token; 
 
 // --- Utility helpers ---
@@ -37,7 +43,6 @@ fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Ou
 async fn up_handles_401_then_refreshes_then_succeeds() {
     let td = TempDir::new().unwrap();
     
-    // SETUP: Store the refresh token directly within the test process.
     store_refresh_token("me", "MY_REFRESH_TOKEN").await.expect("Failed to set up keychain for test");
 
     write_session(&td, "me", "OLD_JWT", Some(5_000_000_000));
