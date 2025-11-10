@@ -1,9 +1,9 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use tempfile::TempDir;
 
@@ -21,7 +21,7 @@ fn write_session(path: &TempDir, login: &str, jwt: &str, jwt_exp: Option<u64>) {
     fs::write(sess_path, serde_json::to_vec_pretty(&sess).unwrap()).unwrap();
 }
 
-fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> std::process::Output {
+fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Output {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_steadystate"));
     if let Some(p) = path {
         cmd.env("STEADYSTATE_CONFIG_DIR", p.path());
@@ -45,7 +45,8 @@ fn read_full_request(mut stream: &std::net::TcpStream) -> String {
             break;
         }
         collected.extend_from_slice(&buf[..n]);
-        if let Some(pos) = collected.windows(4).position(|w| w == b"\r\n\r\n") {
+        // FIX: Acknowledge the unused variable to silence the warning.
+        if let Some(_pos) = collected.windows(4).position(|w| w == b"\r\n\r\n") {
             return String::from_utf8_lossy(&collected).to_string();
         }
     }
@@ -60,9 +61,15 @@ where
     let addr = listener.local_addr().unwrap();
 
     let join = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let req = read_full_request(&stream);
-        handler(req, &mut stream);
+        for stream in listener.incoming() {
+            match stream {
+                Ok(mut stream) => {
+                    let req = read_full_request(&stream);
+                    handler(req.clone(), &mut stream);
+                }
+                Err(_) => { /* connection failed */ }
+            }
+        }
     });
 
     (format!("http://{}", addr), join)
@@ -123,6 +130,8 @@ fn up_handles_401_then_refreshes_then_succeeds() {
         &["up", "https://github.com/x/y"],
     );
 
+    // Shut down the mock server by connecting to it, which unblocks the listener.accept()
+    std::net::TcpStream::connect(backend.replace("http://", "")).ok();
     handle.join().unwrap();
 
     assert!(out.status.success());
@@ -179,10 +188,12 @@ fn up_forces_refresh_when_jwt_expired() {
 
     let out = run_cli(
         Some(&td),
-        &[("STEADYSTATE_BACKEND", backend)],
+        &[("STEADYSTATE_BACKEND", backend.clone())],
         &["up", "https://github.com/x/y"],
     );
-
+    
+    // Shut down the mock server
+    std::net::TcpStream::connect(backend.replace("http://", "")).ok();
     handle.join().unwrap();
 
     assert!(out.status.success());
@@ -201,10 +212,13 @@ fn logout_removes_session_and_revokes_refresh() {
     let td = TempDir::new().unwrap();
 
     // Write session
-    write_session(&td, "me", "jwt", Some(10_000_000));
+    write_session(&td, "me", "jwt", Some(10_000_000_000));
 
     // Write fake refresh token via keyring
-    run_cli(Some(&td), &[], &["refresh"]).ok(); // creates keychain entry indirectly
+    // We expect this to fail because we don't have a real backend to get a refresh token,
+    // but it will create the keychain entry which is what we need to test the logout revoke attempt.
+    // FIX: Removed `.ok()` as it's not a method on `Output`. We just run the command for its side effect.
+    run_cli(Some(&td), &[("STEADYSTATE_BACKEND", "http://127.0.0.1:1".into())], &["refresh"]);
 
     let (backend, handle) = spawn_mock(|req, stream| {
         assert!(req.starts_with("POST /auth/revoke"));
@@ -214,10 +228,12 @@ fn logout_removes_session_and_revokes_refresh() {
 
     let out = run_cli(
         Some(&td),
-        &[("STEADYSTATE_BACKEND", backend)],
+        &[("STEADYSTATE_BACKEND", backend.clone())],
         &["logout"],
     );
-
+    
+    // Shut down the mock server
+    std::net::TcpStream::connect(backend.replace("http://", "")).ok();
     handle.join().unwrap();
 
     assert!(out.status.success());
@@ -226,5 +242,4 @@ fn logout_removes_session_and_revokes_refresh() {
 
     // Session file should be gone
     assert!(!td.path().join("steadystate/session.json").exists());
-}
-
+} 
