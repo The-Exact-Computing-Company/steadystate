@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_near_expiry_exact_boundary() {
-        let now = std::time::System::now()
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
