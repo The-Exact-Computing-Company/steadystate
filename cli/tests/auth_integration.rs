@@ -156,11 +156,24 @@ fn up_handles_401_then_refreshes_then_succeeds() {
     let (base_url, handle) = spawn_scripted_server(script);
 
     let output = run_cli(
-        Some(&tempdir),
-        &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["up", "https://github.com/example/repo"],
-    );
+    Some(&tempdir),
+    &[("STEADYSTATE_BACKEND", base_url.clone())],
+    &["up", "https://github.com/example/repo"],
+);
 
+if !output.status.success() {
+    eprintln!("=== CLI STDOUT ===\n{}", String::from_utf8_lossy(&output.stdout));
+    eprintln!("=== CLI STDERR ===\n{}", String::from_utf8_lossy(&output.stderr));
+
+    let requests = handle.join().unwrap();
+    eprintln!("=== SERVER REQUESTS ===");
+    for (i, r) in requests.iter().enumerate() {
+        eprintln!("--- Request {} ---\n{}\n", i, r);
+    }
+
+    panic!("CLI failed unexpectedly");
+}
+ 
     assert!(output.status.success());
 
     let requests = handle.join().unwrap();
