@@ -23,7 +23,6 @@ fn write_session(path: &TempDir, login: &str, jwt: &str, jwt_exp: Option<u64>) {
 fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Output {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_steadystate"));
     if let Some(p) = path {
-        // Use the STEADYSTATE_CONFIG_DIR env var for integration tests
         cmd.env("STEADYSTATE_CONFIG_DIR", p.path());
     }
     for (k, v) in envs {
@@ -38,7 +37,7 @@ fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Ou
 struct MockServer {
     addr: String,
     handle: Option<std::thread::JoinHandle<()>>,
-    // We hold the listener here to close it on drop
+    // The server struct owns the listener. When the struct is dropped, the listener is dropped.
     _listener: TcpListener,
 }
 
@@ -52,14 +51,18 @@ impl MockServer {
         let listener_clone = listener.try_clone().unwrap();
 
         let handle = std::thread::spawn(move || {
-            // Loop to accept multiple connections
+            // This loop will accept multiple connections.
             for stream in listener_clone.incoming() {
                 match stream {
                     Ok(mut stream) => {
                         let req = read_full_request(&mut stream);
                         handler(req, &mut stream);
                     }
-                    Err(_) => break, // Listener was closed, so exit thread
+                    Err(_) => {
+                        // When the original listener is dropped, `incoming()` will return an error,
+                        // breaking the loop and allowing the thread to exit cleanly.
+                        break;
+                    }
                 }
             }
         });
@@ -67,17 +70,17 @@ impl MockServer {
         Self {
             addr: format!("http://{}", addr),
             handle: Some(handle),
-            _listener: listener, // Keep listener alive
+            _listener: listener,
         }
     }
 }
 
 impl Drop for MockServer {
     fn drop(&mut self) {
-        // When MockServer goes out of scope, the listener is dropped,
-        // which unblocks the `.incoming()` loop in the thread.
+        // When this struct is dropped, Rust automatically drops the `_listener` field first.
+        // This closes the socket and causes the `incoming()` iterator in the thread to end.
         if let Some(handle) = self.handle.take() {
-            // We can now safely join the thread.
+            // Now that the thread is guaranteed to exit, we can safely join it.
             handle.join().unwrap();
         }
     }
@@ -86,17 +89,13 @@ impl Drop for MockServer {
 fn read_full_request(stream: &mut TcpStream) -> String {
     let mut buf = [0u8; 4096];
     let mut out = Vec::new();
-    // Set a short timeout to prevent tests from hanging
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-        .unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
 
     loop {
         match stream.read(&mut buf) {
             Ok(0) => break, // Connection closed
             Ok(n) => {
                 out.extend_from_slice(&buf[..n]);
-                // Stop reading after we find the double newline
                 if out.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
@@ -161,6 +160,7 @@ fn up_handles_401_then_refreshes_then_succeeds() {
     assert!(stdout.contains("✅ Session created"));
 }
 
+
 #[test]
 fn up_forces_refresh_when_jwt_expired() {
     let td = TempDir::new().unwrap();
@@ -205,6 +205,7 @@ fn up_forces_refresh_when_jwt_expired() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("✅ Session created"));
 }
+
 
 #[test]
 fn logout_removes_session_and_revokes_refresh() {
