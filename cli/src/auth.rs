@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -14,7 +14,13 @@ use crate::config::{
     backend_url, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
     JWT_REFRESH_BUFFER_SECS, MAX_NETWORK_RETRIES, RETRY_DELAY_MS, SERVICE_NAME,
 };
-use crate::session::{read_session, remove_session, write_session, Session};
+use crate::session::{get_cfg_dir, read_session, remove_session, write_session, Session};
+
+//
+// =====================================================
+// Types
+// =====================================================
+//
 
 #[derive(Deserialize)]
 struct DeviceResponse {
@@ -41,7 +47,12 @@ pub struct UpResponse {
     pub ssh_url: String,
 }
 
-/// Initiates OAuth device flow authentication.
+//
+// =====================================================
+// Device Login
+// =====================================================
+//
+
 pub async fn device_login(client: &Client) -> Result<()> {
     let url = format!("{}/auth/device", backend_url());
     let resp = send_with_retries(|| client.post(&url)).await?;
@@ -81,17 +92,20 @@ pub async fn device_login(client: &Client) -> Result<()> {
 
     let poll_loop = async {
         let mut current_interval_secs = interval;
+
         loop {
             spinner.set_message(format!(
                 "Authorizing... {}s elapsed",
                 start.elapsed().as_secs()
             ));
+
             select! {
                 _ = signal::ctrl_c() => {
                     spinner.finish_and_clear();
                     println!("\nCancelled by user");
                     return Ok(());
                 }
+
                 _ = time::sleep(Duration::from_secs(current_interval_secs)) => {
                     let poll = send_with_retries(|| {
                         client
@@ -123,16 +137,14 @@ pub async fn device_login(client: &Client) -> Result<()> {
                             }
                             "complete" => {
                                 spinner.finish_and_clear();
+
                                 let jwt = out.jwt.context("server did not return jwt")?;
-                                let refresh = out
-                                    .refresh_token
-                                    .context("no refresh token returned")?;
+                                let refresh = out.refresh_token.context("no refresh token")?;
                                 let login = out.login.context("no login returned")?;
 
                                 store_refresh_token(&login, &refresh).await?;
+                                write_session(&Session::new(login.clone(), jwt.clone()), None).await?;
 
-                                let session = Session::new(login.clone(), jwt.clone());
-                                write_session(&session, None).await?;
                                 println!("✅ Logged in as {}", login);
                                 return Ok(());
                             }
@@ -141,28 +153,19 @@ pub async fn device_login(client: &Client) -> Result<()> {
                                 continue;
                             }
                         }
-                    } else if let Some(err) = out.error {
+                    }
+
+                    if let Some(err) = out.error {
+                        spinner.finish_and_clear();
                         match err.as_str() {
-                            "authorization_pending" => {
-                                current_interval_secs = current_interval_secs
-                                    .saturating_mul(3)
-                                    .saturating_div(2)
-                                    .clamp(interval, max_interval_secs);
-                                continue;
-                            }
+                            "authorization_pending" => continue,
                             "slow_down" => {
-                                current_interval_secs = (current_interval_secs + 5)
-                                    .clamp(interval, max_interval_secs);
+                                current_interval_secs =
+                                    (current_interval_secs + 5).clamp(interval, max_interval_secs);
                                 continue;
                             }
-                            "access_denied" => {
-                                spinner.finish_and_clear();
-                                anyhow::bail!("authorization denied by user");
-                            }
-                            _ => {
-                                spinner.finish_and_clear();
-                                anyhow::bail!("authorization error: {}", err);
-                            }
+                            "access_denied" => anyhow::bail!("authorization denied by user"),
+                            _ => anyhow::bail!("authorization error: {}", err),
                         }
                     }
                 }
@@ -171,7 +174,7 @@ pub async fn device_login(client: &Client) -> Result<()> {
     };
 
     match time::timeout(Duration::from_secs(expires_in), poll_loop).await {
-        Ok(res) => res,
+        Ok(r) => r,
         Err(_) => {
             spinner.finish_and_clear();
             anyhow::bail!("device code expired")
@@ -179,30 +182,38 @@ pub async fn device_login(client: &Client) -> Result<()> {
     }
 }
 
-/// Refreshes JWT using stored refresh token.
+//
+// =====================================================
+// Refresh Token
+// =====================================================
+//
+
 pub async fn perform_refresh(client: &Client, override_dir: Option<&PathBuf>) -> Result<String> {
     let session = read_session(override_dir)
         .await
         .context("No active session found. Run 'steadystate login' first.")?;
 
     let username = session.login.clone();
-    let refresh = get_refresh_token(&username).await?.ok_or_else(|| {
-        anyhow!("no refresh token in keychain; run `steadystate login` again")
-    })?;
+
+    let refresh = get_refresh_token(&username)
+        .await?
+        .ok_or_else(|| anyhow!("no refresh token in keychain; run `steadystate login` again"))?;
 
     let url = format!("{}/auth/refresh", backend_url());
+
     let resp = send_with_retries(|| {
-        client
-            .post(&url)
-            .json(&serde_json::json!({ "refresh_token": refresh.clone() }))
+        client.post(&url).json(&serde_json::json!({
+            "refresh_token": refresh.clone()
+        }))
     })
     .await
     .context("auth/refresh request failed")?;
 
+    // 401 means expired refresh token
     if resp.status().as_u16() == 401 {
         let _ = delete_refresh_token(&username).await;
         let _ = remove_session(override_dir).await;
-        anyhow::bail!("Refresh token expired. Run 'steadystate login' to authenticate again.");
+        anyhow::bail!("Refresh token expired. Run 'steadystate login' again.");
     }
 
     if !resp.status().is_success() {
@@ -215,19 +226,25 @@ pub async fn perform_refresh(client: &Client, override_dir: Option<&PathBuf>) ->
         anyhow::bail!("refresh failed with status {}", status);
     }
 
-    let body: serde_json::Value = resp.json().await.context("parse refresh response")?;
-    let jwt = body
+    let json: serde_json::Value = resp.json().await.context("parse refresh response")?;
+    let jwt = json
         .get("jwt")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("no jwt in refresh response"))?
         .to_string();
 
-    let new_session = Session::new(username.clone(), jwt.clone());
-    write_session(&new_session, override_dir).await?;
+    let new_sess = Session::new(username.clone(), jwt.clone());
+    write_session(&new_sess, override_dir).await?;
+
     Ok(jwt)
 }
 
-/// Makes authenticated request with automatic token refresh.
+//
+// =====================================================
+// Authenticated Request Wrapper
+// =====================================================
+//
+
 pub async fn request_with_auth<T, F>(
     client: &Client,
     builder_fn: F,
@@ -240,6 +257,7 @@ where
     let session = read_session(override_dir)
         .await
         .context("No active session found. Run 'steadystate login' first.")?;
+
     let mut jwt = session.jwt.clone();
 
     if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
@@ -247,12 +265,16 @@ where
         jwt = perform_refresh(client, override_dir).await?;
     }
 
+    // First attempt
     let resp = send_with_retries(|| builder_fn(client, &jwt)).await?;
 
+    // On 401 → try refresh
     if resp.status().as_u16() == 401 {
         info!("Got 401, attempting token refresh");
+
         jwt = perform_refresh(client, override_dir).await?;
         time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+
         let resp2 = send_with_retries(|| builder_fn(client, &jwt)).await?;
 
         if !resp2.status().is_success() {
@@ -265,10 +287,10 @@ where
             anyhow::bail!("request failed after retry with status {}", status);
         }
 
-        let body = resp2.json::<T>().await.context("parse response")?;
-        return Ok(body);
+        return Ok(resp2.json::<T>().await.context("parse response")?);
     }
 
+    // Other non-success error
     if !resp.status().is_success() {
         let status = resp.status();
         if tracing::enabled!(tracing::Level::DEBUG) {
@@ -279,11 +301,15 @@ where
         anyhow::bail!("request failed with status {}", status);
     }
 
-    let body = resp.json::<T>().await.context("parse response")?;
-    Ok(body)
+    Ok(resp.json::<T>().await.context("parse response")?)
 }
 
-/// Extracts expiry timestamp from JWT (no signature verification).
+//
+// =====================================================
+// JWT expiry decoder
+// =====================================================
+//
+
 pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
     let parts: Vec<&str> = jwt.split('.').collect();
     if parts.len() != 3 {
@@ -291,79 +317,137 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
         return None;
     }
 
-    let payload_bytes = match Base64UrlSafeNoPadding::decode_to_vec(parts[1], None) {
-        Ok(bytes) => bytes,
-        Err(e) => {
+    let payload_bytes =
+        Base64UrlSafeNoPadding::decode_to_vec(parts[1], None).unwrap_or_else(|e| {
             warn!("Failed to decode JWT payload: {:?}", e);
-            return None;
-        }
-    };
+            Vec::new()
+        });
 
-    match serde_json::from_slice::<serde_json::Value>(&payload_bytes) {
-        Ok(payload) => payload.get("exp").and_then(|v| v.as_u64()),
-        Err(e) => {
-            warn!("Failed to parse JWT payload: {}", e);
-            None
-        }
+    if payload_bytes.is_empty() {
+        return None;
     }
+
+    let json: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    json.get("exp")?.as_u64()
 }
 
-/// Stores refresh token in the OS keychain.
+//
+// =====================================================
+// Fake-keychain fallback
+// =====================================================
+//
+
+fn fake_keychain_path(username: &str, cfg_dir: &Path) -> PathBuf {
+    cfg_dir.join("keychain").join(format!("{}.json", username))
+}
+
+async fn write_fake_key(username: &str, token: &str) -> Result<()> {
+    let cfg = get_cfg_dir(None).await?;
+    let kc = cfg.join("keychain");
+    tokio::fs::create_dir_all(&kc).await?;
+
+    let path = fake_keychain_path(username, &cfg);
+    let json = serde_json::json!({ "token": token });
+
+    tokio::fs::write(&path, serde_json::to_vec_pretty(&json)?)
+        .await
+        .context("write fake keychain")?;
+
+    Ok(())
+}
+
+async fn read_fake_key(username: &str) -> Result<Option<String>> {
+    let cfg = get_cfg_dir(None).await?;
+    let path = fake_keychain_path(username, &cfg);
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = tokio::fs::read(&path).await?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes)?;
+    Ok(json.get("token").and_then(|v| v.as_str().map(|s| s.to_string())))
+}
+
+async fn delete_fake_key(username: &str) -> Result<()> {
+    let cfg = get_cfg_dir(None).await?;
+    let path = fake_keychain_path(username, &cfg);
+
+    let _ = tokio::fs::remove_file(&path).await;
+    Ok(())
+}
+
+//
+// =====================================================
+// Public Keychain API (real + fallback)
+// =====================================================
+//
+
 pub async fn store_refresh_token(username: &str, token: &str) -> Result<()> {
     if token.is_empty() {
         return Err(anyhow!("refresh token cannot be empty"));
     }
-    let username = username.to_string();
-    let token = token.to_string();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let entry = Entry::new(SERVICE_NAME, &username)
-            .map_err(|e| anyhow!("keyring entry creation failed: {}", e))?;
-        entry
-            .set_password(&token)
-            .map_err(|e| anyhow!("keyring set_password failed: {}", e))?;
-        Ok(())
-    })
-    .await?
-}
 
-/// Retrieves refresh token from keychain if present.
-pub async fn get_refresh_token(username: &str) -> Result<Option<String>> {
-    let username = username.to_string();
-    tokio::task::spawn_blocking(move || -> Result<Option<String>> {
-        let entry = Entry::new(SERVICE_NAME, &username)
-            .map_err(|e| anyhow!("keyring entry creation failed: {}", e))?;
-        match entry.get_password() {
-            Ok(tok) => Ok(Some(tok)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => {
-                warn!("keyring get_password error: {}", err);
-                Ok(None)
+    // Try OS keychain first
+    let entry = Entry::new(SERVICE_NAME, username);
+    match entry {
+        Ok(e) => {
+            if let Err(err) = e.set_password(token) {
+                warn!("OS keychain set_password failed: {} — using fallback", err);
+                write_fake_key(username, token).await?;
             }
         }
-    })
-    .await?
-}
-
-/// Deletes refresh token from keychain if present.
-pub async fn delete_refresh_token(username: &str) -> Result<()> {
-    let username = username.to_string();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        if let Ok(entry) = Entry::new(SERVICE_NAME, &username) {
-            let _ = entry.delete_credential();
+        Err(err) => {
+            warn!("OS keychain unavailable: {} — using fallback", err);
+            write_fake_key(username, token).await?;
         }
-        Ok(())
-    })
-    .await?
+    }
+
+    Ok(())
 }
 
-pub(crate) async fn send_with_retries<F>(mut make_request: F) -> Result<reqwest::Response>
+pub async fn get_refresh_token(username: &str) -> Result<Option<String>> {
+    // Try real keychain
+    let entry = Entry::new(SERVICE_NAME, username);
+    match entry {
+        Ok(e) => match e.get_password() {
+            Ok(tok) => return Ok(Some(tok)),
+            Err(keyring::Error::NoEntry) => {} // fall through to fake
+            Err(err) => warn!("OS keychain get_password failed: {}", err),
+        },
+        Err(err) => warn!("OS keychain unavailable: {}", err),
+    }
+
+    // Fallback
+    read_fake_key(username).await
+}
+
+pub async fn delete_refresh_token(username: &str) -> Result<()> {
+    // Best effort: delete from OS keychain
+    if let Ok(e) = Entry::new(SERVICE_NAME, username) {
+        let _ = e.delete_credential();
+    }
+
+    // Delete fallback
+    delete_fake_key(username).await
+}
+
+//
+// =====================================================
+// Retry wrapper
+// =====================================================
+//
+
+pub(crate) async fn send_with_retries<F>(mut make: F) -> Result<reqwest::Response>
 where
     F: FnMut() -> reqwest::RequestBuilder,
 {
     let mut delay = Duration::from_millis(RETRY_DELAY_MS);
+
     for attempt in 1..=MAX_NETWORK_RETRIES {
-        let builder = make_request();
-        match builder.send().await {
+        let req = make();
+
+        match req.send().await {
             Ok(resp) => return Ok(resp),
             Err(err) if attempt < MAX_NETWORK_RETRIES && (err.is_timeout() || err.is_connect()) => {
                 warn!(
@@ -377,5 +461,5 @@ where
         }
     }
 
-    unreachable!("retry loop should return before exhausting attempts");
+    unreachable!("retry loop must return early");
 }
