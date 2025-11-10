@@ -47,4 +47,4 @@ fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"
-rouille = "3.6.2"
+mockito = "1.4.0"
