@@ -3,14 +3,6 @@ use std::process::Output;
 use tempfile::TempDir;
 use mockito::{Matcher, Server};
 
-// FIX: Integration tests import from the crate root, not an internal module path.
-// Assuming your crate's library name is `steadystate` and `auth` is a public module.
-// If your library is not public, we need to adjust this.
-// For now, let's assume `auth` is a public module in `lib.rs` or `main.rs`.
-// If not, we might need to add `pub mod auth;` to your `main.rs`.
-// Let's try the direct import first.
-use steadystate::auth::store_refresh_token; 
-
 // --- Utility helpers ---
 
 fn write_session(path: &TempDir, login: &str, jwt: &str, jwt_exp: Option<u64>) {
@@ -37,13 +29,19 @@ fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Ou
     cmd.output().expect("run cli")
 }
 
+// Helper to setup keychain via CLI (since we can't import the lib)
+fn setup_keychain(login: &str, token: &str) -> Output {
+    run_cli(None, &[], &["test-setup-keychain", login, token])
+}
+
 // --- TESTS ---
 
 #[tokio::test]
 async fn up_handles_401_then_refreshes_then_succeeds() {
     let td = TempDir::new().unwrap();
     
-    store_refresh_token("me", "MY_REFRESH_TOKEN").await.expect("Failed to set up keychain for test");
+    let setup = setup_keychain("me", "MY_REFRESH_TOKEN");
+    assert!(setup.status.success(), "Failed to set up keychain");
 
     write_session(&td, "me", "OLD_JWT", Some(5_000_000_000));
     
@@ -52,7 +50,7 @@ async fn up_handles_401_then_refreshes_then_succeeds() {
 
     let mock_sessions_1 = server.mock("POST", "/sessions")
         .with_status(401)
-        .match_header("Authorization", "Bearer OLD_JWT")
+        .match_header("authorization", Matcher::Regex("Bearer OLD_JWT".to_string()))
         .expect(1)
         .create_async().await;
 
@@ -67,7 +65,7 @@ async fn up_handles_401_then_refreshes_then_succeeds() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"id":"abc","ssh_url":"ssh://ok"}"#)
-        .match_header("Authorization", "Bearer NEW_JWT")
+        .match_header("authorization", Matcher::Regex("Bearer NEW_JWT".to_string()))
         .expect(1)
         .create_async().await;
 
@@ -90,9 +88,13 @@ async fn up_handles_401_then_refreshes_then_succeeds() {
 async fn up_forces_refresh_when_jwt_expired() {
     let td = TempDir::new().unwrap();
 
-    store_refresh_token("me", "MY_REFRESH_TOKEN").await.expect("Failed to set up keychain for test");
+    let setup = setup_keychain("me", "MY_REFRESH_TOKEN");
+    assert!(setup.status.success(), "Failed to set up keychain");
 
-    let expired = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 10;
+    let expired = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() - 10;
     write_session(&td, "me", "EXPIRED_JWT", Some(expired));
 
     let mut server = Server::new_async().await;
@@ -109,7 +111,7 @@ async fn up_forces_refresh_when_jwt_expired() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"id":"abc","ssh_url":"ssh://ok"}"#)
-        .match_header("Authorization", "Bearer FRESH")
+        .match_header("authorization", Matcher::Regex("Bearer FRESH".to_string()))
         .expect(1)
         .create_async().await;
 
@@ -133,7 +135,8 @@ async fn logout_removes_session_and_revokes_refresh() {
 
     write_session(&td, "me", "jwt", Some(5_000_000_000));
     
-    store_refresh_token("me", "MY_REFRESH_TOKEN").await.expect("Failed to set up keychain for test");
+    let setup = setup_keychain("me", "MY_REFRESH_TOKEN");
+    assert!(setup.status.success(), "Failed to set up keychain");
     
     let mut server = Server::new_async().await;
     let url = server.url();
