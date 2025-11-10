@@ -1,6 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::Read;
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -32,92 +31,28 @@ fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Ou
     cmd.output().expect("run cli")
 }
 
-// --- Mock Server ---
+// --- Mock Server using `rouille` ---
 
 struct MockServer {
     addr: String,
-    handle: Option<std::thread::JoinHandle<()>>,
-    // The server struct owns the listener.
-    _listener: TcpListener,
+    // The handle to the server. When this is dropped, the server shuts down.
+    _handle: rouille::Server<()>,
 }
 
 impl MockServer {
     fn new<F>(handler: F) -> Self
     where
-        F: Fn(String, &mut TcpStream) + Send + 'static,
+        F: Fn(&rouille::Request) -> rouille::Response + Send + Sync + 'static,
     {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let listener_clone = listener.try_clone().unwrap();
-
-        let handle = std::thread::spawn(move || {
-            // This loop will accept multiple connections.
-            for stream in listener_clone.incoming() {
-                match stream {
-                    Ok(mut stream) => {
-                        let req = read_full_request(&mut stream);
-                        handler(req, &mut stream);
-                    }
-                    Err(_) => {
-                        // When the original listener is dropped, `incoming()` will return an error,
-                        // breaking the loop and allowing the thread to exit cleanly.
-                        break;
-                    }
-                }
-            }
-        });
+        // rouille::Server::new will find an available port on 127.0.0.1
+        let server = rouille::Server::new("127.0.0.1:0", handler).unwrap();
+        let addr = server.server_addr().to_string();
 
         Self {
             addr: format!("http://{}", addr),
-            handle: Some(handle),
-            _listener: listener,
+            _handle: server,
         }
     }
-}
-
-// FIX: The correct Drop implementation.
-impl Drop for MockServer {
-    fn drop(&mut self) {
-        // By the time this code runs, Rust has already started dropping the fields of MockServer.
-        // Specifically, `_listener` is dropped. This closes the socket, which causes the
-        // `.incoming()` loop in the thread to break.
-        if let Some(handle) = self.handle.take() {
-            // Now that the thread is guaranteed to exit, we can safely join it.
-            handle.join().unwrap();
-        }
-    }
-}
-
-fn read_full_request(stream: &mut TcpStream) -> String {
-    let mut buf = [0u8; 4096];
-    let mut out = Vec::new();
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => break, // Connection closed cleanly
-            Ok(n) => {
-                out.extend_from_slice(&buf[..n]);
-                // Heuristic: Stop reading once we have the headers. Good enough for these tests.
-                if out.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            Err(_) => break, // Timeout or other error
-        }
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-fn send_response(stream: &mut TcpStream, status: &str, body: &str) {
-    let response = format!(
-        "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status,
-        body.len(),
-        body
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
 }
 
 //
@@ -136,24 +71,26 @@ fn up_handles_401_then_refreshes_then_succeeds() {
     let call_counter = Arc::new(AtomicUsize::new(0));
     let mock_server = MockServer::new({
         let call_counter = Arc::clone(&call_counter);
-        move |req, stream| {
+        move |request| {
             let call = call_counter.fetch_add(1, Ordering::SeqCst);
-            match call {
-                0 => {
-                    assert!(req.starts_with("POST /sessions"), "Expected /sessions, got: {}", req);
-                    assert!(req.to_lowercase().contains("bearer old_jwt"));
-                    send_response(stream, "401 Unauthorized", "");
+            match (call, request.url().as_str()) {
+                (0, "/sessions") => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(request.header("Authorization").unwrap(), "Bearer OLD_JWT");
+                    rouille::Response::empty_401()
                 }
-                1 => {
-                    assert!(req.starts_with("POST /auth/refresh"), "Expected /auth/refresh, got: {}", req);
-                    send_response(stream, "200 OK", r#"{"jwt":"NEW_JWT"}"#);
+                (1, "/auth/refresh") => {
+                    assert_eq!(request.method(), "POST");
+                    rouille::Response::json(&serde_json::json!({"jwt": "NEW_JWT"}))
                 }
-                2 => {
-                    assert!(req.starts_with("POST /sessions"), "Expected retry to /sessions, got: {}", req);
-                    assert!(req.to_lowercase().contains("bearer new_jwt"));
-                    send_response(stream, "200 OK", r#"{"id":"abc","ssh_url":"ssh://ok"}"#);
+                (2, "/sessions") => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(request.header("Authorization").unwrap(), "Bearer NEW_JWT");
+                    rouille::Response::json(&serde_json::json!({"id":"abc","ssh_url":"ssh://ok"}))
                 }
-                _ => panic!("Unexpected request number {}", call),
+                _ => {
+                    panic!("Unexpected request: call {} to {}", call, request.url());
+                }
             }
         }
     });
@@ -168,7 +105,6 @@ fn up_handles_401_then_refreshes_then_succeeds() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("✅ Session created"));
 }
-
 
 #[test]
 fn up_forces_refresh_when_jwt_expired() {
@@ -183,19 +119,19 @@ fn up_forces_refresh_when_jwt_expired() {
     let call_counter = Arc::new(AtomicUsize::new(0));
     let mock_server = MockServer::new({
         let call_counter = Arc::clone(&call_counter);
-        move |req, stream| {
+        move |request| {
             let call = call_counter.fetch_add(1, Ordering::SeqCst);
-            match call {
-                0 => {
-                    assert!(req.starts_with("POST /auth/refresh"), "Expected /auth/refresh, got: {}", req);
-                    send_response(stream, "200 OK", r#"{"jwt":"FRESH"}"#);
+            match (call, request.url().as_str()) {
+                (0, "/auth/refresh") => {
+                    assert_eq!(request.method(), "POST");
+                    rouille::Response::json(&serde_json::json!({"jwt":"FRESH"}))
                 }
-                1 => {
-                    assert!(req.starts_with("POST /sessions"), "Expected /sessions, got: {}", req);
-                    assert!(req.to_lowercase().contains("bearer fresh"));
-                    send_response(stream, "200 OK", r#"{"id":"abc","ssh_url":"ssh://ok"}"#);
+                (1, "/sessions") => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(request.header("Authorization").unwrap(), "Bearer FRESH");
+                    rouille::Response::json(&serde_json::json!({"id":"abc","ssh_url":"ssh://ok"}))
                 }
-                _ => panic!("Unexpected request number {}", call),
+                _ => panic!("Unexpected request: call {} to {}", call, request.url()),
             }
         }
     });
@@ -211,7 +147,6 @@ fn up_forces_refresh_when_jwt_expired() {
     assert!(stdout.contains("✅ Session created"));
 }
 
-
 #[test]
 fn logout_removes_session_and_revokes_refresh() {
     let td = TempDir::new().unwrap();
@@ -221,9 +156,18 @@ fn logout_removes_session_and_revokes_refresh() {
     let setup = run_cli(None, &[], &["test-setup-keychain", "me", "MY_REFRESH_TOKEN"]);
     assert!(setup.status.success(), "Failed to set up keychain for test");
 
-    let mock_server = MockServer::new(|req, stream| {
-        assert!(req.starts_with("POST /auth/revoke"), "Expected /auth/revoke, got {}", req);
-        send_response(stream, "200 OK", "");
+    let mock_server = MockServer::new(|request| {
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.url(), "/auth/revoke");
+        
+        let mut data = request.data().unwrap();
+        let mut body = String::new();
+        data.read_to_string(&mut body).unwrap();
+        let json_body: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(json_body["refresh_token"], "MY_REFRESH_TOKEN");
+
+        rouille::Response::empty_204()
     });
 
     let out = run_cli(
