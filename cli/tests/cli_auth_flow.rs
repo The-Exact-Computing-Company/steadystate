@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Read;
 use std::process::Output;
 use tempfile::TempDir;
 use mockito::{Matcher, Server};
