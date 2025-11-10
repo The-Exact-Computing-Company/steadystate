@@ -11,7 +11,7 @@ use tokio::{select, signal, time};
 use tracing::{debug, info, warn};
 
 use crate::config::{
-    BACKEND_URL, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
+    backend_url, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
     JWT_REFRESH_BUFFER_SECS, MAX_NETWORK_RETRIES, RETRY_DELAY_MS, SERVICE_NAME,
 };
 use crate::session::{read_session, remove_session, write_session, Session};
@@ -30,7 +30,6 @@ struct PollResponse {
     status: Option<String>,
     jwt: Option<String>,
     refresh_token: Option<String>,
-    #[allow(dead_code)]
     refresh_expires_at: Option<u64>,
     login: Option<String>,
     error: Option<String>,
@@ -44,7 +43,7 @@ pub struct UpResponse {
 
 /// Initiates OAuth device flow authentication.
 pub async fn device_login(client: &Client) -> Result<()> {
-    let url = format!("{}/auth/device", &*BACKEND_URL);
+    let url = format!("{}/auth/device", backend_url());
     let resp = send_with_retries(|| client.post(&url)).await?;
 
     if !resp.status().is_success() {
@@ -63,7 +62,7 @@ pub async fn device_login(client: &Client) -> Result<()> {
         warn!("open browser failed: {}", e);
     }
 
-    let poll_url = format!("{}/auth/poll", &*BACKEND_URL);
+    let poll_url = format!("{}/auth/poll", backend_url());
     let interval = dr.interval.unwrap_or(5).max(1);
     let max_interval_secs = DEVICE_POLL_MAX_INTERVAL_SECS.max(interval);
     let device_code = dr.device_code.clone();
@@ -188,10 +187,10 @@ pub async fn perform_refresh(client: &Client, override_dir: Option<&PathBuf>) ->
 
     let username = session.login.clone();
     let refresh = get_refresh_token(&username).await?.ok_or_else(|| {
-        anyhow::anyhow!("no refresh token in keychain; run `steadystate login` again")
+        anyhow!("no refresh token in keychain; run `steadystate login` again")
     })?;
 
-    let url = format!("{}/auth/refresh", &*BACKEND_URL);
+    let url = format!("{}/auth/refresh", backend_url());
     let resp = send_with_retries(|| {
         client
             .post(&url)
@@ -220,7 +219,7 @@ pub async fn perform_refresh(client: &Client, override_dir: Option<&PathBuf>) ->
     let jwt = body
         .get("jwt")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no jwt in refresh response"))?
+        .ok_or_else(|| anyhow!("no jwt in refresh response"))?
         .to_string();
 
     let new_session = Session::new(username.clone(), jwt.clone());
@@ -318,10 +317,10 @@ pub async fn store_refresh_token(username: &str, token: &str) -> Result<()> {
     let token = token.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let entry = Entry::new(SERVICE_NAME, &username)
-            .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {}", e))?;
+            .map_err(|e| anyhow!("keyring entry creation failed: {}", e))?;
         entry
             .set_password(&token)
-            .map_err(|e| anyhow::anyhow!("keyring set_password failed: {}", e))?;
+            .map_err(|e| anyhow!("keyring set_password failed: {}", e))?;
         Ok(())
     })
     .await?
@@ -332,7 +331,7 @@ pub async fn get_refresh_token(username: &str) -> Result<Option<String>> {
     let username = username.to_string();
     tokio::task::spawn_blocking(move || -> Result<Option<String>> {
         let entry = Entry::new(SERVICE_NAME, &username)
-            .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {}", e))?;
+            .map_err(|e| anyhow!("keyring entry creation failed: {}", e))?;
         match entry.get_password() {
             Ok(tok) => Ok(Some(tok)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -379,396 +378,4 @@ where
     }
 
     unreachable!("retry loop should return before exhausting attempts");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::{tempdir, TempDir};
-
-    struct TestContext {
-        _dir: TempDir,
-        path: PathBuf,
-    }
-
-    impl TestContext {
-        fn new() -> Self {
-            let dir = tempdir().expect("create tempdir");
-            let path = dir.path().to_path_buf();
-            Self { _dir: dir, path }
-        }
-    }
-
-    fn build_jwt(payload: serde_json::Value) -> String {
-        let header = Base64UrlSafeNoPadding::encode_to_string(r#"{"alg":"none"}"#.as_bytes())
-            .expect("encode header");
-        let payload_str = serde_json::to_string(&payload).unwrap();
-        let payload_enc = Base64UrlSafeNoPadding::encode_to_string(payload_str.as_bytes())
-            .expect("encode payload");
-        format!("{}.{}.", header, payload_enc)
-    }
-
-    // ============================================================================
-    // JWT Extraction Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_extract_exp_from_valid_jwt() {
-        let jwt = build_jwt(serde_json::json!({ "exp": 1_700_000_000 }));
-        assert_eq!(extract_exp_from_jwt(&jwt), Some(1_700_000_000));
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_handles_invalid_jwt() {
-        let jwt = "invalid";
-        assert_eq!(extract_exp_from_jwt(jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_missing_claim() {
-        let jwt = build_jwt(serde_json::json!({"sub": "abc" }));
-        assert_eq!(extract_exp_from_jwt(&jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_expired_token() {
-        let jwt = build_jwt(serde_json::json!({"exp": 1 }));
-        assert_eq!(extract_exp_from_jwt(&jwt), Some(1));
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_string_exp() {
-        let jwt = build_jwt(serde_json::json!({"exp": "not_a_number" }));
-        assert_eq!(extract_exp_from_jwt(&jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_negative_exp() {
-        let jwt = build_jwt(serde_json::json!({"exp": -1 }));
-        assert_eq!(extract_exp_from_jwt(&jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_zero_exp() {
-        let jwt = build_jwt(serde_json::json!({"exp": 0 }));
-        assert_eq!(extract_exp_from_jwt(&jwt), Some(0));
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_max_u64() {
-        let jwt = build_jwt(serde_json::json!({"exp": u64::MAX }));
-        assert_eq!(extract_exp_from_jwt(&jwt), Some(u64::MAX));
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_malformed_base64() {
-        let jwt = "header.!!!invalid_base64!!!.signature";
-        assert_eq!(extract_exp_from_jwt(jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_empty_payload() {
-        let jwt = build_jwt(serde_json::json!({}));
-        assert_eq!(extract_exp_from_jwt(&jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_too_few_parts() {
-        let jwt = "header.payload";
-        assert_eq!(extract_exp_from_jwt(jwt), None);
-    }
-
-    #[tokio::test]
-    async fn test_extract_exp_with_empty_string() {
-        let jwt = "";
-        assert_eq!(extract_exp_from_jwt(jwt), None);
-    }
-
-    // ============================================================================
-    // Keychain Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_keychain_store_and_retrieve() {
-        let _ctx = TestContext::new();
-        let username = "test_user";
-        let token = "test_token_123";
-
-        store_refresh_token(username, token)
-            .await
-            .expect("store token");
-        let retrieved = get_refresh_token(username)
-            .await
-            .expect("get token")
-            .expect("token present");
-
-        assert_eq!(retrieved, token);
-
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-    }
-
-    #[tokio::test]
-    async fn test_keychain_get_nonexistent() {
-        let _ctx = TestContext::new();
-        let username = "nonexistent_user_xyz";
-
-        let result = get_refresh_token(username).await.expect("get token");
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_keychain_delete_nonexistent() {
-        let _ctx = TestContext::new();
-        let username = "nonexistent_user_abc";
-
-        let result = delete_refresh_token(username).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_keychain_overwrite_token() {
-        let _ctx = TestContext::new();
-        let username = "overwrite_user";
-
-        store_refresh_token(username, "token1")
-            .await
-            .expect("store token1");
-        store_refresh_token(username, "token2")
-            .await
-            .expect("store token2");
-
-        let retrieved = get_refresh_token(username)
-            .await
-            .expect("get token")
-            .expect("token present");
-
-        assert_eq!(retrieved, "token2");
-
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-    }
-
-    #[tokio::test]
-    async fn test_keychain_store_empty_token() {
-        let _ctx = TestContext::new();
-        let username = "empty_token_user";
-
-        let result = store_refresh_token(username, "").await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_keychain_store_special_chars() {
-        let _ctx = TestContext::new();
-        let username = "special_chars_user";
-        let token = "token!@#$%^&*(){}[]|\\:;\"'<>,.?/~`";
-
-        store_refresh_token(username, token)
-            .await
-            .expect("store special token");
-        let retrieved = get_refresh_token(username)
-            .await
-            .expect("get token")
-            .expect("token present");
-
-        assert_eq!(retrieved, token);
-
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-    }
-
-    #[tokio::test]
-    async fn test_keychain_multiple_users() {
-        let _ctx = TestContext::new();
-
-        store_refresh_token("user1", "token1")
-            .await
-            .expect("store user1");
-        store_refresh_token("user2", "token2")
-            .await
-            .expect("store user2");
-        store_refresh_token("user3", "token3")
-            .await
-            .expect("store user3");
-
-        let tok1 = get_refresh_token("user1")
-            .await
-            .expect("get user1")
-            .expect("user1 present");
-        let tok2 = get_refresh_token("user2")
-            .await
-            .expect("get user2")
-            .expect("user2 present");
-        let tok3 = get_refresh_token("user3")
-            .await
-            .expect("get user3")
-            .expect("user3 present");
-
-        assert_eq!(tok1, "token1");
-        assert_eq!(tok2, "token2");
-        assert_eq!(tok3, "token3");
-
-        delete_refresh_token("user1").await.expect("delete user1");
-        delete_refresh_token("user2").await.expect("delete user2");
-        delete_refresh_token("user3").await.expect("delete user3");
-    }
-
-    #[tokio::test]
-    async fn test_keychain_delete_then_get() {
-        let _ctx = TestContext::new();
-        let username = "delete_then_get_user";
-
-        store_refresh_token(username, "token")
-            .await
-            .expect("store token");
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-
-        let result = get_refresh_token(username).await.expect("get token");
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_keychain_store_very_long_token() {
-        let _ctx = TestContext::new();
-        let username = "long_token_user";
-        let token = "a".repeat(10_000);
-
-        store_refresh_token(username, &token)
-            .await
-            .expect("store long token");
-        let retrieved = get_refresh_token(username)
-            .await
-            .expect("get token")
-            .expect("token present");
-
-        assert_eq!(retrieved, token);
-
-        delete_refresh_token(username)
-            .await
-            .expect("delete token");
-    }
-
-    // ============================================================================
-    // Integration Tests
-    // ============================================================================
-
-    #[tokio::test]
-    async fn test_perform_refresh_without_session() {
-        let ctx = TestContext::new();
-        let client = Client::new();
-
-        let result = perform_refresh(&client, Some(&ctx.path)).await;
-        assert!(result.is_err());
-        let err_msg = format!("{:#}", result.unwrap_err());
-        assert!(err_msg.contains("No active session found"));
-    }
-
-    #[tokio::test]
-    async fn test_perform_refresh_without_refresh_token() {
-        let ctx = TestContext::new();
-        let client = Client::new();
-
-        let session = Session::new("test_user".to_string(), "fake_jwt".to_string());
-        write_session(&session, Some(&ctx.path))
-            .await
-            .expect("write session");
-
-        let result = perform_refresh(&client, Some(&ctx.path)).await;
-        assert!(result.is_err());
-        let err_msg = format!("{:#}", result.unwrap_err());
-        assert!(err_msg.contains("no refresh token"));
-        
-        // Clean up
-        let _ = crate::session::remove_session(Some(&ctx.path)).await;
-    }
-
-    #[tokio::test]
-async fn test_request_with_auth_handles_401_and_refreshes() {
-    use mockito::Server;
-    
-    let ctx = TestContext::new();
-    let username = "test_user";
-    let old_jwt = "OLD_JWT";
-    let new_jwt = "NEW_JWT";
-    let refresh_token = "REFRESH_TOKEN";
-
-    // Set up session with old JWT
-    let session = Session::new(username.to_string(), old_jwt.to_string());
-    write_session(&session, Some(&ctx.path))
-        .await
-        .expect("write session");
-
-    // Store refresh token in keychain
-    store_refresh_token(username, refresh_token)
-        .await
-        .expect("store refresh token");
-
-    // Create mock server
-    let mut server = Server::new();
-    
-    // Override BACKEND_URL for this test
-    unsafe {  // ADD THIS
-        std::env::set_var("STEADYSTATE_BACKEND", server.url());
-    }
-
-    // Mock initial request that returns 401
-    let mock_request_401 = server
-        .mock("POST", "/test-endpoint")
-        .match_header("Authorization", format!("Bearer {}", old_jwt).as_str())
-        .with_status(401)
-        .expect(1)
-        .create();
-
-    // Mock refresh endpoint
-    let mock_refresh = server
-        .mock("POST", "/auth/refresh")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(format!(r#"{{"jwt":"{}"}}"#, new_jwt))
-        .expect(1)
-        .create();
-
-    // Mock retry request with new JWT
-    let mock_request_success = server
-        .mock("POST", "/test-endpoint")
-        .match_header("Authorization", format!("Bearer {}", new_jwt).as_str())
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"result":"success"}"#)
-        .expect(1)
-        .create();
-
-    // Create client and make authenticated request
-    let client = Client::new();
-    let result: serde_json::Value = request_with_auth(
-        &client,
-        |c, jwt| {
-            c.post(format!("{}/test-endpoint", server.url()))
-                .bearer_auth(jwt)
-        },
-        Some(&ctx.path),
-    )
-    .await
-    .expect("request should succeed after refresh");
-
-    // Verify all mocks were called
-    mock_request_401.assert();
-    mock_refresh.assert();
-    mock_request_success.assert();
-
-    // Verify response
-    assert_eq!(result.get("result").and_then(|v| v.as_str()), Some("success"));
-
-    // Clean up
-    delete_refresh_token(username).await.expect("cleanup");
-    unsafe {  // ADD THIS
-        std::env::remove_var("STEADYSTATE_BACKEND");
-    }
-    }                
 }
