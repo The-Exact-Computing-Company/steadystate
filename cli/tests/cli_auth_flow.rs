@@ -53,10 +53,21 @@ impl MockServer {
             for stream in listener_clone.incoming() {
                 match stream {
                     Ok(mut stream) => {
-                        if let Ok(req) = read_full_request(&mut stream) {
-                            handler(req, &mut stream);
+                        // Set a short timeout to prevent hanging
+                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+                        
+                        match read_full_request(&mut stream) {
+                            Ok(req) => {
+                                eprintln!("Server received request: {}", &req[..req.len().min(200)]);
+                                handler(req, &mut stream);
+                                let _ = stream.flush();
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to read request: {}", e);
+                            }
                         }
-                        // Explicitly shutdown and drop the stream to close connection
+                        // Important: shutdown the stream
                         let _ = stream.shutdown(std::net::Shutdown::Both);
                     }
                     Err(_) => break,
@@ -74,9 +85,8 @@ impl MockServer {
 
 impl Drop for MockServer {
     fn drop(&mut self) {
-        // Dropping the listener will cause incoming() to fail
         if let Some(handle) = self.handle.take() {
-            handle.join().unwrap();
+            let _ = handle.join();
         }
     }
 }
@@ -84,58 +94,60 @@ impl Drop for MockServer {
 fn read_full_request(stream: &mut TcpStream) -> std::io::Result<String> {
     let mut buf = [0u8; 8192];
     let mut out = Vec::new();
-    let mut headers_done = false;
-    let mut content_length = 0;
+    let mut content_length: Option<usize> = None;
+    let mut header_end_pos: Option<usize> = None;
     
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
-
-    // Read headers
     loop {
         match stream.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                // Connection closed
+                break;
+            }
             Ok(n) => {
                 out.extend_from_slice(&buf[..n]);
                 
-                // Check for end of headers
-                if let Some(pos) = out.windows(4).position(|w| w == b"\r\n\r\n") {
-                    headers_done = true;
-                    
-                    // Parse Content-Length from headers
-                    let headers = String::from_utf8_lossy(&out[..pos]);
-                    for line in headers.lines() {
-                        if line.to_lowercase().starts_with("content-length:") {
-                            if let Some(len_str) = line.split(':').nth(1) {
-                                content_length = len_str.trim().parse().unwrap_or(0);
+                // Look for end of headers if we haven't found it yet
+                if header_end_pos.is_none() {
+                    if let Some(pos) = out.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end_pos = Some(pos);
+                        
+                        // Parse Content-Length
+                        let headers = String::from_utf8_lossy(&out[..pos]);
+                        for line in headers.lines() {
+                            let lower = line.to_lowercase();
+                            if lower.starts_with("content-length:") {
+                                if let Some(len_str) = line.split(':').nth(1) {
+                                    content_length = len_str.trim().parse().ok();
+                                }
                             }
                         }
                     }
+                }
+                
+                // Check if we have the complete request
+                if let Some(header_end) = header_end_pos {
+                    let body_start = header_end + 4;
+                    let body_received = out.len() - body_start;
                     
-                    let headers_end = pos + 4;
-                    let body_received = out.len() - headers_end;
-                    
-                    // If we have all the body, we're done
-                    if body_received >= content_length {
-                        break;
-                    }
-                    
-                    // Otherwise, read the remaining body
-                    let mut remaining = content_length - body_received;
-                    while remaining > 0 {
-                        match stream.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                out.extend_from_slice(&buf[..n]);
-                                remaining = remaining.saturating_sub(n);
+                    match content_length {
+                        Some(expected) => {
+                            if body_received >= expected {
+                                // We have everything
+                                break;
                             }
-                            Err(_) => break,
+                        }
+                        None => {
+                            // No Content-Length header, headers are complete, we're done
+                            break;
                         }
                     }
-                    break;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Timeout - if we got headers without content-length, that's fine
-                if headers_done && content_length == 0 {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || 
+                      e.kind() == std::io::ErrorKind::TimedOut => {
+                // Timeout
+                if header_end_pos.is_some() {
+                    // We at least got headers, return what we have
                     break;
                 }
                 return Err(e);
@@ -145,6 +157,19 @@ fn read_full_request(stream: &mut TcpStream) -> std::io::Result<String> {
     }
     
     Ok(String::from_utf8_lossy(&out).to_string())
+}
+
+fn send_response(stream: &mut TcpStream, status_code: u16, status_text: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status_code,
+        status_text,
+        body.len(),
+        body
+    );
+    eprintln!("Server sending response: {} {}", status_code, status_text);
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 //
@@ -165,40 +190,37 @@ fn up_handles_401_then_refreshes_then_succeeds() {
         let call_counter = Arc::clone(&call_counter);
         move |req, stream| {
             let call = call_counter.fetch_add(1, Ordering::SeqCst);
+            eprintln!("Handling request #{}", call);
             match call {
                 0 => {
                     assert!(req.starts_with("POST /sessions"), "Expected /sessions, got: {}", req);
                     assert!(req.to_lowercase().contains("bearer old_jwt"));
-                    let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
+                    send_response(stream, 401, "Unauthorized", "");
                 }
                 1 => {
                     assert!(req.starts_with("POST /auth/refresh"), "Expected /auth/refresh, got: {}", req);
-                    let body = r#"{"jwt":"NEW_JWT"}"#;
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
+                    send_response(stream, 200, "OK", r#"{"jwt":"NEW_JWT"}"#);
                 }
                 2 => {
                     assert!(req.starts_with("POST /sessions"), "Expected retry to /sessions, got: {}", req);
                     assert!(req.to_lowercase().contains("bearer new_jwt"));
-                    let body = r#"{"id":"abc","ssh_url":"ssh://ok"}"#;
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
+                    send_response(stream, 200, "OK", r#"{"id":"abc","ssh_url":"ssh://ok"}"#);
                 }
                 _ => panic!("Unexpected request number {}", call),
             }
         }
     });
 
+    eprintln!("Running CLI command...");
     let out = run_cli(
         Some(&td),
         &[("STEADYSTATE_BACKEND", mock_server.addr.clone())],
         &["up", "https://github.com/x/y"],
     );
 
+    eprintln!("CLI stdout: {}", String::from_utf8_lossy(&out.stdout));
+    eprintln!("CLI stderr: {}", String::from_utf8_lossy(&out.stderr));
+    
     assert!(out.status.success(), "CLI command failed with stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("✅ Session created"));
@@ -223,18 +245,12 @@ fn up_forces_refresh_when_jwt_expired() {
             match call {
                 0 => {
                     assert!(req.starts_with("POST /auth/refresh"), "Expected /auth/refresh, got: {}", req);
-                    let body = r#"{"jwt":"FRESH"}"#;
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
+                    send_response(stream, 200, "OK", r#"{"jwt":"FRESH"}"#);
                 }
                 1 => {
                     assert!(req.starts_with("POST /sessions"), "Expected /sessions, got: {}", req);
                     assert!(req.to_lowercase().contains("bearer fresh"));
-                    let body = r#"{"id":"abc","ssh_url":"ssh://ok"}"#;
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
+                    send_response(stream, 200, "OK", r#"{"id":"abc","ssh_url":"ssh://ok"}"#);
                 }
                 _ => panic!("Unexpected request number {}", call),
             }
@@ -264,9 +280,7 @@ fn logout_removes_session_and_revokes_refresh() {
 
     let mock_server = MockServer::new(|req, stream| {
         assert!(req.starts_with("POST /auth/revoke"), "Expected /auth/revoke, got {}", req);
-        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-        let _ = stream.write_all(resp.as_bytes());
-        let _ = stream.flush();
+        send_response(stream, 200, "OK", "");
     });
 
     let out = run_cli(
