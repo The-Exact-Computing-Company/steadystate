@@ -1,7 +1,6 @@
 //! SteadyState CLI - Manage reproducible development environments
 //!
 //! This CLI provides commands for authentication and session management.
-//! See README.md for usage examples.
 
 mod auth;
 mod config;
@@ -16,9 +15,9 @@ use tracing::{error, info, warn};
 
 use auth::{
     delete_refresh_token, device_login, get_refresh_token, perform_refresh, request_with_auth,
-    UpResponse,
+    store_refresh_token, UpResponse,
 };
-use config::{BACKEND_URL, CLI_VERSION, HTTP_TIMEOUT_SECS, USER_AGENT};
+use config::{backend_url, CLI_VERSION, HTTP_TIMEOUT_SECS, USER_AGENT};
 use session::{read_session, remove_session};
 
 #[derive(Parser)]
@@ -40,26 +39,28 @@ struct Cli {
 enum Commands {
     /// Start interactive login (device flow)
     Login,
+
     /// Show current logged-in user (if any)
     Whoami {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-    /// Refresh JWT using refresh token stored in keychain
+
+    /// Refresh JWT using stored refresh token
     Refresh,
-    /// Logout: revoke refresh token and clear local session
+
+    /// Logout (revoke refresh token and clear session)
     Logout,
-    /// Create a remote development session for the provided repository URL
+
+    /// Create a remote dev environment session
     Up {
-        /// Repository URL used for the remote session
         repo: String,
-        /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
 
-    /// (For integration testing only) Stores a token in the keychain.
+    /// Hidden command used only for integration tests
     #[command(hide = true)]
     TestSetupKeychain {
         username: String,
@@ -91,11 +92,11 @@ async fn whoami(json_output: bool) -> Result<()> {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
+
                     if exp > now {
-                        let remaining = exp - now;
-                        println!("JWT expires in: {}s", remaining);
+                        println!("JWT expires in: {}s", exp - now);
                     } else {
-                        println!("JWT expired (will auto-refresh on next use)");
+                        println!("JWT expired (auto-refresh will occur)");
                     }
                 }
             }
@@ -110,7 +111,7 @@ async fn whoami(json_output: bool) -> Result<()> {
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("No active session found. Run 'steadystate login' first.");
+                println!("No active session found. Run 'steadystate login'.");
             }
             Ok(())
         }
@@ -125,10 +126,12 @@ async fn logout(client: &Client) -> Result<()> {
             return Ok(());
         }
     };
+
     let username = session.login.clone();
 
     if let Some(refresh) = get_refresh_token(&username).await? {
-        let url = format!("{}/auth/revoke", &*BACKEND_URL);
+        let url = format!("{}/auth/revoke", backend_url());
+
         match auth::send_with_retries(|| {
             client
                 .post(&url)
@@ -136,33 +139,28 @@ async fn logout(client: &Client) -> Result<()> {
         })
         .await
         {
-            Ok(resp) if resp.status().is_success() => {
-                info!("Refresh token revoked on server");
-            }
-            Ok(resp) => {
-                warn!("Server revoke returned status: {}", resp.status());
-            }
-            Err(e) => {
-                warn!("Failed to revoke on server: {:#}", e);
-            }
+            Ok(resp) if resp.status().is_success() => info!("Refresh token revoked"),
+            Ok(resp) => warn!("Server revoke status {}", resp.status()),
+            Err(e) => warn!("Failed to revoke refresh token: {}", e),
         }
     }
 
     let _ = delete_refresh_token(&username).await;
     let _ = remove_session(None).await;
-    println!("Logged out (local tokens removed).");
+
+    println!("Logged out.");
     Ok(())
 }
 
 async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
     Url::parse(&repo).context(
-        "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
+        "Invalid repository URL. Provide a fully-qualified URL like https://github.com/user/repo.",
     )?;
 
     let resp: UpResponse = request_with_auth(
         client,
         |c, jwt| {
-            c.post(format!("{}/sessions", &*BACKEND_URL))
+            c.post(format!("{}/sessions", backend_url()))
                 .bearer_auth(jwt)
                 .json(&serde_json::json!({ "repo": repo.clone() }))
         },
@@ -191,11 +189,11 @@ async fn main() -> Result<()> {
 
     if std::env::var("RUST_LOG")
         .ok()
-        .map(|value| value.to_lowercase().contains("debug"))
+        .map(|v| v.to_lowercase().contains("debug"))
         .unwrap_or(false)
     {
         eprintln!(
-            "⚠️ Debug logging is enabled; JWTs and refresh tokens may appear in logs. Proceed carefully."
+            "⚠️ Debug logging enabled; sensitive tokens may appear in logs."
         );
     }
 
@@ -223,42 +221,47 @@ async fn main() -> Result<()> {
 
     match cmd {
         Commands::Login => {
-            if let Err(e) = device_login(&client).await.context(
-                "Failed to reach backend. Check network connectivity and the STEADYSTATE_BACKEND environment variable.",
-            ) {
-                error!("login failed: {:#}", e);
+            if let Err(e) = device_login(&client)
+                .await
+                .context("Failed to reach backend. Check STEADYSTATE_BACKEND.")
+            {
+                error!("login failed: {}", e);
                 std::process::exit(1);
             }
         }
+
         Commands::Whoami { json } => {
             if let Err(e) = whoami(json).await {
-                error!("whoami failed: {:#}", e);
+                error!("whoami failed: {}", e);
                 std::process::exit(1);
             }
         }
+
         Commands::Refresh => match perform_refresh(&client, None).await {
             Ok(_) => println!("Token refreshed."),
             Err(e) => {
-                error!("refresh failed: {:#}", e);
+                error!("refresh failed: {}", e);
                 std::process::exit(1);
             }
         },
+
         Commands::Logout => {
             if let Err(e) = logout(&client).await {
-                error!("logout failed: {:#}", e);
+                error!("logout failed: {}", e);
                 std::process::exit(1);
             }
         }
+
         Commands::Up { repo, json } => {
             if let Err(e) = up(&client, repo, json).await {
-                error!("up failed: {:#}", e);
+                error!("up failed: {}", e);
                 std::process::exit(1);
             }
         }
-        // This is the crucial new part
+
         Commands::TestSetupKeychain { username, token } => {
-            if let Err(e) = auth::store_refresh_token(&username, &token).await {
-                eprintln!("error: test-setup-keychain failed: {:#}", e);
+            if let Err(e) = store_refresh_token(&username, &token).await {
+                eprintln!("error: test-setup-keychain failed: {}", e);
                 std::process::exit(1);
             }
         }
@@ -266,3 +269,4 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+ 
