@@ -58,6 +58,13 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// (For integration testing only) Stores a token in the keychain.
+    #[command(hide = true)]
+    TestSetupKeychain {
+        username: String,
+        token: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -248,7 +255,14 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        // This is the crucial new part
+        Commands::TestSetupKeychain { username, token } => {
+            if let Err(e) = auth::store_refresh_token(&username, &token).await {
+                eprintln!("error: test-setup-keychain failed: {:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
-        }
+}
