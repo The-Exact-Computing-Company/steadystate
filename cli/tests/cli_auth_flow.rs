@@ -1,9 +1,9 @@
 use std::fs;
-use std::io::Read;
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
+use mockito::{mock, Matcher};
 
 // --- Utility helpers ---
 
@@ -31,36 +31,7 @@ fn run_cli(path: Option<&TempDir>, envs: &[(&str, String)], args: &[&str]) -> Ou
     cmd.output().expect("run cli")
 }
 
-// --- Mock Server using `rouille` ---
-
-// FIX: Make the MockServer struct generic over the handler type `F`.
-struct MockServer<F>
-where
-    F: Fn(&rouille::Request) -> rouille::Response + Send + Sync + 'static,
-{
-    addr: String,
-    _handle: rouille::Server<F>,
-}
-
-// FIX: Implement the `new` function for the generic MockServer.
-impl<F> MockServer<F>
-where
-    F: Fn(&rouille::Request) -> rouille::Response + Send + Sync + 'static,
-{
-    fn new(handler: F) -> Self {
-        let server = rouille::Server::new("127.0.0.1:0", handler).unwrap();
-        let addr = server.server_addr().to_string();
-
-        Self {
-            addr: format!("http://{}", addr),
-            _handle: server,
-        }
-    }
-}
-
-//
 // --- TESTS ---
-//
 
 #[test]
 fn up_handles_401_then_refreshes_then_succeeds() {
@@ -71,40 +42,41 @@ fn up_handles_401_then_refreshes_then_succeeds() {
 
     write_session(&td, "me", "OLD_JWT", Some(5_000_000_000));
 
-    let call_counter = Arc::new(AtomicUsize::new(0));
-    let mock_server = MockServer::new({
-        let call_counter = Arc::clone(&call_counter);
-        move |request| {
-            let call = call_counter.fetch_add(1, Ordering::SeqCst);
-            match (call, request.url().as_str()) {
-                (0, "/sessions") => {
-                    assert_eq!(request.method(), "POST");
-                    assert_eq!(request.header("Authorization").unwrap(), "Bearer OLD_JWT");
-                    // FIX: Use the correct method to create a 401 response.
-                    rouille::Response::text("Unauthorized").with_status_code(401)
-                }
-                (1, "/auth/refresh") => {
-                    assert_eq!(request.method(), "POST");
-                    rouille::Response::json(&serde_json::json!({"jwt": "NEW_JWT"}))
-                }
-                (2, "/sessions") => {
-                    assert_eq!(request.method(), "POST");
-                    assert_eq!(request.header("Authorization").unwrap(), "Bearer NEW_JWT");
-                    rouille::Response::json(&serde_json::json!({"id":"abc","ssh_url":"ssh://ok"}))
-                }
-                _ => {
-                    panic!("Unexpected request: call {} to {}", call, request.url());
-                }
-            }
-        }
-    });
+    // Mock the initial request that gets a 401
+    let mock_sessions_1 = mock("POST", "/sessions")
+        .with_status(401)
+        .match_header("Authorization", "Bearer OLD_JWT")
+        .expect(1)
+        .create();
+
+    // Mock the refresh request
+    let mock_refresh = mock("POST", "/auth/refresh")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jwt":"NEW_JWT"}"#)
+        .expect(1)
+        .create();
+
+    // Mock the retried request
+    let mock_sessions_2 = mock("POST", "/sessions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"id":"abc","ssh_url":"ssh://ok"}"#)
+        .match_header("Authorization", "Bearer NEW_JWT")
+        .expect(1)
+        .create();
 
     let out = run_cli(
         Some(&td),
-        &[("STEADYSTATE_BACKEND", mock_server.addr.clone())],
+        &[("STEADYSTATE_BACKEND", mockito::server_url())],
         &["up", "https://github.com/x/y"],
     );
-
+    
+    // Assert that all mocks were called as expected
+    mock_sessions_1.assert();
+    mock_refresh.assert();
+    mock_sessions_2.assert();
+    
     assert!(out.status.success(), "CLI command failed with stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("✅ Session created"));
@@ -120,31 +92,31 @@ fn up_forces_refresh_when_jwt_expired() {
     let expired = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 10;
     write_session(&td, "me", "EXPIRED_JWT", Some(expired));
 
-    let call_counter = Arc::new(AtomicUsize::new(0));
-    let mock_server = MockServer::new({
-        let call_counter = Arc::clone(&call_counter);
-        move |request| {
-            let call = call_counter.fetch_add(1, Ordering::SeqCst);
-            match (call, request.url().as_str()) {
-                (0, "/auth/refresh") => {
-                    assert_eq!(request.method(), "POST");
-                    rouille::Response::json(&serde_json::json!({"jwt":"FRESH"}))
-                }
-                (1, "/sessions") => {
-                    assert_eq!(request.method(), "POST");
-                    assert_eq!(request.header("Authorization").unwrap(), "Bearer FRESH");
-                    rouille::Response::json(&serde_json::json!({"id":"abc","ssh_url":"ssh://ok"}))
-                }
-                _ => panic!("Unexpected request: call {} to {}", call, request.url()),
-            }
-        }
-    });
+    // Mock the proactive refresh request
+    let mock_refresh = mock("POST", "/auth/refresh")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jwt":"FRESH"}"#)
+        .expect(1)
+        .create();
+
+    // Mock the original /sessions request, now with the fresh token
+    let mock_sessions = mock("POST", "/sessions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"id":"abc","ssh_url":"ssh://ok"}"#)
+        .match_header("Authorization", "Bearer FRESH")
+        .expect(1)
+        .create();
 
     let out = run_cli(
         Some(&td),
-        &[("STEADYSTATE_BACKEND", mock_server.addr.clone())],
+        &[("STEADYSTATE_BACKEND", mockito::server_url())],
         &["up", "https://github.com/x/y"],
     );
+
+    mock_refresh.assert();
+    mock_sessions.assert();
 
     assert!(out.status.success(), "CLI command failed with stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
@@ -160,29 +132,23 @@ fn logout_removes_session_and_revokes_refresh() {
     let setup = run_cli(None, &[], &["test-setup-keychain", "me", "MY_REFRESH_TOKEN"]);
     assert!(setup.status.success(), "Failed to set up keychain for test");
 
-    let mock_server = MockServer::new(|request| {
-        assert_eq!(request.method(), "POST");
-        assert_eq!(request.url(), "/auth/revoke");
-        
-        let mut data = request.data().unwrap();
-        let mut body = String::new();
-        data.read_to_string(&mut body).unwrap();
-        let json_body: serde_json::Value = serde_json::from_str(&body).unwrap();
-
-        assert_eq!(json_body["refresh_token"], "MY_REFRESH_TOKEN");
-
-        // Use the idiomatic empty 204 No Content response
-        rouille::Response::empty_204()
-    });
+    // Mock the revoke endpoint
+    let mock_revoke = mock("POST", "/auth/revoke")
+        .with_status(204) // 204 No Content is common for revoke
+        .match_body(Matcher::JsonString(r#"{"refresh_token":"MY_REFRESH_TOKEN"}"#.to_string()))
+        .expect(1)
+        .create();
 
     let out = run_cli(
         Some(&td),
-        &[("STEADYSTATE_BACKEND", mock_server.addr.clone())],
+        &[("STEADYSTATE_BACKEND", mockito::server_url())],
         &["logout"],
     );
+
+    mock_revoke.assert();
 
     assert!(out.status.success(), "CLI command failed with stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("Logged out"));
     assert!(!td.path().join("steadystate/session.json").exists());
-}
+} 
