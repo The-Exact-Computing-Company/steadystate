@@ -24,7 +24,7 @@ mod helpers {
 
     impl MockResponse {
         /// Converts the enum variant into a full HTTP response string.
-        /// Crucially, it ensures `Connection: close` is always present.
+        /// Crucially, it ensures `Connection: close` is always present to prevent flaky tests.
         fn into_http_string(self) -> String {
             match self {
                 MockResponse::Json(val) => {
@@ -46,11 +46,6 @@ mod helpers {
     }
 
     /// Manages the entire environment for a single integration test run.
-    /// - Creates a temporary directory for config/session files.
-    /// - Spawns a scripted mock backend server.
-    /// - Provides helpers to set up preconditions (session files, keyring).
-    /// - Provides a method to run the CLI and assert its success, capturing
-    ///   server requests and providing rich debug output on failure.
     pub struct TestHarness {
         pub tempdir: TempDir,
         server_url: String,
@@ -74,7 +69,7 @@ mod helpers {
         ///
         /// On success, it returns the process output and a vec of requests the server received.
         /// On failure, it panics with detailed output from the CLI and the server.
-        pub fn run_cli_and_assert(mut self, args: &[&str]) -> (Output, Vec<String>) {
+        pub fn run_cli_and_assert(&mut self, args: &[&str]) -> (Output, Vec<String>) {
             let output = {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_steadystate"));
                 cmd.env("STEADYSTATE_CONFIG_DIR", self.tempdir.path());
@@ -83,6 +78,8 @@ mod helpers {
                 cmd.output().expect("run steadystate cli")
             };
 
+            // Take the handle from the Option so we can join it. The harness can no
+            // longer be used to run a *second* command, which is fine.
             let requests = self.server_handle.take().unwrap().join().unwrap();
 
             if !output.status.success() {
@@ -197,7 +194,7 @@ fn up_handles_401_then_refreshes_then_succeeds() {
         MockResponse::Json(json!({ "jwt": "new-jwt-123" })),
         MockResponse::Json(json!({ "id": "session-999", "ssh_url": "ssh://after-refresh" })),
     ];
-    let harness = TestHarness::new(script);
+    let mut harness = TestHarness::new(script);
     harness.create_future_session();
     harness.set_keyring_password("tester", "refresh-abc");
 
@@ -218,7 +215,7 @@ fn up_forces_refresh_when_jwt_expired() {
         MockResponse::Json(json!({ "jwt": "fresh-jwt-321" })),
         MockResponse::Json(json!({ "id": "session-expired", "ssh_url": "ssh://expired.example" })),
     ];
-    let harness = TestHarness::new(script);
+    let mut harness = TestHarness::new(script);
     harness.create_expired_session();
     harness.set_keyring_password("tester", "refresh-token-xyz");
 
@@ -232,7 +229,7 @@ fn up_forces_refresh_when_jwt_expired() {
 #[test]
 fn logout_removes_session_and_revokes_refresh() {
     let script = vec![MockResponse::Ok];
-    let harness = TestHarness::new(script);
+    let mut harness = TestHarness::new(script);
     harness.create_future_session();
     harness.set_keyring_password("tester", "refresh-to-revoke");
 
@@ -241,7 +238,7 @@ fn logout_removes_session_and_revokes_refresh() {
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /auth/revoke"));
 
-    // Session file removed
+    // Session file removed - this now compiles correctly
     let session_path = harness.tempdir.path().join("steadystate/session.json");
     assert!(!session_path.exists(), "Session file was not removed");
 
