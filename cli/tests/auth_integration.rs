@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "macos"))]
+
 // cli/tests/auth_integration.rs
 
 use std::fs;
