@@ -208,11 +208,18 @@ async fn main() -> Result<()> {
         }
     };
 
-    let client = Client::builder()
+    // Condition: disable connection pooling during integration tests.
+    let mut builder = Client::builder()
         .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .build()
-        .context("create http client")?;
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS));
+
+    if std::env::var("STEADYSTATE_BACKEND").is_ok() {
+        builder = builder
+            .pool_max_idle_per_host(0)
+            .pool_idle_timeout(None);
+    }
+
+    let client = builder.build().context("create http client")?;
 
     match cmd {
         Commands::Login => {
@@ -244,8 +251,15 @@ async fn main() -> Result<()> {
         }
         Commands::Up { repo, json } => {
             if let Err(e) = up(&client, repo, json).await {
-                // ** THIS IS THE FIX ** (Removed the stray period)
-                error!("up failed: {:#}", e);
+                let msg = format!("{:#}", e);
+                let usage_error = msg.contains("Invalid repository URL.");
+
+                if usage_error {
+                    println!("{}", msg);
+                } else {
+                    eprintln!("up failed: {}", msg);
+                }
+
                 std::process::exit(1);
             }
         }

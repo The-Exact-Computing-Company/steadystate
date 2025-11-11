@@ -26,5 +26,13 @@ jobs:
 
       - uses: cachix/install-nix-action@v31
 
+      - name: Set up a temporary keychain
+        if: runner.os == 'macOS'
+        run: |
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+
       - name: Run unit tests
         run: nix develop . -c cargo test -p steadystate
