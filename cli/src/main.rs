@@ -40,25 +40,20 @@ struct Cli {
 enum Commands {
     /// Start interactive login (device flow)
     Login,
-
     /// Show current logged-in user (if any)
     Whoami {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-
     /// Refresh JWT using refresh token stored in keychain
     Refresh,
-
     /// Logout: revoke refresh token and clear local session
     Logout,
-
     /// Create a remote development session for the provided repository URL
     Up {
         /// Repository URL used for the remote session
         repo: String,
-
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -213,25 +208,18 @@ async fn main() -> Result<()> {
         }
     };
 
-    // --------------------------------------------------------------------
-    // FIX: Build HTTP client with connection pooling disabled in test mode
-    // --------------------------------------------------------------------
+    // Condition: disable connection pooling during integration tests.
     let mut builder = Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS));
 
-    // Integration tests set STEADYSTATE_BACKEND.
-    if std::env::var_os("STEADYSTATE_BACKEND").is_some() {
+    if std::env::var("STEADYSTATE_BACKEND").is_ok() {
         builder = builder
             .pool_max_idle_per_host(0)
-            .pool_idle_timeout(Duration::from_secs(0))
-            .tcp_keepalive(None)
-            .http1_only();
+            .pool_idle_timeout(None);
     }
 
-    let client = builder
-        .build()
-        .context("create http client")?;
+    let client = builder.build().context("create http client")?;
 
     match cmd {
         Commands::Login => {
@@ -263,7 +251,15 @@ async fn main() -> Result<()> {
         }
         Commands::Up { repo, json } => {
             if let Err(e) = up(&client, repo, json).await {
-                eprintln!("up failed: {:#}", e);
+                let msg = format!("{:#}", e);
+                let usage_error = msg.contains("Invalid repository URL.");
+
+                if usage_error {
+                    println!("{}", msg);
+                } else {
+                    eprintln!("up failed: {}", msg);
+                }
+
                 std::process::exit(1);
             }
         }
