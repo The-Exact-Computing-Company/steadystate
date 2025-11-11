@@ -1,182 +1,208 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::Duration;
-
 use tempfile::TempDir;
 
-// ---------------------------------------------------------------------------
-// Test Helpers (copied from your existing tests so this file is standalone)
-// ---------------------------------------------------------------------------
+// Using a module to encapsulate all the test infrastructure.
+// The tests themselves remain clean and at the top level.
+mod helpers {
+    use super::*;
+    use serde_json::json;
 
-fn run_cli(
-    tempdir: Option<&TempDir>,
-    extra_env: &[(&str, String)],
-    args: &[&str],
-) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_steadystate"));
-    if let Some(dir) = tempdir {
-        cmd.env("STEADYSTATE_CONFIG_DIR", dir.path());
+    /// Defines the possible scripted responses from the mock server.
+    /// This makes test scripts more readable and less error-prone.
+    pub enum MockResponse {
+        /// Responds with HTTP 200 OK and a JSON body.
+        Json(serde_json::Value),
+        /// Responds with HTTP 401 Unauthorized.
+        Unauthorized,
+        /// Responds with a generic HTTP 200 OK and no body.
+        Ok,
     }
-    for (key, value) in extra_env {
-        cmd.env(key, value);
-    }
-    cmd.args(args);
-    cmd.output().expect("run steadystate cli")
-}
 
-fn write_session(tempdir: &TempDir, login: &str, jwt: &str, jwt_exp: Option<u64>) {
-    let service_dir = tempdir.path().join("steadystate");
-    fs::create_dir_all(&service_dir).expect("create service dir");
-    let session_path = service_dir.join("session.json");
-    let session = serde_json::json!({
-        "login": login,
-        "jwt": jwt,
-        "jwt_exp": jwt_exp,
-    });
-    fs::write(&session_path, serde_json::to_vec_pretty(&session).unwrap())
-        .expect("write session file");
-}
-
-fn create_session_with_future_expiry(tempdir: &TempDir) {
-    let future = std::time::SystemTime::now()
-        .checked_add(Duration::from_secs(3600))
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    write_session(tempdir, "tester", "test-jwt", Some(future));
-}
-
-fn full_request_length(buffer: &[u8]) -> Option<usize> {
-    let header_end = buffer.windows(4).position(|w| w == b"\r\n\r\n")?;
-    let headers = &buffer[..header_end + 4];
-    let headers_str = std::str::from_utf8(headers).ok()?;
-    let content_length = headers_str
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.trim().eq_ignore_ascii_case("Content-Length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-    let total = header_end + 4 + content_length;
-    if buffer.len() >= total {
-        Some(total)
-    } else {
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Scripted mock server supporting multiple sequential responses
-// ---------------------------------------------------------------------------
-
-fn spawn_scripted_server(
-    responses: Vec<(String, bool)>,
-) -> (String, std::thread::JoinHandle<Vec<String>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted server");
-    let addr = listener.local_addr().unwrap();
-
-    let handle = std::thread::spawn(move || {
-        let mut requests = Vec::new();
-
-        for (body, is_json) in responses {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buffer = Vec::new();
-
-            loop {
-                let mut chunk = [0u8; 1024];
-                let n = stream.read(&mut chunk).unwrap();
-                if n == 0 {
-                    break;
+    impl MockResponse {
+        /// Converts the enum variant into a full HTTP response string.
+        /// Crucially, it ensures `Connection: close` is always present.
+        fn into_http_string(self) -> String {
+            match self {
+                MockResponse::Json(val) => {
+                    let body = serde_json::to_string(&val).unwrap();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
                 }
-                buffer.extend_from_slice(&chunk[..n]);
-                if let Some(len) = full_request_length(&buffer) {
-                    buffer.truncate(len);
-                    break;
+                MockResponse::Unauthorized => {
+                    "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string()
+                }
+                MockResponse::Ok => {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string()
                 }
             }
+        }
+    }
 
-            requests.push(String::from_utf8_lossy(&buffer).to_string());
+    /// Manages the entire environment for a single integration test run.
+    /// - Creates a temporary directory for config/session files.
+    /// - Spawns a scripted mock backend server.
+    /// - Provides helpers to set up preconditions (session files, keyring).
+    /// - Provides a method to run the CLI and assert its success, capturing
+    ///   server requests and providing rich debug output on failure.
+    pub struct TestHarness {
+        pub tempdir: TempDir,
+        server_url: String,
+        server_handle: Option<std::thread::JoinHandle<Vec<String>>>,
+    }
 
-            let response = if is_json {
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-            } else {
-                body.clone()
-            };
-
-            stream.write_all(response.as_bytes()).unwrap();
+    impl TestHarness {
+        /// Creates a new test harness, spinning up a mock server with the given script.
+        pub fn new(script: Vec<MockResponse>) -> Self {
+            let tempdir = TempDir::new().expect("create tempdir");
+            let (server_url, server_handle) = spawn_scripted_server(script);
+            Self {
+                tempdir,
+                server_url,
+                server_handle: Some(server_handle),
+            }
         }
 
-        requests
-    });
+        /// Runs the CLI with the given arguments, automatically setting the required
+        /// environment variables.
+        ///
+        /// On success, it returns the process output and a vec of requests the server received.
+        /// On failure, it panics with detailed output from the CLI and the server.
+        pub fn run_cli_and_assert(mut self, args: &[&str]) -> (Output, Vec<String>) {
+            let output = {
+                let mut cmd = Command::new(env!("CARGO_BIN_EXE_steadystate"));
+                cmd.env("STEADYSTATE_CONFIG_DIR", self.tempdir.path());
+                cmd.env("STEADYSTATE_BACKEND", &self.server_url);
+                cmd.args(args);
+                cmd.output().expect("run steadystate cli")
+            };
 
-    (format!("http://{}", addr), handle)
+            let requests = self.server_handle.take().unwrap().join().unwrap();
+
+            if !output.status.success() {
+                eprintln!("=== CLI STDOUT ===\n{}", String::from_utf8_lossy(&output.stdout));
+                eprintln!("=== CLI STDERR ===\n{}", String::from_utf8_lossy(&output.stderr));
+                eprintln!("=== SERVER REQUESTS ===");
+                for (i, r) in requests.iter().enumerate() {
+                    eprintln!("--- Request {} ---\n{}\n", i, r);
+                }
+                panic!("CLI failed unexpectedly");
+            }
+
+            (output, requests)
+        }
+
+        /// Helper to write a session.json file within the test's temp directory.
+        pub fn create_session(&self, login: &str, jwt: &str, jwt_exp: Option<u64>) {
+            let service_dir = self.tempdir.path().join("steadystate");
+            fs::create_dir_all(&service_dir).expect("create service dir");
+            let session_path = service_dir.join("session.json");
+            let session = json!({ "login": login, "jwt": jwt, "jwt_exp": jwt_exp });
+            fs::write(&session_path, serde_json::to_vec_pretty(&session).unwrap())
+                .expect("write session file");
+        }
+
+        /// Helper to create a session file with a valid (future) expiry.
+        pub fn create_future_session(&self) {
+            let future = std::time::SystemTime::now()
+                .checked_add(Duration::from_secs(3600))
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            self.create_session("tester", "test-jwt", Some(future));
+        }
+
+        /// Helper to create a session file with an expired JWT.
+        pub fn create_expired_session(&self) {
+            let expired = std::time::SystemTime::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            self.create_session("tester", "expired-jwt", Some(expired));
+        }
+
+        /// Helper to set a password in the keyring for the given user.
+        pub fn set_keyring_password(&self, username: &str, password: &str) {
+            keyring::Entry::new("steadystate", username)
+                .unwrap()
+                .set_password(password)
+                .unwrap();
+        }
+    }
+
+    /// Spawns a simple TCP server that serves a predefined sequence of responses.
+    fn spawn_scripted_server(
+        responses: Vec<MockResponse>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted server");
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept connection");
+                let mut buffer = Vec::new();
+
+                // Simple loop to read a full HTTP request based on Content-Length.
+                loop {
+                    let mut chunk = [0u8; 1024];
+                    let n = stream.read(&mut chunk).unwrap();
+                    if n == 0 { break; }
+                    buffer.extend_from_slice(&chunk[..n]);
+                    if full_request_length(&buffer).is_some() { break; }
+                }
+
+                requests.push(String::from_utf8_lossy(&buffer).to_string());
+                stream.write_all(response.into_http_string().as_bytes()).unwrap();
+            }
+            requests
+        });
+
+        (format!("http://{}", addr), handle)
+    }
+
+    /// Utility to find the total length of an HTTP request in a buffer.
+    fn full_request_length(buffer: &[u8]) -> Option<usize> {
+        let end = buffer.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+        let headers_str = std::str::from_utf8(&buffer[..end]).ok()?;
+        let content_length = headers_str
+            .lines()
+            .find_map(|line| line.to_lowercase().strip_prefix("content-length:")?.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let total = end + content_length;
+        if buffer.len() >= total { Some(total) } else { None }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// ✅ TEST 1: up handles 401 -> refresh -> success
+// Integration Tests
 // ---------------------------------------------------------------------------
+
+use helpers::{MockResponse, TestHarness};
+use serde_json::json;
 
 #[test]
 fn up_handles_401_then_refreshes_then_succeeds() {
-    let tempdir = TempDir::new().expect("tempdir");
-    create_session_with_future_expiry(&tempdir);
-
-    // Put refresh token in keychain
-    keyring::Entry::new("steadystate", "tester")
-        .unwrap()
-        .set_password("refresh-abc")
-        .unwrap();
-
     let script = vec![
-        // First /sessions → 401 unauthorized
-        (
-            "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
-            false,
-        ),
-        // /auth/refresh → return fresh JWT
-        (r#"{ "jwt": "new-jwt-123" }"#.to_string(), true),
-        // Second /sessions → success
-        (
-            r#"{ "id": "session-999", "ssh_url": "ssh://after-refresh" }"#.to_string(),
-            true,
-        ),
+        MockResponse::Unauthorized,
+        MockResponse::Json(json!({ "jwt": "new-jwt-123" })),
+        MockResponse::Json(json!({ "id": "session-999", "ssh_url": "ssh://after-refresh" })),
     ];
+    let harness = TestHarness::new(script);
+    harness.create_future_session();
+    harness.set_keyring_password("tester", "refresh-abc");
 
-    let (base_url, handle) = spawn_scripted_server(script);
+    let (output, requests) = harness.run_cli_and_assert(&["up", "https://github.com/example/repo"]);
 
-    let output = run_cli(
-    Some(&tempdir),
-    &[("STEADYSTATE_BACKEND", base_url.clone())],
-    &["up", "https://github.com/example/repo"],
-);
-
-if !output.status.success() {
-    eprintln!("=== CLI STDOUT ===\n{}", String::from_utf8_lossy(&output.stdout));
-    eprintln!("=== CLI STDERR ===\n{}", String::from_utf8_lossy(&output.stderr));
-
-    let requests = handle.join().unwrap();
-    eprintln!("=== SERVER REQUESTS ===");
-    for (i, r) in requests.iter().enumerate() {
-        eprintln!("--- Request {} ---\n{}\n", i, r);
-    }
-
-    panic!("CLI failed unexpectedly");
-}
- 
-    assert!(output.status.success());
-
-    let requests = handle.join().unwrap();
     assert_eq!(requests.len(), 3);
     assert!(requests[0].starts_with("POST /sessions"));
     assert!(requests[1].starts_with("POST /auth/refresh"));
@@ -186,94 +212,40 @@ if !output.status.success() {
     assert!(stdout.contains("session-999"));
 }
 
-// ---------------------------------------------------------------------------
-// ✅ TEST 2: expired JWT forces immediate refresh before /sessions
-// ---------------------------------------------------------------------------
-
 #[test]
 fn up_forces_refresh_when_jwt_expired() {
-    let tempdir = TempDir::new().expect("tempdir");
-
-    // Write expired JWT session
-    let expired = std::time::SystemTime::now()
-        .checked_sub(Duration::from_secs(10))
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    write_session(&tempdir, "tester", "expired-jwt", Some(expired));
-
-    keyring::Entry::new("steadystate", "tester")
-        .unwrap()
-        .set_password("refresh-token-xyz")
-        .unwrap();
-
     let script = vec![
-        // Refresh returns new JWT
-        (r#"{ "jwt": "fresh-jwt-321" }"#.to_string(), true),
-        // Then /sessions returns success
-        (
-            r#"{ "id": "session-expired", "ssh_url": "ssh://expired.example" }"#.to_string(),
-            true,
-        ),
+        MockResponse::Json(json!({ "jwt": "fresh-jwt-321" })),
+        MockResponse::Json(json!({ "id": "session-expired", "ssh_url": "ssh://expired.example" })),
     ];
+    let harness = TestHarness::new(script);
+    harness.create_expired_session();
+    harness.set_keyring_password("tester", "refresh-token-xyz");
 
-    let (base_url, handle) = spawn_scripted_server(script);
+    let (_, requests) = harness.run_cli_and_assert(&["up", "https://github.com/example/repo"]);
 
-    let output = run_cli(
-        Some(&tempdir),
-        &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["up", "https://github.com/example/repo"],
-    );
-
-    assert!(output.status.success());
-
-    let requests = handle.join().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with("POST /auth/refresh"));
     assert!(requests[1].starts_with("POST /sessions"));
 }
 
-// ---------------------------------------------------------------------------
-// ✅ TEST 3: logout revokes refresh token + removes session file
-// ---------------------------------------------------------------------------
-
 #[test]
 fn logout_removes_session_and_revokes_refresh() {
-    let tempdir = TempDir::new().expect("tempdir");
-    create_session_with_future_expiry(&tempdir);
+    let script = vec![MockResponse::Ok];
+    let harness = TestHarness::new(script);
+    harness.create_future_session();
+    harness.set_keyring_password("tester", "refresh-to-revoke");
 
-    keyring::Entry::new("steadystate", "tester")
-        .unwrap()
-        .set_password("refresh-to-revoke")
-        .unwrap();
+    let (_, requests) = harness.run_cli_and_assert(&["logout"]);
 
-    let script = vec![(
-        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string(),
-        false,
-    )];
-
-    let (base_url, handle) = spawn_scripted_server(script);
-
-    let output = run_cli(
-        Some(&tempdir),
-        &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["logout"],
-    );
-
-    assert!(output.status.success());
-
-    let requests = handle.join().unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /auth/revoke"));
 
     // Session file removed
-    let session_path = tempdir.path().join("steadystate/session.json");
-    assert!(!session_path.exists());
+    let session_path = harness.tempdir.path().join("steadystate/session.json");
+    assert!(!session_path.exists(), "Session file was not removed");
 
     // Keychain token removed
-    let res = keyring::Entry::new("steadystate", "tester")
-        .unwrap()
-        .get_password();
-    assert!(res.is_err());
+    let res = keyring::Entry::new("steadystate", "tester").unwrap().get_password();
+    assert!(res.is_err(), "Keyring entry was not removed");
 }
