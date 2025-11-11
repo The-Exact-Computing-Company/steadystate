@@ -106,7 +106,7 @@ fn spawn_scripted_server(
 
             let response = if is_json {
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 )
@@ -141,7 +141,7 @@ fn up_handles_401_then_refreshes_then_succeeds() {
     let script = vec![
         // First /sessions → 401 unauthorized
         (
-            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_string(),
+            "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
             false,
         ),
         // /auth/refresh → return fresh JWT
