@@ -43,3 +43,12 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 - **Debug logs leaking tokens**: Avoid `RUST_LOG=debug` in production environments; tokens can appear in logs.
 
 For more detailed walkthroughs, see the top-level repository README.
+
+## License
+Copyright (C) 2025 The Exact Computing Company
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License version 3,
+as published by the Free Software Foundation.
+
+

@@ -1,28 +1,64 @@
 # SteadyState
 
-This repository contains all components of **SteadyState**, a command-line and backend system for creating reproducible, collaborative computing environments on demand.
+**SteadyState** is a platform for creating **reproducible**, **ephemeral**, and
+**collaborative** development environments directly from Git repositories. It
+consists of two main components:
 
-SteadyState is developed and maintained by **The Exact Computing Company**.
+* **SteadyState CLI** — a Rust-based command-line client used to authenticate,
+  launch, and manage sessions.
+* **SteadyState Backend** — a Rust/Axum service that handles authentication,
+  environment orchestration, and session lifecycle.
+
+The entire system is designed to provide a fast, minimal, transparent way to
+enter fully configured cloud developer environments with zero manual setup.
 
 ---
 
-## Overview
+## What SteadyState Provides
 
-SteadyState lets users start a fully configured, remote development environment directly from a Git repository:
+### 1. Reproducible Environments
 
-```bash
-steadystate up https://github.com/user/project
-```
+SteadyState builds development environments from repository definitions such as:
 
-This command:
+* `flake.nix`
+* `default.nix` / `shell.nix`
+* (future) `requirements.txt`, `renv.lock`, `uv.lock`, etc.
 
-* Provisions a VM in Hetzner Cloud via SteadyState’s backend
-* Clones the target repository
-* Detects its environment definition (`flake.nix`, `default.nix`, `shell.nix`, `renv.lock`, `uv.lock`)
-* Builds it automatically using Nix
-* Installs and configures [Upterm](https://github.com/owenthereal/upterm) for collaborative SSH access
+These environments run remotely and are defined declaratively for consistent, deterministic behavior.
 
-Users receive an SSH URL to join the environment — no manual setup, credentials, or Hetzner account required.
+### 2. Ephemeral, On-Demand Sessions
+
+Users can request a fresh environment at any time.
+Each session:
+
+* Runs in the cloud (initial target: Hetzner)
+* Is short-lived by default
+* Automatically cleans up after use
+* Provides a complete dev environment without any local dependencies
+
+### 3. Collaborative Access
+
+Each session exposes a multi-user SSH endpoint through an embedded collaboration
+layer (using [Upterm](https://upterm.dev/)). This allows:
+
+* Pair programming
+* Live debugging
+* Working from any editor (VS Code, Neovim, Emacs, etc.)
+
+Environments ship with [ne](https://github.com/vigna/ne/), the nice editor, for
+users who want a minimal in-terminal editor without needing an SSH-aware GUI.
+
+### 4. Authentication System
+
+The backend implements OAuth Device Flow authentication.
+The architecture is designed to support:
+
+* GitHub (MVP)
+* GitLab (future)
+* Orchid (future)
+* Enterprise identity providers (future)
+
+Authentication uses short-lived JWTs with long-lived refresh tokens stored securely by the CLI.
 
 ---
 
@@ -30,87 +66,97 @@ Users receive an SSH URL to join the environment — no manual setup, credential
 
 ```
 steadystate/
-├── cli/            # Rust CLI (steadystate)
-├── backend/        # Rust backend API
-├── common/         # Shared Rust utilities and types
-├── flake.nix       # Nix flake for build and development environments
-└── README.md
+├── cli/            # Rust CLI: authentication, session management
+├── backend/        # Rust backend: auth providers, session orchestration
+├── common/         # Shared types and utilities (planned)
+└── flake.nix       # Reproducible development environment for all components
 ```
 
-* **CLI (`steadystate`)** — user-facing tool for login, launching sessions, and listing active environments
-* **Backend** — manages authentication, environment lifecycle, and resource provisioning
-* **Common** — shared types, authentication utilities, and network code
+* The **CLI** and **Backend** are independent Rust crates.
+* The **flake.nix** provides consistent dev and build tooling across the project.
+* A shared crate (`common/`) will consolidate types, JWT logic, and error structures across components.
 
 ---
 
-## Design Goals
+## Design Philosophy
 
-### 1. Reproducibility
+### Minimal local state
 
-Every environment is defined declaratively via Nix, ensuring that the same repository always produces the same runtime configuration — from Python and R packages to compilers and LaTeX.
+Everything needed for development lives in the remote environment.
 
-### 2. Collaboration
+### Ephemeral by default
 
-Real-time, multi-user SSH sessions (via Upterm) enable seamless pair programming and debugging across editors (VS Code, Emacs, Neovim).
+Every session starts clean and predictable.
 
-#### Optional Editor
+### Transparent and scriptable
 
-SteadyState environments come with ne — the nice editor — a small, fast, and GPL-licensed text editor with familiar keybindings (e.g. Ctrl-C for copy). It’s ideal for quick edits in terminal sessions.
+SteadyState is a *tool*, not a platform you must commit to.
+Both CLI and backend expose simple interfaces that integrate with existing workflows.
 
-### 3. Simplicity
+### Reproducibility above all
 
-The system follows a Unix philosophy:
+Nix is used to define and build environments in a controlled, deterministic way.
+For non-Nix users, `steadystate` will try to bootstrap the environment from
+common lock files.
 
-* One CLI, one backend, minimal dependencies
-* No browser editors, no containers unless explicitly declared
-* Everything is transparent and scriptable
+### Editor-agnostic collaboration
 
-### 4. Ephemerality by Default
-
-Each environment is temporary by default. When it stops, all state is discarded — ensuring reproducibility, security, and no hidden drift.
+SSH is the backbone. Bring your own editor, or use `ne`.
 
 ---
 
-## Development
+## Components
 
-### Prerequisites
+### CLI
 
-* **Nix** (with flakes enabled)
-* **Cargo** (optional, included in `nix develop`)
-* **Rust toolchain** — automatically provided by the flake
+* Handles OAuth device flow login (`login`)
+* Shows the authenticated identity (`whoami`)
+* Refreshes and revokes tokens
+* Creates development sessions (`up`)
+* Supports a `--noenv` mode for fast, editor-only sessions
 
-### Setup
+### Backend
 
-```bash
-git clone https://github.com/exactcomputing/steadystate.git
-cd steadystate
-nix develop
-```
+* Manages authentication via modular providers
+* Issues and validates JWTs
+* Creates and tracks ephemeral dev sessions
+* Provides an API consumed by the CLI
 
-### Build CLI
+---
 
-```bash
-cd cli
-cargo build
-```
+## Roadmap
 
-### Run Backend (placeholder)
+### Authentication
 
-```bash
-cd backend
-cargo run
-```
+* [x] GitHub OAuth Device Flow
+* [ ] GitLab
+* [ ] Orchid
+* [ ] Enterprise SSO
 
-### Example Usage
+### Sessions
 
-```bash
-steadystate login
-steadystate up https://github.com/exactcomputing/example-project
-```
+* [ ] Hetzner Cloud orchestration
+* [ ] Optional persistent volumes
+* [ ] Resource telemetry and usage reporting
+* [ ] Web dashboard
+
+### Environment Handling
+
+* [x] Pure Nix environments
+* [ ] Lightweight compatibility layers:
+
+  * `requirements.txt`
+  * `uv.lock`
+  * `renv.lock`
+  * `environment.yml`
+* [ ] Prebuilt environment cache
 
 ---
 
 ## License
 
-**GNU General Public License v3.0**
-© The Exact Computing Company
+**CLI:** GNU General Public License v3.0
+**Backend:** GNU Affero General Public License v3.0
+
+© 2025 The Exact Computing Company
+
