@@ -52,31 +52,48 @@ pub async fn poll(
         Some(e) => e,
         None => {
             return Ok(Json(PollOut {
-                status: None, jwt: None, refresh_token: None, login: None,
+                status: None,
+                jwt: None,
+                refresh_token: None,
+                login: None,
                 error: Some("invalid_device_code".into()),
             }))
         }
     };
 
     let provider = entry.provider;
+    // Important: release the read guard before we mutate the map.
+    drop(entry);
+
     let prov = match state.providers.get(&provider) {
         Some(p) => p,
-        None => return Ok(Json(PollOut {
-            status: None, jwt: None, refresh_token: None, login: None,
-            error: Some("provider_unavailable".into()),
-        })),
+        None => {
+            return Ok(Json(PollOut {
+                status: None,
+                jwt: None,
+                refresh_token: None,
+                login: None,
+                error: Some("provider_unavailable".into()),
+            }))
+        }
     };
 
     // Try to exchange device_code for identity.
     // If still pending, provider will return an error like "authorization_pending".
     match prov.poll_device_flow(&q.device_code).await {
         Ok(identity) => {
-            info!("device flow complete for {} via {}", identity.login, provider.as_str());
-            // Remove pending record
+            info!(
+                "device flow complete for {} via {}",
+                identity.login,
+                provider.as_str()
+            );
+
+            // Optional cleanup: now safe to remove, because we dropped the guard.
             state.device_pending.remove(&q.device_code);
 
-            let jwt = state.jwt.sign(&identity.login, provider.as_str())
-
+            let jwt = state
+                .jwt
+                .sign(&identity.login, provider.as_str())
                 .map_err(internal)?;
             let refresh_token = state.issue_refresh_token(identity.login.clone(), provider);
 
@@ -91,14 +108,20 @@ pub async fn poll(
         Err(e) => {
             let msg = e.to_string();
             // GitHub returns "authorization_pending" or "slow_down" while waiting.
-            if msg.contains("authorization_pending") {
-                return Ok(Json(PollOut {
-                    status: Some("pending".into()),
-                    jwt: None, refresh_token: None, login: None,
-                    error: None,
-                }));
-            }
-            if msg.contains("slow_down") {
+            let lower = msg.to_lowercase();
+
+            // GitHub sometimes returns formal OAuth error codes,
+            // sometimes human-readable English messages.
+            if lower.contains("authorization_pending") ||
+                lower.contains("authorization request is still pending") {
+                    return Ok(Json(PollOut {
+                        status: Some("pending".into()),
+                        jwt: None, refresh_token: None, login: None,
+                        error: None,
+                    }));
+                }
+
+            if lower.contains("slow_down") {
                 return Ok(Json(PollOut {
                     status: Some("pending".into()),
                     jwt: None, refresh_token: None, login: None,
@@ -106,11 +129,13 @@ pub async fn poll(
                 }));
             }
 
+
             warn!("poll error: {msg}");
             Err(internal(e))
         }
     }
 }
+
 
 pub async fn refresh(
     State(state): State<std::sync::Arc<AppState>>,
