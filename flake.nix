@@ -1,5 +1,5 @@
 {
-  description = "SteadyState CLI - Reproducible and collaborative dev envs";
+  description = "SteadyState dev environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
@@ -8,75 +8,89 @@
 
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
+    let
+      pkgs = import nixpkgs { inherit system; };
 
-      in {
-        # Reproducible build of the CLI
-        packages.steadystate = pkgs.rustPlatform.buildRustPackage {
-          pname = "steadystate";
-          version = "0.0.1";
+      workspaceSrc = pkgs.lib.cleanSource ./.;
 
-          src = pkgs.lib.cleanSource ./.;
-          cargoLock = { lockFile = ./Cargo.lock; };
+      # Build entire Cargo workspace once
+      workspaceDrv = pkgs.rustPlatform.buildRustPackage {
+        pname = "steadystate-workspace";
+        version = "0.0.1";
 
-          nativeBuildInputs = [
-            pkgs.openssl
-            pkgs.pkg-config
-          ];
+        src = workspaceSrc;
 
-          # Ensure OpenSSL linking comes from Nix
-          OPENSSL_NO_VENDOR = 1;
-          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+        cargoLock = {
+          lockFile = ./Cargo.lock;
         };
 
-        # What nix build / nix run gives by default
-        defaultPackage = self.packages.${system}.steadystate;
-        defaultApp = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.steadystate;
-        };
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.openssl ];
 
-        # For the backend
-        # cd develop
-        # nix develop ../#backend
-        # cargo run
-        devShells.backend = pkgs.mkShell {
-          buildInputs = [
-            pkgs.rustc
-            pkgs.cargo
-            pkgs.rustfmt
-            pkgs.clippy
-            pkgs.pkg-config
-            pkgs.openssl
-          ];
+        OPENSSL_NO_VENDOR = 1;
+      };
 
-        # Load .env automatically (if it exists)
+      # Extract individual binaries
+      backend = pkgs.stdenv.mkDerivation {
+        name = "steadystate-backend";
+        buildCommand = ''
+          mkdir -p $out/bin
+          cp ${workspaceDrv}/bin/steadystate-backend $out/bin/
+        '';
+      };
+
+      cli = pkgs.stdenv.mkDerivation {
+        name = "steadystate";
+        buildCommand = ''
+          mkdir -p $out/bin
+          cp ${workspaceDrv}/bin/steadystate $out/bin/
+        '';
+      };
+
+      terminal = pkgs.lib.getExe' pkgs.xterm "xterm";
+
+    in {
+      packages.default = cli;
+
+      packages.backend = backend;
+      packages.cli = cli;
+
+      apps.backend = flake-utils.lib.mkApp { drv = backend; };
+      apps.cli = flake-utils.lib.mkApp { drv = cli; };
+
+      devShells.default = pkgs.mkShell {
+        name = "steadystate-dev";
+
+        buildInputs = [
+          pkgs.cargo
+          pkgs.rustc
+          pkgs.rustfmt
+          pkgs.clippy
+          pkgs.openssl.dev
+          pkgs.pkg-config
+          backend
+          cli
+        ];
+
         shellHook = ''
+          echo "🔧 Entering SteadyState dev shell"
+
           if [ -f backend/.env ]; then
-            echo "Loading environment variables from .env"
+            echo "📦 Loading backend/.env..."
             export $(grep -v '^#' backend/.env | xargs)
           else
-            echo "Warning: no backend/.env file found in backend/ directory."
+            echo "⚠️ No backend/.env found"
           fi
 
-          export RUST_LOG=info
+          # IMPORTANT: CLI must talk HTTP, not HTTPS
+          export STEADYSTATE_BACKEND=http://localhost:8080
+
+          echo "🚀 Launching backend in new terminal"
+          ${terminal} -e sh -c "${backend}/bin/steadystate-backend; exec bash" &
+
+          echo ""
+          echo "Use: steadystate login / steadystate up / steadystate whoami"
         '';
-
-          RUST_LOG = "info";
-        };
-
-        # Development shell: editor-friendly + cargo tools
-        devShells.default = pkgs.mkShell {
-          buildInputs = [
-            pkgs.cargo
-            pkgs.rustc
-            pkgs.rustfmt
-            pkgs.clippy
-            pkgs.openssl.dev
-            pkgs.pkg-config
-          ];
-
-          RUST_BACKTRACE = 1;
-        };
-      });
+      };
+    });
 }

@@ -153,6 +153,16 @@ SSH is the backbone. Bring your own editor, or use `ne`.
 
 ---
 
+## Contributing
+
+### Requirements
+
+Nix.
+
+### How to
+
+PRs welcome, but make sure unit tests pass (or add required unit tests if you add features).
+
 ## License
 
 **CLI:** GNU General Public License v3.0

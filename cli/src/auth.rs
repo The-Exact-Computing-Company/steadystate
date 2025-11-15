@@ -1,5 +1,3 @@
-// cli/src/auth.rs
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -10,7 +8,7 @@ use keyring::Entry;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::{select, signal, time};
-use tracing::{info, warn}; // Removed unused `debug` import
+use tracing::{info, warn};
 
 use crate::config::{
     BACKEND_URL, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
@@ -44,7 +42,8 @@ pub struct UpResponse {
 
 /// Initiates OAuth device flow authentication.
 pub async fn device_login(client: &Client) -> Result<()> {
-    let url = format!("{}/auth/device", &*BACKEND_URL);
+    // Backend: POST /auth/device?provider=github
+    let url = format!("{}/auth/device?provider=github", &*BACKEND_URL);
     let resp = send_with_retries(|| client.post(&url)).await?;
 
     if !resp.status().is_success() {
@@ -80,38 +79,45 @@ pub async fn device_login(client: &Client) -> Result<()> {
     spinner.enable_steady_tick(Duration::from_millis(120));
     let start = std::time::Instant::now();
 
+    // --- Main polling loop -------------------------------------------------
     let poll_loop = async {
         let mut current_interval_secs = interval;
+
         loop {
             spinner.set_message(format!(
                 "Authorizing... {}s elapsed",
                 start.elapsed().as_secs()
             ));
+
             select! {
                 _ = signal::ctrl_c() => {
                     spinner.finish_and_clear();
                     println!("\nCancelled by user");
                     return Ok(());
                 }
+
                 _ = time::sleep(Duration::from_secs(current_interval_secs)) => {
+                    // Backend now expects POST with JSON { "device_code": ... }
                     let poll = send_with_retries(|| {
                         client
-                            .get(&poll_url)
-                            .query(&[("device_code", device_code.clone())])
+                            .post(&poll_url)
+                            .json(&serde_json::json!({ "device_code": device_code.clone() }))
                             .timeout(Duration::from_secs(DEVICE_POLL_REQUEST_TIMEOUT_SECS))
                     })
                     .await
                     .context("poll request failed")?;
 
-                    if poll.status().as_u16() == 202 {
-                        current_interval_secs = current_interval_secs.saturating_mul(2).clamp(interval, max_interval_secs);
-                        continue;
+                    if !poll.status().is_success() {
+                        let status = poll.status();
+                        let body = poll.text().await.unwrap_or_default();
+                        anyhow::bail!("poll request failed ({}): {}", status, body);
                     }
 
                     let out: PollResponse = poll.json().await.context("parse poll response")?;
 
-                    if let Some(status) = out.status.as_deref() {
-                        if status == "complete" {
+                    match out.status.as_deref() {
+                        Some("complete") => {
+                            // Success: backend returns jwt, refresh_token, login
                             spinner.finish_and_clear();
                             let jwt = out.jwt.context("server did not return jwt")?;
                             let refresh = out.refresh_token.context("no refresh token returned")?;
@@ -124,22 +130,35 @@ pub async fn device_login(client: &Client) -> Result<()> {
                             println!("✅ Logged in as {}", login);
                             return Ok(());
                         }
-                    } else if let Some(err) = out.error {
-                        match err.as_str() {
-                            "authorization_pending" => {
-                                // continue polling
+                        Some("pending") => {
+                            // Still waiting. Maybe slow_down hint.
+                            if let Some(err) = out.error.as_deref() {
+                                match err {
+                                    "slow_down" => {
+                                        current_interval_secs =
+                                            (current_interval_secs + 5).clamp(interval, max_interval_secs);
+                                    }
+                                    // You can extend with more non-fatal hints later.
+                                    other => {
+                                        spinner.finish_and_clear();
+                                        anyhow::bail!("Authorization error: {}", other);
+                                    }
+                                }
                             }
-                            "slow_down" => {
-                                current_interval_secs = (current_interval_secs + 5).clamp(interval, max_interval_secs);
-                            }
-                            "access_denied" => {
-                                spinner.finish_and_clear();
-                                anyhow::bail!("Authorization denied by user.");
-                            }
-                            _ => {
+                            // Otherwise: keep polling with current interval.
+                        }
+                        None => {
+                            if let Some(err) = out.error {
                                 spinner.finish_and_clear();
                                 anyhow::bail!("Authorization error: {}", err);
+                            } else {
+                                spinner.finish_and_clear();
+                                anyhow::bail!("Unexpected poll response: missing status");
                             }
+                        }
+                        Some(other) => {
+                            spinner.finish_and_clear();
+                            anyhow::bail!("Unexpected poll status: {}", other);
                         }
                     }
                 }
@@ -160,7 +179,7 @@ pub async fn device_login(client: &Client) -> Result<()> {
 // REFACTORED AUTHENTICATION LOGIC
 // =======================================================================
 
-#[derive(Debug, Deserialize)] // Added `Debug` trait
+#[derive(Debug, Deserialize)]
 pub struct RefreshResponse {
     pub jwt: String,
 }
@@ -177,9 +196,9 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>) ->
         }
     };
 
-    let refresh = get_refresh_token(&username).await?.ok_or_else(|| {
-        anyhow!("No refresh token found. Run `steadystate login` again.")
-    })?;
+    let refresh = get_refresh_token(&username)
+        .await?
+        .ok_or_else(|| anyhow!("No refresh token found. Run `steadystate login` again."))?;
 
     let url = format!("{}/auth/refresh", &*BACKEND_URL);
     let resp = send_with_retries(|| {
@@ -193,7 +212,9 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>) ->
     if resp.status().as_u16() == 401 {
         let _ = delete_refresh_token(&username).await;
         let _ = remove_session(None).await;
-        anyhow::bail!("Refresh token has expired or been revoked. Run 'steadystate login' to authenticate again.");
+        anyhow::bail!(
+            "Refresh token has expired or been revoked. Run 'steadystate login' to authenticate again."
+        );
     }
 
     if !resp.status().is_success() {
@@ -201,10 +222,10 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>) ->
     }
 
     let refresh_resp: RefreshResponse = resp.json().await.context("parse refresh response")?;
-    
+
     let new_session = Session::new(username, refresh_resp.jwt.clone());
     write_session(&new_session, None).await?;
-    
+
     Ok(refresh_resp)
 }
 
@@ -275,24 +296,35 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
     }
     let payload_bytes = match Base64UrlSafeNoPadding::decode_to_vec(parts[1], None) {
         Ok(bytes) => bytes,
-        Err(e) => { warn!("Failed to decode JWT payload: {:?}", e); return None; }
+        Err(e) => {
+            warn!("Failed to decode JWT payload: {:?}", e);
+            return None;
+        }
     };
     match serde_json::from_slice::<serde_json::Value>(&payload_bytes) {
         Ok(payload) => payload.get("exp").and_then(|v| v.as_u64()),
-        Err(e) => { warn!("Failed to parse JWT payload: {}", e); None }
+        Err(e) => {
+            warn!("Failed to parse JWT payload: {}", e);
+            None
+        }
     }
 }
 
 /// Stores refresh token in the OS keychain.
 pub async fn store_refresh_token(username: &str, token: &str) -> Result<()> {
-    if token.is_empty() { return Err(anyhow!("refresh token cannot be empty")); }
+    if token.is_empty() {
+        return Err(anyhow!("refresh token cannot be empty"));
+    }
     let username = username.to_string();
     let token = token.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let entry = Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
-        entry.set_password(&token).context("keyring set_password failed")?;
+        entry
+            .set_password(&token)
+            .context("keyring set_password failed")?;
         Ok(())
-    }).await?
+    })
+    .await?
 }
 
 /// Retrieves refresh token from keychain if present.
@@ -303,9 +335,13 @@ pub async fn get_refresh_token(username: &str) -> Result<Option<String>> {
         match entry.get_password() {
             Ok(tok) => Ok(Some(tok)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => { warn!("keyring get_password error: {}", err); Ok(None) }
+            Err(err) => {
+                warn!("keyring get_password error: {}", err);
+                Ok(None)
+            }
         }
-    }).await?
+    })
+    .await?
 }
 
 /// Deletes refresh token from keychain if present.
@@ -316,11 +352,13 @@ pub async fn delete_refresh_token(username: &str) -> Result<()> {
             let _ = entry.delete_credential();
         }
         Ok(())
-    }).await?
+    })
+    .await?
 }
 
 pub(crate) async fn send_with_retries<F>(mut make_request: F) -> Result<reqwest::Response>
-where F: FnMut() -> reqwest::RequestBuilder,
+where
+    F: FnMut() -> reqwest::RequestBuilder,
 {
     let mut delay = Duration::from_millis(RETRY_DELAY_MS);
     for attempt in 1..=MAX_NETWORK_RETRIES {
@@ -328,7 +366,10 @@ where F: FnMut() -> reqwest::RequestBuilder,
         match builder.send().await {
             Ok(resp) => return Ok(resp),
             Err(err) if attempt < MAX_NETWORK_RETRIES && (err.is_timeout() || err.is_connect()) => {
-                warn!("network request failed (attempt {} of {}): {}", attempt, MAX_NETWORK_RETRIES, err);
+                warn!(
+                    "network request failed (attempt {} of {}): {}",
+                    attempt, MAX_NETWORK_RETRIES, err
+                );
                 time::sleep(delay).await;
                 delay = delay.saturating_mul(2);
             }
@@ -355,19 +396,16 @@ mod tests {
             Self { _dir: dir, path }
         }
     }
-    
-    // ... (Your other unit tests like JWT extraction and keychain tests remain here) ...
 
     #[tokio::test]
     async fn test_perform_refresh_without_session() {
         let _ctx = TestContext::new();
-        // Use a client with pooling disabled to match the main app's test behavior
         let client = Client::builder().pool_max_idle_per_host(0).build().unwrap();
 
         let result = perform_refresh(&client, None).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
-        assert!(err_msg.contains("No active session found"));
+        assert!(err_msg.contains("No active session found. Run 'steadystate login' first."));
     }
 
     #[tokio::test]
@@ -379,13 +417,12 @@ mod tests {
         write_session(&session, Some(&ctx.path))
             .await
             .expect("write session");
-        
-        // We need to provide a login override because the session is in a temp dir
+
         let result = perform_refresh(&client, Some("test_user".to_string())).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(err_msg.contains("No refresh token found"));
-        
+
         let _ = crate::session::remove_session(Some(&ctx.path)).await;
     }
 }
