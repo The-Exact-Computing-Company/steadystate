@@ -36,6 +36,35 @@
           drv = self.packages.${system}.steadystate;
         };
 
+        # For the backend
+        # cd develop
+        # nix develop ../#backend
+        # cargo run
+        devShells.backend = pkgs.mkShell {
+          buildInputs = [
+            pkgs.rustc
+            pkgs.cargo
+            pkgs.rustfmt
+            pkgs.clippy
+            pkgs.pkg-config
+            pkgs.openssl
+          ];
+
+        # Load .env automatically (if it exists)
+        shellHook = ''
+          if [ -f backend/.env ]; then
+            echo "Loading environment variables from .env"
+            export $(grep -v '^#' backend/.env | xargs)
+          else
+            echo "Warning: no backend/.env file found in backend/ directory."
+          fi
+
+          export RUST_LOG=info
+        '';
+
+          RUST_LOG = "info";
+        };
+
         # Development shell: editor-friendly + cargo tools
         devShells.default = pkgs.mkShell {
           buildInputs = [
