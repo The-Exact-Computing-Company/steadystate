@@ -47,7 +47,7 @@
         '';
       };
 
-      terminal = pkgs.lib.getExe pkgs.xterm;
+      terminal = pkgs.lib.getExe' pkgs.xterm "xterm";
 
     in {
       packages.default = cli;
