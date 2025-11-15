@@ -35,7 +35,10 @@ jobs:
           security set-keychain-settings -lut 21600 build.keychain
 
       - name: Build env
-        run: nix develop
+        run: | 
+          export CARGO_BUILD_JOBS=1
+          export RUSTFLAGS="-C debuginfo=0 -C opt-level=0"
+          nix develop
 
       - name: Run unit tests
         run: nix develop . -c cargo test -p steadystate
