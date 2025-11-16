@@ -25,7 +25,7 @@ jobs:
       - name: Build dev shell
         run: |
           export CARGO_BUILD_JOBS=1
-          export RUSTFLAGS="-C debuginfo=0 -C 
+          export RUSTFLAGS="-C debuginfo=0 -C opt-level=0"
           SYSTEM=$([ "${{ runner.os }}" = "macOS" ] && echo "aarch64-darwin" || echo "x86_64-linux")
           nix build .#devShells.$SYSTEM.default
 
