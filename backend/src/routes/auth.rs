@@ -1,3 +1,5 @@
+// backend/src/routes/auth.rs
+
 use axum::{
     extract::{Query, State},
     routing::{get, post},
@@ -25,15 +27,18 @@ pub async fn device_start(
     State(state): State<std::sync::Arc<AppState>>,
     Query(q): Query<DeviceQuery>,
 ) -> Result<Json<DeviceStartResponse>, (axum::http::StatusCode, String)> {
-    let provider = q.provider.as_deref().and_then(ProviderName::parse).unwrap_or(ProviderName::GitHub);
-    let prov = state.providers.get(&provider)
-        .ok_or((axum::http::StatusCode::BAD_REQUEST, format!("unsupported provider")))?;
+    let provider_name = q.provider.as_deref().and_then(ProviderName::parse)
+        .unwrap_or(ProviderName::GitHub);
+    
+    // Lazily get or create the provider. This is the key change.
+    let provider = state.get_or_create_provider(provider_name)
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let start = prov.start_device_flow().await
+    let start = provider.start_device_flow().await
         .map_err(internal)?;
 
     state.device_pending.insert(start.device_code.clone(), PendingDevice {
-        provider,
+        provider: provider_name,
         device_code: start.device_code.clone(),
         user_code: start.user_code.clone(),
         verification_uri: start.verification_uri.clone(),
@@ -61,41 +66,32 @@ pub async fn poll(
         }
     };
 
-    let provider = entry.provider;
-    // Important: release the read guard before we mutate the map.
+    let provider_name = entry.provider;
+    // Release the read guard before we potentially mutate the map.
     drop(entry);
-
-    let prov = match state.providers.get(&provider) {
-        Some(p) => p,
-        None => {
-            return Ok(Json(PollOut {
-                status: None,
-                jwt: None,
-                refresh_token: None,
-                login: None,
-                error: Some("provider_unavailable".into()),
-            }))
-        }
+    
+    // Lazily get the provider again. It should be cached now.
+    let provider = match state.get_or_create_provider(provider_name) {
+        Ok(p) => p,
+        Err(e) => return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
     // Try to exchange device_code for identity.
-    // If still pending, provider will return an error like "authorization_pending".
-    match prov.poll_device_flow(&q.device_code).await {
+    match provider.poll_device_flow(&q.device_code).await {
         Ok(identity) => {
             info!(
                 "device flow complete for {} via {}",
                 identity.login,
-                provider.as_str()
+                provider_name.as_str()
             );
 
-            // Optional cleanup: now safe to remove, because we dropped the guard.
             state.device_pending.remove(&q.device_code);
 
             let jwt = state
                 .jwt
-                .sign(&identity.login, provider.as_str())
+                .sign(&identity.login, provider_name.as_str())
                 .map_err(internal)?;
-            let refresh_token = state.issue_refresh_token(identity.login.clone(), provider);
+            let refresh_token = state.issue_refresh_token(identity.login.clone(), provider_name);
 
             Ok(Json(PollOut {
                 status: Some("complete".into()),
@@ -107,11 +103,8 @@ pub async fn poll(
         }
         Err(e) => {
             let msg = e.to_string();
-            // GitHub returns "authorization_pending" or "slow_down" while waiting.
             let lower = msg.to_lowercase();
 
-            // GitHub sometimes returns formal OAuth error codes,
-            // sometimes human-readable English messages.
             if lower.contains("authorization_pending") ||
                 lower.contains("authorization request is still pending") {
                     return Ok(Json(PollOut {
@@ -129,9 +122,14 @@ pub async fn poll(
                 }));
             }
 
-
             warn!("poll error: {msg}");
-            Err(internal(e))
+            Ok(Json(PollOut {
+                status: None,
+                jwt: None,
+                refresh_token: None,
+                login: None,
+                error: Some(msg),
+            }))
         }
     }
 }
@@ -160,7 +158,6 @@ pub async fn refresh(
         ));
     }
 
-    // ✅ Use rec.login / rec.provider, and handle the Result<String, Error>
     let jwt = state
         .jwt
         .sign(&rec.login, rec.provider.as_str())
