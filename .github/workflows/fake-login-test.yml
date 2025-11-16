@@ -14,34 +14,34 @@ jobs:
       
       - uses: cachix/install-nix-action@v31
       
-      - name: Build workspace
+      - name: Build workspace with predictable outputs
         run: |
-          export CARGO_BUILD_JOBS=1
-          export RUSTFLAGS="-C debuginfo=0 -C opt-level=0" 
-          nix build .#backend .#cli
+          nix build .#cli -o result-cli
+          nix build .#backend -o result-backend
       
       - name: Start backend with fake auth
         run: |
           export ENABLE_FAKE_AUTH=1
           export JWT_SECRET=test-secret
           export PORT=8080
-          result/bin/steadystate-backend &
+          # Use the predictable symlink for the backend
+          result-backend/bin/steadystate-backend &
           BACKEND_PID=$!
-          sleep 2
+          sleep 2 # Give the server a moment to start
           echo "BACKEND_PID=$BACKEND_PID" >> $GITHUB_ENV
       
       - name: Test fake login
         run: |
           export STEADYSTATE_BACKEND=http://localhost:8080
-          # The fake provider doesn't actually open a browser or wait, so this should be near-instantaneous
-          result/bin/steadystate login --provider fake
+          # Use the predictable symlink for the CLI
+          result-cli/bin/steadystate login --provider fake
           
           # Check human-readable output
-          result/bin/steadystate whoami | grep "Logged in as: ci-test-user"
+          result-cli/bin/steadystate whoami | grep "Logged in as: ci-test-user"
 
           # Check machine-readable output and verify login status
-          result/bin/steadystate whoami --json | jq -e '.logged_in == true'
-          result/bin/steadystate whoami --json | jq -e '.login == "ci-test-user"'
+          result-cli/bin/steadystate whoami --json | jq -e '.logged_in == true'
+          result-cli/bin/steadystate whoami --json | jq -e '.login == "ci-test-user"'
       
       - name: Cleanup Backend
         if: always()
