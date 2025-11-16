@@ -1,4 +1,4 @@
-// src/state.rs
+// backend/src/state.rs
 
 use std::{sync::Arc, time::Duration};
 use anyhow::Context;
@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use uuid::Uuid;
 
-use crate::auth::{github::GitHubAuth, provider::AuthProviderDyn};
+use crate::auth::{fake::FakeAuth, github::GitHubAuth, provider::AuthProviderDyn};
 use crate::jwt::JwtKeys;
 use crate::models::{PendingDevice, RefreshRecord, ProviderName};
 
@@ -64,6 +64,11 @@ impl AppState {
         let gh = GitHubAuth::from_env(state.clone())?;
         state.providers.insert(ProviderName::GitHub, gh);
 
+        // Register fake provider for testing (enable with env var)
+        if std::env::var("ENABLE_FAKE_AUTH").is_ok() {
+            state.providers.insert(ProviderName::Fake, FakeAuth::new());
+        }
+
         Ok(state)
     }
 
@@ -92,4 +97,4 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-}
+} 
