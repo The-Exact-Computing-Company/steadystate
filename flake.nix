@@ -4,9 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
+    treemerge.url = "github:b-rodrigues/treemerge";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, treemerge }:
     flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs { inherit system; };
@@ -70,6 +71,7 @@
           pkgs.pkg-config
           backend
           cli
+          treemerge.packages.${system}.default
         ];
 
         shellHook = ''
