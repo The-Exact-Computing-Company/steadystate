@@ -1,3 +1,5 @@
+// backend/src/models.rs
+
 use serde::{Deserialize, Serialize};
 use crate::auth::provider::UserIdentity;
 
@@ -7,6 +9,7 @@ pub enum ProviderName {
     GitHub,
     GitLab,
     Orchid,
+    Fake,
 }
 
 impl ProviderName {
@@ -15,6 +18,7 @@ impl ProviderName {
             "github" => Some(Self::GitHub),
             "gitlab" => Some(Self::GitLab),
             "orchid" => Some(Self::Orchid),
+            "fake" => Some(Self::Fake),
             _ => None,
         }
     }
@@ -24,6 +28,7 @@ impl ProviderName {
             Self::GitHub => "github",
             Self::GitLab => "gitlab",
             Self::Orchid => "orchid",
+            Self::Fake => "fake",
         }
     }
 }
@@ -105,4 +110,4 @@ impl From<UserIdentity> for WhoamiOut {
 pub struct UserInfo {
     pub login: String,
     pub provider: String,
-}
+} 

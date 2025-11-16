@@ -41,9 +41,9 @@ pub struct UpResponse {
 }
 
 /// Initiates OAuth device flow authentication.
-pub async fn device_login(client: &Client) -> Result<()> {
-    // Backend: POST /auth/device?provider=github
-    let url = format!("{}/auth/device?provider=github", &*BACKEND_URL);
+pub async fn device_login(client: &Client, provider: &str) -> Result<()> {
+    // Backend: POST /auth/device?provider={provider}
+    let url = format!("{}/auth/device?provider={}", &*BACKEND_URL, provider);
     let resp = send_with_retries(|| client.post(&url)).await?;
 
     if !resp.status().is_success() {
@@ -425,4 +425,4 @@ mod tests {
 
         let _ = crate::session::remove_session(Some(&ctx.path)).await;
     }
-}
+    }

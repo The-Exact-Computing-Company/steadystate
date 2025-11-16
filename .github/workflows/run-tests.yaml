@@ -15,30 +15,22 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
-    env:
-      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
-
       - name: Create this folder to silence warning
         run: mkdir -p ~/.nix-defexpr/channels
-
       - uses: cachix/install-nix-action@v31
 
-      - name: Set up a temporary keychain
-        if: runner.os == 'macOS'
+      - name: Build dev shell
         run: |
-          security create-keychain -p "" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security set-keychain-settings -lut 21600 build.keychain
-
-      - name: Build env
-        run: | 
           export CARGO_BUILD_JOBS=1
           export RUSTFLAGS="-C debuginfo=0 -C opt-level=0"
-          nix develop
+          SYSTEM=$([ "${{ runner.os }}" = "macOS" ] && echo "aarch64-darwin" || echo "x86_64-linux")
+          nix build .#devShells.$SYSTEM.default
 
       - name: Run unit tests
-        run: nix develop . -c cargo test -p steadystate
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export RUSTFLAGS="-C debuginfo=0 -C opt-level=0"
+          nix develop --command cargo test -p steadystate

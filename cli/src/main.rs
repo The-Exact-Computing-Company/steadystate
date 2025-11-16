@@ -1,3 +1,5 @@
+// cli/src/main.rs
+
 //! SteadyState CLI - Manage reproducible development environments
 //!
 //! This CLI provides commands for authentication and session management.
@@ -39,7 +41,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start interactive login (device flow)
-    Login,
+    Login {
+        /// Authentication provider (e.g., github, gitlab, fake)
+        #[arg(long, default_value = "github")]
+        provider: String,
+    },
     /// Show current logged-in user (if any)
     Whoami {
         /// Output in JSON format
@@ -222,8 +228,8 @@ async fn main() -> Result<()> {
     let client = builder.build().context("create http client")?;
 
     match cmd {
-        Commands::Login => {
-            if let Err(e) = device_login(&client).await.context(
+        Commands::Login { provider } => {
+            if let Err(e) = device_login(&client, &provider).await.context(
                 "Failed to reach backend. Check network connectivity and the STEADYSTATE_BACKEND environment variable.",
             ) {
                 error!("login failed: {:#}", e);

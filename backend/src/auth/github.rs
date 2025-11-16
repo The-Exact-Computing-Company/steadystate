@@ -1,3 +1,5 @@
+// backend/src/auth/github.rs
+
 use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
@@ -6,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::provider::{AuthProvider, UserIdentity};
 use crate::models::{DeviceStartResponse, ProviderName};
-use crate::state::AppState;
 
 pub struct GitHubAuth {
     pub client_id: String,
@@ -15,17 +16,12 @@ pub struct GitHubAuth {
 }
 
 impl GitHubAuth {
-    pub fn from_env(state: Arc<AppState>) -> anyhow::Result<Arc<Self>> {
-        let client_id = std::env::var("GITHUB_CLIENT_ID")
-            .context("GITHUB_CLIENT_ID not set")?;
-        let client_secret = std::env::var("GITHUB_CLIENT_SECRET")
-            .context("GITHUB_CLIENT_SECRET not set")?;
-
-        Ok(Arc::new(Self {
+    pub fn new(http: Client, client_id: String, client_secret: String) -> Arc<Self> {
+        Arc::new(Self {
             client_id,
             client_secret,
-            http: state.http.clone(),
-        }))
+            http,
+        })
     }
 }
 
@@ -66,7 +62,6 @@ impl AuthProvider for GitHubAuth {
     }
 
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse> {
-        // GitHub requires x-www-form-urlencoded
         let params = [
             ("client_id", self.client_id.as_str()),
             ("scope", "read:user"),
@@ -75,7 +70,7 @@ impl AuthProvider for GitHubAuth {
         let resp = self.http
             .post("https://github.com/login/device/code")
             .header("Accept", "application/json")
-            .form(&params)                 // IMPORTANT FIX
+            .form(&params)
             .send()
             .await?
             .error_for_status()?;
@@ -92,7 +87,6 @@ impl AuthProvider for GitHubAuth {
     }
 
     async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<UserIdentity> {
-        // GitHub requires x-www-form-urlencoded
         let params = [
             ("client_id", self.client_id.as_str()),
             ("device_code", device_code),
@@ -103,7 +97,7 @@ impl AuthProvider for GitHubAuth {
         let resp = self.http
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/json")
-            .form(&params)                 // IMPORTANT FIX
+            .form(&params)
             .send()
             .await?
             .error_for_status()?;
@@ -129,16 +123,10 @@ impl AuthProvider for GitHubAuth {
                     provider: "github".into(),
                 })
             }
-
             DeviceTokenOut::Err {
                 error,
                 error_description,
-            } => match error.as_str() {
-                "authorization_pending" | "slow_down" => {
-                    Err(anyhow!(error_description.unwrap_or(error)))
-                }
-                _ => Err(anyhow!(error_description.unwrap_or(error))),
-            },
+            } => Err(anyhow!(error_description.unwrap_or(error))),
         }
     }
-}
+} 
