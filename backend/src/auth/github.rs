@@ -146,12 +146,14 @@ struct DeviceStartOut {
 enum DeviceTokenOut {
     Ok {
         access_token: String,
-        token_type: String,
-        scope: String,
+        #[serde(rename = "token_type")]
+        _token_type: String, // Field is unused, silenced with _
+        _scope: String,      // Field is unused, silenced with _
     },
     Err {
         error: String,
-        error_description: Option<String>,
+        #[serde(rename = "error_description")]
+        _error_description: Option<String>, // Field is unused, silenced with _
     },
 }
 
