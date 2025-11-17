@@ -3,39 +3,27 @@
 use serde::{Deserialize, Serialize};
 use crate::auth::provider::UserIdentity;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ProviderName {
-    GitHub,
-    GitLab,
-    Orchid,
-    Fake,
+/// A type-safe, string-based identifier for an authentication provider.
+/// This replaces the rigid ProviderName enum to allow for new providers
+/// to be added without modifying core models.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ProviderId(String);
+
+impl ProviderId {
+    pub fn as_str(&self) -> &str { &self.0 }
 }
 
-impl ProviderName {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "github" => Some(Self::GitHub),
-            "gitlab" => Some(Self::GitLab),
-            "orchid" => Some(Self::Orchid),
-            "fake" => Some(Self::Fake),
-            _ => None,
-        }
-    }
+impl From<String> for ProviderId {
+    fn from(s: String) -> Self { ProviderId(s) }
+}
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::GitHub => "github",
-            Self::GitLab => "gitlab",
-            Self::Orchid => "orchid",
-            Self::Fake => "fake",
-        }
-    }
+impl From<&str> for ProviderId {
+    fn from(s: &str) -> Self { ProviderId(s.to_owned()) }
 }
 
 #[derive(Clone)]
 pub struct PendingDevice {
-    pub provider: ProviderName,
+    pub provider: ProviderId,
     pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,
@@ -46,7 +34,7 @@ pub struct PendingDevice {
 #[derive(Clone)]
 pub struct RefreshRecord {
     pub login: String,
-    pub provider: ProviderName,
+    pub provider: ProviderId,
     pub expires_at: u64,
 }
 
@@ -75,7 +63,7 @@ pub struct PollQuery {
 
 #[derive(Deserialize)]
 pub struct DeviceQuery {
-    pub provider: Option<String>, // default github
+    pub provider: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -110,4 +98,4 @@ impl From<UserIdentity> for WhoamiOut {
 pub struct UserInfo {
     pub login: String,
     pub provider: String,
-} 
+}

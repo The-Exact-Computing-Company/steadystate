@@ -1,13 +1,16 @@
 // backend/src/auth/fake.rs
 
-// A deterministic fake provider for CI testing.
-// Returns predictable codes and completes authentication immediately.
-
 use std::sync::Arc;
+use anyhow::anyhow;
 use async_trait::async_trait;
 
-use crate::auth::provider::{AuthProvider, UserIdentity};
-use crate::models::{DeviceStartResponse, ProviderName};
+use crate::auth::provider::{
+    AuthProvider, AuthProviderDyn, AuthProviderFactory, DevicePollOutcome, UserIdentity,
+};
+use crate::models::{DeviceStartResponse, ProviderId};
+use crate::state::AppState;
+
+// --- Provider Implementation ---
 
 pub struct FakeAuth;
 
@@ -19,8 +22,8 @@ impl FakeAuth {
 
 #[async_trait]
 impl AuthProvider for FakeAuth {
-    fn name(&self) -> ProviderName {
-        ProviderName::Fake
+    fn id(&self) -> ProviderId {
+        ProviderId::from("fake")
     }
 
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse> {
@@ -33,17 +36,35 @@ impl AuthProvider for FakeAuth {
         })
     }
 
-    async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<UserIdentity> {
-        // Immediately succeed for the expected device code
+    async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<DevicePollOutcome> {
         if device_code == "fake-device-code-123" {
-            Ok(UserIdentity {
+            Ok(DevicePollOutcome::Complete(UserIdentity {
                 id: "fake-user-id-456".into(),
                 login: "ci-test-user".into(),
                 email: Some("ci@test.local".into()),
                 provider: "fake".into(),
-            })
+            }))
         } else {
-            anyhow::bail!("authorization_pending")
+            // For testing, just stay pending for any other code.
+            Ok(DevicePollOutcome::Pending)
         }
+    }
+}
+
+// --- Factory Implementation ---
+
+pub struct FakeFactory;
+
+#[async_trait]
+impl AuthProviderFactory for FakeFactory {
+    fn id(&self) -> &'static str {
+        "fake"
+    }
+
+    async fn build(self: Arc<Self>, state: &AppState) -> anyhow::Result<AuthProviderDyn> {
+        if !state.config.enable_fake_auth {
+            return Err(anyhow!("The 'fake' provider is not enabled on this server"));
+        }
+        Ok(FakeAuth::new())
     }
 } 

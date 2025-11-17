@@ -42,7 +42,7 @@ struct Cli {
 enum Commands {
     /// Start interactive login (device flow)
     Login {
-        /// Authentication provider (e.g., github, gitlab, fake)
+        /// Authentication provider (e.g., github, gitlab, orchid, fake)
         #[arg(long, default_value = "github")]
         provider: String,
     },
@@ -272,4 +272,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
+} 

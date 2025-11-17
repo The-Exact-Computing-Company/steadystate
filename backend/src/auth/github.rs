@@ -4,10 +4,15 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::auth::provider::{AuthProvider, UserIdentity};
-use crate::models::{DeviceStartResponse, ProviderName};
+use crate::auth::provider::{
+    AuthProvider, AuthProviderDyn, AuthProviderFactory, DevicePollOutcome, UserIdentity,
+};
+use crate::models::{DeviceStartResponse, ProviderId};
+use crate::state::AppState;
+
+// --- Provider Implementation ---
 
 pub struct GitHubAuth {
     pub client_id: String,
@@ -25,40 +30,10 @@ impl GitHubAuth {
     }
 }
 
-#[derive(Deserialize)]
-struct DeviceStartOut {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    expires_in: u64,
-    interval: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DeviceTokenOut {
-    Ok {
-        access_token: String,
-        token_type: String,
-        scope: String,
-    },
-    Err {
-        error: String,
-        error_description: Option<String>,
-    },
-}
-
-#[derive(Deserialize)]
-struct GhUser {
-    login: String,
-    id: u64,
-    email: Option<String>,
-}
-
 #[async_trait]
 impl AuthProvider for GitHubAuth {
-    fn name(&self) -> ProviderName {
-        ProviderName::GitHub
+    fn id(&self) -> ProviderId {
+        ProviderId::from("github")
     }
 
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse> {
@@ -86,7 +61,7 @@ impl AuthProvider for GitHubAuth {
         })
     }
 
-    async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<UserIdentity> {
+    async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<DevicePollOutcome> {
         let params = [
             ("client_id", self.client_id.as_str()),
             ("device_code", device_code),
@@ -116,17 +91,73 @@ impl AuthProvider for GitHubAuth {
                     .json::<GhUser>()
                     .await?;
 
-                Ok(UserIdentity {
+                Ok(DevicePollOutcome::Complete(UserIdentity {
                     id: user.id.to_string(),
                     login: user.login,
                     email: user.email,
                     provider: "github".into(),
-                })
+                }))
             }
-            DeviceTokenOut::Err {
-                error,
-                error_description,
-            } => Err(anyhow!(error_description.unwrap_or(error))),
+            DeviceTokenOut::Err { error, .. } => match error.as_str() {
+                "authorization_pending" => Ok(DevicePollOutcome::Pending),
+                "slow_down" => Ok(DevicePollOutcome::SlowDown),
+                _ => Err(anyhow!(error)),
+            },
         }
     }
+}
+
+// --- Factory Implementation ---
+
+pub struct GitHubFactory;
+
+#[async_trait]
+impl AuthProviderFactory for GitHubFactory {
+    fn id(&self) -> &'static str { "github" }
+
+    async fn build(self: Arc<Self>, state: &AppState) -> anyhow::Result<AuthProviderDyn> {
+        let client_id = state.config.github_client_id.clone()
+            .context("GITHUB_CLIENT_ID is not configured on the server")?;
+        let client_secret = state.config.github_client_secret.clone()
+            .context("GITHUB_CLIENT_SECRET is not configured on the server")?;
+
+        Ok(GitHubAuth::new(
+            state.http.clone(),
+            client_id,
+            client_secret,
+        ))
+    }
+}
+
+
+// --- DTOs for GitHub API ---
+
+#[derive(Deserialize)]
+struct DeviceStartOut {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeviceTokenOut {
+    Ok {
+        access_token: String,
+        token_type: String,
+        scope: String,
+    },
+    Err {
+        error: String,
+        error_description: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+struct GhUser {
+    login: String,
+    id: u64,
+    email: Option<String>,
 } 

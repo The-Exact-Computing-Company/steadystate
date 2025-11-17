@@ -8,15 +8,20 @@ use reqwest::Client;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::auth::{fake::FakeAuth, github::GitHubAuth, provider::AuthProviderDyn};
+use crate::auth;
+use crate::auth::provider::{AuthProviderDyn, AuthProviderFactoryDyn};
 use crate::jwt::JwtKeys;
-use crate::models::{PendingDevice, RefreshRecord, ProviderName};
+use crate::models::{PendingDevice, ProviderId, RefreshRecord};
 
 // --- Centralized Configuration ---
 pub struct Config {
     pub enable_fake_auth: bool,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub gitlab_client_id: Option<String>,
+    pub gitlab_client_secret: Option<String>,
+    pub orchid_client_id: Option<String>,
+    pub orchid_client_secret: Option<String>,
 }
 
 impl Config {
@@ -25,6 +30,10 @@ impl Config {
             enable_fake_auth: std::env::var("ENABLE_FAKE_AUTH").is_ok(),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            gitlab_client_id: std::env::var("GITLAB_CLIENT_ID").ok(),
+            gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
+            orchid_client_id: std::env::var("ORCHID_CLIENT_ID").ok(),
+            orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
         }
     }
 }
@@ -49,7 +58,10 @@ pub struct AppState {
     pub refresh_store: DashMap<String, RefreshRecord>,
 
     // Lazily populated cache of active providers
-    pub providers: DashMap<ProviderName, AuthProviderDyn>,
+    pub providers: DashMap<ProviderId, AuthProviderDyn>,
+
+    // Registry of available provider factories
+    pub provider_factories: DashMap<String, AuthProviderFactoryDyn>,
 }
 
 impl AppState {
@@ -77,48 +89,44 @@ impl AppState {
             config: Config::from_env(),
             device_pending: DashMap::new(),
             refresh_store: DashMap::new(),
-            providers: DashMap::new(), // Cache is empty at startup
+            providers: DashMap::new(),
+            provider_factories: DashMap::new(),
         });
 
+        // Register all available provider factories at startup.
+        auth::register_builtin_providers(&state);
+
         Ok(state)
+    }
+    
+    /// Registers a factory for creating an authentication provider.
+    pub fn register_provider_factory(&self, factory: AuthProviderFactoryDyn) {
+        self.provider_factories.insert(factory.id().to_string(), factory);
     }
 
     /// Lazily gets or creates an authentication provider.
     /// This ensures the server can start even if some providers are misconfigured.
-    pub fn get_or_create_provider(self: &Arc<Self>, name: ProviderName) -> Result<AuthProviderDyn> {
+    pub async fn get_or_create_provider(self: &Arc<Self>, id: &ProviderId) -> Result<AuthProviderDyn> {
         // If the provider is already cached, return it immediately.
-        if let Some(provider) = self.providers.get(&name) {
+        if let Some(provider) = self.providers.get(id) {
             return Ok(provider.clone());
         }
 
-        // Otherwise, try to create it, then cache and return it.
-        info!("Initializing provider for the first time: {:?}", name);
-        let provider: AuthProviderDyn = match name {
-            ProviderName::GitHub => {
-                let client_id = self.config.github_client_id.clone()
-                    .context("GITHUB_CLIENT_ID is not configured on the server")?;
-                let client_secret = self.config.github_client_secret.clone()
-                    .context("GITHUB_CLIENT_SECRET is not configured on the server")?;
-                
-                GitHubAuth::new(self.http.clone(), client_id, client_secret)
-            }
-            ProviderName::Fake => {
-                if !self.config.enable_fake_auth {
-                    return Err(anyhow!("The 'fake' provider is not enabled on this server"));
-                }
-                FakeAuth::new()
-            }
-            // When you add GitLab, the logic will go here.
-            ProviderName::GitLab | ProviderName::Orchid => {
-                return Err(anyhow!("Provider '{}' is not implemented yet", name.as_str()));
-            }
-        };
+        // Otherwise, find the factory, build the provider, cache it, and return it.
+        info!("Initializing provider for the first time: {}", id.as_str());
+        
+        let key = id.as_str();
+        let factory = self.provider_factories
+            .get(key)
+            .ok_or_else(|| anyhow!("Unknown or unsupported provider: '{}'", key))?
+            .clone();
 
-        self.providers.insert(name, provider.clone());
+        let provider = factory.build(self).await?;
+        self.providers.insert(id.clone(), provider.clone());
         Ok(provider)
     }
 
-    pub fn issue_refresh_token(&self, login: String, provider: ProviderName) -> String {
+    pub fn issue_refresh_token(&self, login: String, provider: ProviderId) -> String {
         let token = Uuid::new_v4().to_string();
         let ttl_secs: u64 = std::env::var("REFRESH_TTL_SECS")
             .ok()
