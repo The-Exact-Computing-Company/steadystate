@@ -6,11 +6,15 @@ use std::sync::Arc;
 
 /// Helper to create a test AppState.
 async fn setup_state() -> Arc<AppState> {
-    // Ensure env vars are clean for each test
-    std::env::remove_var("GITHUB_CLIENT_ID");
-    std::env::remove_var("GITHUB_CLIENT_SECRET");
-    std::env::set_var("JWT_SECRET", "test-secret");
-    std::env::set_var("ENABLE_FAKE_AUTH", "1");
+    // Setting environment variables is an unsafe operation because it affects
+    // the global state of the process and can cause data races if tests run in parallel.
+    // We acknowledge this risk by using an unsafe block.
+    unsafe {
+        std::env::remove_var("GITHUB_CLIENT_ID");
+        std::env::remove_var("GITHUB_CLIENT_SECRET");
+        std::env::set_var("JWT_SECRET", "test-secret");
+        std::env::set_var("ENABLE_FAKE_AUTH", "1");
+    }
     
     AppState::try_new().await.expect("Failed to create test state")
 }
@@ -62,4 +66,4 @@ async fn test_get_provider_fails_for_unknown_provider() {
     // More robust assertion.
     assert!(err_msg.contains("Unknown") || err_msg.contains("unsupported"));
     assert!(err_msg.contains("provider"));
-}
+} 
