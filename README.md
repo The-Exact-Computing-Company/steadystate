@@ -169,4 +169,3 @@ PRs welcome, but make sure unit tests pass (or add required unit tests if you ad
 **Backend:** GNU Affero General Public License v3.0
 
 © 2025 The Exact Computing Company
-
