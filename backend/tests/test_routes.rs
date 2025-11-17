@@ -4,7 +4,7 @@ use axum::{body::Body, http::{Request, StatusCode}, Router};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tower::ServiceExt;
+use tower::ServiceExt; // <-- ADD THIS LINE to bring the .oneshot() method into scope
 
 use steadystate_backend::app_router; // Use the public router function
 use steadystate_backend::state::AppState;
@@ -182,4 +182,4 @@ async fn test_me_route_fails_for_malformed_header() {
             .unwrap()
     ).await.unwrap();
     assert_eq!(response2.status(), StatusCode::UNAUTHORIZED);
-}
+} 
