@@ -18,6 +18,10 @@ pub struct Config {
     pub enable_fake_auth: bool,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub gitlab_client_id: Option<String>,
+    pub gitlab_client_secret: Option<String>,
+    pub orchid_client_id: Option<String>,
+    pub orchid_client_secret: Option<String>,
 }
 
 impl Config {
@@ -26,6 +30,10 @@ impl Config {
             enable_fake_auth: std::env::var("ENABLE_FAKE_AUTH").is_ok(),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            gitlab_client_id: std::env::var("GITLAB_CLIENT_ID").ok(),
+            gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
+            orchid_client_id: std::env::var("ORCHID_CLIENT_ID").ok(),
+            orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
         }
     }
 }
@@ -142,4 +150,4 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-}
+} 
