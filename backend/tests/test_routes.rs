@@ -4,9 +4,9 @@ use axum::{body::Body, http::{Request, StatusCode}, Router};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tower::ServiceExt; // <-- ADD THIS LINE to bring the .oneshot() method into scope
+use tower::ServiceExt; // <-- THIS IS THE CRITICAL LINE THAT FIXES THE ERROR
 
-use steadystate_backend::app_router; // Use the public router function
+use steadystate_backend::app_router;
 use steadystate_backend::state::AppState;
 
 /// Helper to create a router backed by a test-configured AppState.
