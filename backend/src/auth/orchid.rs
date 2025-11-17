@@ -11,8 +11,10 @@ use crate::models::{DeviceStartResponse, ProviderId};
 use crate::state::AppState;
 
 // --- Provider Stub ---
+#[derive(Debug)] // <-- ADDED THIS LINE
 pub struct OrchidAuth;
 
+// ... (rest of the file is unchanged) ...
 #[async_trait]
 impl AuthProvider for OrchidAuth {
     fn id(&self) -> ProviderId {
