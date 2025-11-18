@@ -18,7 +18,7 @@ use crate::models::{PendingDevice, ProviderId, RefreshRecord, Session};
 pub type SessionStore = DashMap<String, Session>;
 
 // --- Centralized Configuration ---
-#[derive(Clone)] // Add Clone here
+#[derive(Clone)]
 pub struct Config {
     pub enable_fake_auth: bool,
     pub github_client_id: Option<String>,
@@ -50,13 +50,16 @@ static DEFAULT_DEVICE_POLL_MAX_INTERVAL_SECS: Lazy<u64> = Lazy::new(|| {
         .unwrap_or(15)
 });
 
+// --- AppState Definition ---
+// We implement Clone manually to ensure it's cheap (Arc-based).
+#[derive(Clone)]
 pub struct AppState {
     pub http: Client,
     pub jwt: JwtKeys,
     pub device_max_interval: u64,
     pub config: Config,
 
-    // Auth state
+    // Auth state (DashMap is internally Arc'd)
     pub device_pending: DashMap<String, PendingDevice>,
     pub refresh_store: DashMap<String, RefreshRecord>,
     pub providers: DashMap<ProviderId, AuthProviderDyn>,
@@ -64,27 +67,9 @@ pub struct AppState {
 
     // Compute & Session state
     pub sessions: SessionStore,
-    pub compute_providers: HashMap<String, Arc<dyn ComputeProvider>>,
+    // Wrapped in Arc for cheap cloning of AppState
+    pub compute_providers: Arc<HashMap<String, Arc<dyn ComputeProvider>>>,
     pub default_compute_provider: String,
-}
-
-// --- ADD THIS CLONE IMPLEMENTATION ---
-impl Clone for AppState {
-    fn clone(&self) -> Self {
-        Self {
-            http: self.http.clone(),
-            jwt: self.jwt.clone(),
-            device_max_interval: self.device_max_interval,
-            config: self.config.clone(),
-            device_pending: self.device_pending.clone(),
-            refresh_store: self.refresh_store.clone(),
-            providers: self.providers.clone(),
-            provider_factories: self.provider_factories.clone(),
-            sessions: self.sessions.clone(),
-            compute_providers: self.compute_providers.clone(),
-            default_compute_provider: self.default_compute_provider.clone(),
-        }
-    }
 }
 
 impl AppState {
@@ -107,6 +92,7 @@ impl AppState {
 
         // --- COMPUTE PROVIDER SETUP ---
         let mut compute_providers = HashMap::<String, Arc<dyn ComputeProvider>>::new();
+
         let noenv_flake_path = std::env::var("NOENV_FLAKE_PATH")
             .context("NOENV_FLAKE_PATH must be set to the absolute path of the backend/flakes/noenv directory")?;
         let local_provider = Arc::new(LocalComputeProvider::new(noenv_flake_path.into()));
@@ -126,7 +112,7 @@ impl AppState {
             providers: DashMap::new(),
             provider_factories: DashMap::new(),
             sessions: SessionStore::new(),
-            compute_providers,
+            compute_providers: Arc::new(compute_providers), // Wrap in Arc
             default_compute_provider,
         });
 
