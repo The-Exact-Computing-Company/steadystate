@@ -1,10 +1,11 @@
+// ... (imports match previous version)
 // backend/src/jwt.rs
 
 use std::collections::HashSet;
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
+use async_trait::async_trait; // Make sure this is imported
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{header, request::Parts, StatusCode},
 };
@@ -64,20 +65,16 @@ impl JwtKeys {
     }
 }
 
-// --- AXUM EXTRACTOR FOR CUSTOM CLAIMS ---
+// --- UPDATED EXTRACTOR TO USE AppState DIRECTLY ---
 
 #[async_trait]
-// The generic parameter `S` is the application state type. Axum handles the Arc for us.
 impl FromRequestParts<AppState> for CustomClaims {
     type Rejection = (StatusCode, String);
 
-    /// Extracts JWT claims from the Authorization header.
     async fn from_request_parts(
         parts: &mut Parts,
-        // The state is passed as a reference to the inner type.
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Get the Authorization header.
         let auth_header = parts
             .headers
             .get(header::AUTHORIZATION)
@@ -86,14 +83,12 @@ impl FromRequestParts<AppState> for CustomClaims {
                 (StatusCode::UNAUTHORIZED, "Missing Authorization header".into())
             })?;
 
-        // Check for "Bearer " prefix and get the token.
         let token = auth_header
             .strip_prefix("Bearer ")
             .ok_or_else(|| {
                 (StatusCode::BAD_REQUEST, "Invalid token type; expected Bearer".into())
             })?;
 
-        // Verify the token using the keys in our app state.
         state
             .jwt
             .verify(token)
