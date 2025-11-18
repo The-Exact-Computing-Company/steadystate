@@ -16,29 +16,26 @@ use crate::{
     compute::ComputeProvider,
 };
 
-/// Router for the /sessions endpoints.
-pub fn router() -> Router<Arc<AppState>> {
-    // Force the router to use Arc<AppState> as the state type.
-    Router::<Arc<AppState>>::new()
+// --- Updated to Router<AppState> ---
+pub fn router() -> Router<AppState> {
+    Router::new()
         .route("/", post(create_session))
         .route("/:id", get(get_session_status))
         .route("/:id", delete(terminate_session))
 }
 
-/// The main async task that performs the long-running provisioning.
 async fn run_provisioning(
-    app_state: Arc<AppState>,
+    // AppState is now Clone, so passing by value is cheap
+    app_state: AppState,
     session_id: String,
     request: SessionRequest,
 ) {
-    // 1. Retrieve the provider ID
     let provider_id = if let Some(session) = app_state.sessions.get(&session_id) {
         session.compute_provider.clone()
     } else {
         return; 
     };
 
-    // 2. Get the provider
     let provider = if let Some(p) = app_state.compute_providers.get(&provider_id) {
         p.clone()
     } else {
@@ -46,14 +43,12 @@ async fn run_provisioning(
         return;
     };
 
-    // 3. Do the work
     let result = if let Some(mut session_entry) = app_state.sessions.get_mut(&session_id) {
         provider.start_session(&mut session_entry, &request).await
     } else {
         return;
     };
 
-    // 4. Handle failure
     if let Err(e) = result {
         tracing::error!("Provisioning failed for session {}: {:#}", session_id, e);
         if let Some(mut session) = app_state.sessions.get_mut(&session_id) {
@@ -65,7 +60,7 @@ async fn run_provisioning(
 }
 
 async fn create_session(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     claims: CustomClaims,
     Json(request): Json<SessionRequest>,
 ) -> (StatusCode, Json<SessionInfo>) {
@@ -90,13 +85,14 @@ async fn create_session(
     
     state.sessions.insert(session_id.clone(), session);
 
-    tokio::spawn(run_provisioning(state, session_id, request));
+    // Pass state clone (cheap now)
+    tokio::spawn(run_provisioning(state.clone(), session_id, request));
 
     (StatusCode::ACCEPTED, Json(session_info))
 }
 
 async fn get_session_status(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionInfo>, StatusCode> {
     match state.sessions.get(&id) {
@@ -106,7 +102,7 @@ async fn get_session_status(
 }
 
 async fn terminate_session(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> StatusCode {
     if let Some(mut session) = state.sessions.get_mut(&id) {
@@ -126,4 +122,4 @@ async fn terminate_session(
     } else {
         StatusCode::NOT_FOUND
     }
-}
+} 
