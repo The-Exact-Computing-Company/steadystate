@@ -1,5 +1,6 @@
 // backend/src/routes/auth.rs
 
+use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -9,6 +10,8 @@ use axum::{
 use serde_json::json;
 use tracing::{info, warn};
 
+// Import the correct, renamed claims struct
+use crate::jwt::CustomClaims;
 use crate::{
     auth::provider::DevicePollOutcome,
     models::*,
@@ -16,7 +19,7 @@ use crate::{
 };
 
 
-pub fn router() -> Router<std::sync::Arc<AppState>> {
+pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/device", post(device_start))
         .route("/poll", post(poll))
@@ -26,7 +29,7 @@ pub fn router() -> Router<std::sync::Arc<AppState>> {
 }
 
 pub async fn device_start(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(q): Query<DeviceQuery>,
 ) -> Result<Json<DeviceStartResponse>, (StatusCode, String)> {
     let provider_id = ProviderId::from(q.provider.as_deref().unwrap_or("github"));
@@ -52,7 +55,7 @@ pub async fn device_start(
 }
 
 pub async fn poll(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(q): Json<PollQuery>,
 ) -> Result<Json<PollOut>, (StatusCode, String)> {
     let pending = match state.device_pending.get(&q.device_code) {
@@ -124,7 +127,7 @@ pub async fn poll(
 
 
 pub async fn refresh(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(inp): Json<RefreshIn>,
 ) -> Result<Json<RefreshOut>, (StatusCode, String)> {
     let rec = state
@@ -151,7 +154,7 @@ pub async fn refresh(
 
 
 pub async fn revoke(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(inp): Json<RevokeIn>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state.refresh_store.remove(&inp.refresh_token);
@@ -166,31 +169,15 @@ fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
+/// Returns information about the currently authenticated user from their JWT.
 pub async fn me(
-    State(state): State<std::sync::Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let auth = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .ok_or((StatusCode::UNAUTHORIZED, "Missing Authorization header".into()))?
-        .to_str()
-        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid Authorization header".into()))?;
-
-    if !auth.starts_with("Bearer ") {
-        return Err((StatusCode::BAD_REQUEST, "Expected Bearer token".into()));
-    }
-
-    let token = &auth["Bearer ".len()..];
-
-    let claims = state
-        .jwt
-        .verify(token)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
-
-    Ok(Json(serde_json::json!({
-        "login": claims.sub,
-        "provider": claims.provider,
-        "issuer": claims.iss,
-        "exp": claims.exp,
-    })))
+    // This extractor automatically validates the token and extracts our custom claims.
+    // If the token is invalid, it will return a 401 Unauthorized before this handler
+    // is even called.
+    claims: CustomClaims,
+) -> Json<CustomClaims> {
+    // The `CustomClaims` struct contains the user's login (`sub`) and provider,
+    // which is exactly what this endpoint should return. Since it derives `Serialize`,
+    // we can return it directly as JSON.
+    Json(claims)
 }
