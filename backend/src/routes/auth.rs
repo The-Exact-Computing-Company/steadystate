@@ -17,9 +17,8 @@ use crate::{
     state::AppState,
 };
 
-pub fn router() -> Router<Arc<AppState>> {
-    // Force the router to use Arc<AppState>
-    Router::<Arc<AppState>>::new()
+pub fn router() -> Router<AppState> {
+    Router::new()
         .route("/device", post(device_start))
         .route("/poll", post(poll))
         .route("/refresh", post(refresh))
@@ -28,7 +27,7 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 pub async fn device_start(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Query(q): Query<DeviceQuery>,
 ) -> Result<Json<DeviceStartResponse>, (StatusCode, String)> {
     let provider_id = ProviderId::from(q.provider.as_deref().unwrap_or("github"));
@@ -52,7 +51,7 @@ pub async fn device_start(
 }
 
 pub async fn poll(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Json(q): Json<PollQuery>,
 ) -> Result<Json<PollOut>, (StatusCode, String)> {
     let pending = match state.device_pending.get(&q.device_code) {
@@ -122,8 +121,9 @@ pub async fn poll(
     }
 }
 
+
 pub async fn refresh(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Json(inp): Json<RefreshIn>,
 ) -> Result<Json<RefreshOut>, (StatusCode, String)> {
     let rec = state
@@ -148,8 +148,9 @@ pub async fn refresh(
     }))
 }
 
+
 pub async fn revoke(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Json(inp): Json<RevokeIn>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state.refresh_store.remove(&inp.refresh_token);
