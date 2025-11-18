@@ -14,14 +14,13 @@ use crate::state::AppState;
 
 // --- Provider Implementation ---
 
-#[derive(Debug)] // <-- ADDED THIS LINE
+#[derive(Debug)]
 pub struct GitHubAuth {
     pub client_id: String,
     pub client_secret: String,
     pub http: Client,
 }
 
-// ... (rest of the file is unchanged) ...
 impl GitHubAuth {
     pub fn new(http: Client, client_id: String, client_secret: String) -> Arc<Self> {
         Arc::new(Self {
@@ -47,12 +46,14 @@ impl AuthProvider for GitHubAuth {
         let resp = self.http
             .post("https://github.com/login/device/code")
             .header("Accept", "application/json")
+            .header("User-Agent", "steadystate-backend/0.1")
             .form(&params)
             .send()
             .await?
             .error_for_status()?;
 
-        let out: DeviceStartOut = resp.json().await?;
+        let out: DeviceStartOut = resp.json().await
+            .context("Failed to decode GitHub's device code response")?;
 
         Ok(DeviceStartResponse {
             device_code: out.device_code,
@@ -74,12 +75,14 @@ impl AuthProvider for GitHubAuth {
         let resp = self.http
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/json")
+            .header("User-Agent", "steadystate-backend/0.1")
             .form(&params)
             .send()
             .await?
             .error_for_status()?;
 
-        let token: DeviceTokenOut = resp.json().await?;
+        let token: DeviceTokenOut = resp.json().await
+            .context("Failed to decode GitHub's access token response")?;
 
         match token {
             DeviceTokenOut::Ok { access_token, .. } => {
@@ -100,10 +103,10 @@ impl AuthProvider for GitHubAuth {
                     provider: "github".into(),
                 }))
             }
-            DeviceTokenOut::Err { error, .. } => match error.as_str() {
-                "authorization_pending" => Ok(DevicePollOutcome::Pending),
-                "slow_down" => Ok(DevicePollOutcome::SlowDown),
-                _ => Err(anyhow!(error)),
+            DeviceTokenOut::Err(err) => match err.error {
+                GitHubError::AuthorizationPending => Ok(DevicePollOutcome::Pending),
+                GitHubError::SlowDown => Ok(DevicePollOutcome::SlowDown),
+                other_error => Err(anyhow!("GitHub device flow error: {:?}", other_error)),
             },
         }
     }
@@ -143,20 +146,37 @@ struct DeviceStartOut {
     interval: Option<u64>,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+enum GitHubError {
+    AuthorizationPending,
+    SlowDown,
+    ExpiredToken,
+    UnsupportedGrantType,
+    IncorrectClientCredentials,
+    IncorrectDeviceCode,
+    AccessDenied,
+    // Catch-all for any unknown errors GitHub might add in the future.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+struct DeviceTokenError {
+    error: GitHubError,
+    #[serde(rename = "error_description")]
+    _error_description: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum DeviceTokenOut {
     Ok {
         access_token: String,
-        #[serde(rename = "token_type")]
-        _token_type: String,
-        _scope: String,
+        token_type: String,
+        scope: String,
     },
-    Err {
-        error: String,
-        #[serde(rename = "error_description")]
-        _error_description: Option<String>,
-    },
+    Err(DeviceTokenError),
 }
 
 #[derive(Deserialize)]
@@ -164,4 +184,4 @@ struct GhUser {
     login: String,
     id: u64,
     email: Option<String>,
-} 
+}
