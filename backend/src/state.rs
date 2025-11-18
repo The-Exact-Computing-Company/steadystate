@@ -1,6 +1,6 @@
 // backend/src/state.rs
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -10,8 +10,13 @@ use uuid::Uuid;
 
 use crate::auth;
 use crate::auth::provider::{AuthProviderDyn, AuthProviderFactoryDyn};
+use crate::compute::local_provider::LocalComputeProvider;
+use crate::compute::ComputeProvider;
 use crate::jwt::JwtKeys;
-use crate::models::{PendingDevice, ProviderId, RefreshRecord};
+use crate::models::{PendingDevice, ProviderId, RefreshRecord, Session};
+
+// --- TYPE ALIASES ---
+pub type SessionStore = DashMap<String, Session>;
 
 // --- Centralized Configuration ---
 pub struct Config {
@@ -51,17 +56,16 @@ pub struct AppState {
     pub device_max_interval: u64,
     pub config: Config,
 
-    // Device flow: device_code -> PendingDevice
+    // --- AUTHENTICATION STATE ---
     pub device_pending: DashMap<String, PendingDevice>,
-
-    // Refresh tokens: token -> record
     pub refresh_store: DashMap<String, RefreshRecord>,
-
-    // Lazily populated cache of active providers
     pub providers: DashMap<ProviderId, AuthProviderDyn>,
-
-    // Registry of available provider factories
     pub provider_factories: DashMap<String, AuthProviderFactoryDyn>,
+
+    // --- COMPUTE & SESSION STATE ---
+    pub sessions: SessionStore,
+    pub compute_providers: HashMap<String, Arc<dyn ComputeProvider>>,
+    pub default_compute_provider: String,
 }
 
 impl AppState {
@@ -82,6 +86,20 @@ impl AppState {
 
         let jwt = JwtKeys::new(&secret, &issuer, ttl);
 
+        // --- COMPUTE PROVIDER SETUP ---
+        let mut compute_providers = HashMap::<String, Arc<dyn ComputeProvider>>::new();
+
+        // Initialize and register the local provider.
+        // This path must be configured correctly for the local provider to find the noenv flake.
+        let noenv_flake_path = std::env::var("NOENV_FLAKE_PATH")
+            .context("NOENV_FLAKE_PATH must be set to the absolute path of the backend/flakes/noenv directory")?;
+        let local_provider = Arc::new(LocalComputeProvider::new(noenv_flake_path.into()));
+        compute_providers.insert(local_provider.id().to_string(), local_provider);
+
+        let default_compute_provider = std::env::var("DEFAULT_COMPUTE_PROVIDER")
+            .unwrap_or_else(|_| "local".to_string());
+
+        // --- BUILD FINAL APP STATE ---
         let state = Arc::new(Self {
             http,
             jwt,
@@ -91,14 +109,18 @@ impl AppState {
             refresh_store: DashMap::new(),
             providers: DashMap::new(),
             provider_factories: DashMap::new(),
+            // --- New fields initialized here ---
+            sessions: SessionStore::new(),
+            compute_providers,
+            default_compute_provider,
         });
 
-        // Register all available provider factories at startup.
+        // Register all available auth provider factories at startup.
         auth::register_builtin_providers(&state);
 
         Ok(state)
     }
-    
+
     /// Registers a factory for creating an authentication provider.
     pub fn register_provider_factory(&self, factory: AuthProviderFactoryDyn) {
         self.provider_factories.insert(factory.id().to_string(), factory);
@@ -107,18 +129,16 @@ impl AppState {
     /// Lazily gets or creates an authentication provider.
     /// This ensures the server can start even if some providers are misconfigured.
     pub async fn get_or_create_provider(self: &Arc<Self>, id: &ProviderId) -> Result<AuthProviderDyn> {
-        // If the provider is already cached, return it immediately.
         if let Some(provider) = self.providers.get(id) {
             return Ok(provider.clone());
         }
 
-        // Otherwise, find the factory, build the provider, cache it, and return it.
-        info!("Initializing provider for the first time: {}", id.as_str());
+        info!("Initializing auth provider for the first time: {}", id.as_str());
         
         let key = id.as_str();
         let factory = self.provider_factories
             .get(key)
-            .ok_or_else(|| anyhow!("Unknown or unsupported provider: '{}'", key))?
+            .ok_or_else(|| anyhow!("Unknown or unsupported auth provider: '{}'", key))?
             .clone();
 
         let provider = factory.build(self).await?;
@@ -150,4 +170,4 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-} 
+}

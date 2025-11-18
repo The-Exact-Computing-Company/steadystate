@@ -1,6 +1,7 @@
-// src/main.rs
+// backend/src/main.rs
 
 use std::net::SocketAddr;
+use std::sync::Arc; // Import Arc for with_state
 
 use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -11,9 +12,11 @@ mod jwt;
 mod models;
 mod routes;
 mod auth;
+mod compute; // 1. Add the compute module
 
 use crate::state::AppState;
-use crate::routes::auth::router as auth_router;
+// 2. Import both auth and sessions routers
+use crate::routes::{auth, sessions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -38,8 +41,9 @@ async fn main() -> anyhow::Result<()> {
     //
     // ---- Router Setup ----
     //
-    let app: Router<_,> = Router::new()
-        .nest("/auth", auth_router())
+    let app: Router = Router::new()
+        .nest("/auth", auth::router())
+        .nest("/sessions", sessions::router()) // 3. Add the sessions router
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());

@@ -99,3 +99,61 @@ pub struct UserInfo {
     pub login: String,
     pub provider: String,
 }
+
+// --- MODELS FOR COMPUTE SESSIONS ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SessionState {
+    Provisioning,
+    Running,
+    Failed,
+    Terminating,
+    Terminated,
+}
+
+/// The internal representation of a session, stored in the backend.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub id: String,
+    pub state: SessionState,
+    pub repo_url: String,
+    pub branch: Option<String>,
+    pub environment: Option<String>,
+    pub endpoint: Option<String>,
+    pub compute_provider: String,
+    pub creator_login: String,
+    pub created_at: std::time::SystemTime,
+    pub updated_at: std::time::SystemTime,
+    pub error_message: Option<String>,
+}
+
+/// The request from the CLI to create a new session.
+#[derive(Debug, Deserialize)]
+pub struct SessionRequest {
+    pub repo_url: String,
+    pub branch: Option<String>,
+    pub environment: Option<String>,
+    pub provider_config: Option<serde_json::Value>,
+}
+
+/// The information about a session that is sent back to the CLI.
+#[derive(Debug, Serialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub state: SessionState,
+    pub endpoint: Option<String>,
+    pub compute_provider: String,
+    pub message: Option<String>,
+}
+
+impl From<&Session> for SessionInfo {
+    fn from(session: &Session) -> Self {
+        Self {
+            id: session.id.clone(),
+            state: session.state.clone(),
+            endpoint: session.endpoint.clone(),
+            compute_provider: session.compute_provider.clone(),
+            message: session.error_message.clone(),
+        }
+    }
+}

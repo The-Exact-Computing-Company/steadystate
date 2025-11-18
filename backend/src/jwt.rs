@@ -1,8 +1,16 @@
-// src/jwt.rs
+// backend/src/jwt.rs
 
+use std::sync::Arc;
 use anyhow::{anyhow, Result};
+use axum::{
+    async_trait,
+    extract::FromRequestParts,
+    http::{header, request::Parts, StatusCode},
+};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+
+use crate::state::AppState;
 
 #[derive(Clone)]
 pub struct JwtKeys {
@@ -61,4 +69,39 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+// --- NEW AXUM EXTRACTOR FOR CLAIMS ---
+
+#[async_trait]
+impl FromRequestParts<Arc<AppState>> for Claims {
+    type Rejection = (StatusCode, String);
+
+    /// Extracts JWT claims from the Authorization header.
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        // Get the Authorization header.
+        let auth_header = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                (StatusCode::UNAUTHORIZED, "Missing Authorization header".into())
+            })?;
+
+        // Check for "Bearer " prefix and get the token.
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| {
+                (StatusCode::BAD_REQUEST, "Invalid token type; expected Bearer".into())
+            })?;
+
+        // Verify the token using the keys in our app state.
+        state
+            .jwt
+            .verify(token)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
+    }
 }
