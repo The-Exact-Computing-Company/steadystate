@@ -20,7 +20,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Create this folder to silence warning
         run: mkdir -p ~/.nix-defexpr/channels
+
       - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v14
+        with:
+          name: rstats-on-nix
 
       - name: Build dev shell
         run: |
