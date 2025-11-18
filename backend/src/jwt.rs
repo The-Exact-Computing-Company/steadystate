@@ -1,16 +1,17 @@
-// ... (imports match previous version)
 // backend/src/jwt.rs
 
 use std::collections::HashSet;
-use std::sync::Arc;
+// We don't need Arc here anymore for the extractor logic, but it's fine to keep common imports.
 use anyhow::{anyhow, Result};
-use async_trait::async_trait; // Make sure this is imported
+// EXPLICITLY import async_trait from the crate, not via axum
+use async_trait::async_trait;
 use axum::{
     extract::FromRequestParts,
     http::{header, request::Parts, StatusCode},
 };
 use jwt_simple::prelude::*;
 use serde::{Deserialize, Serialize};
+
 use crate::state::AppState;
 
 #[derive(Clone)]
@@ -65,8 +66,9 @@ impl JwtKeys {
     }
 }
 
-// --- UPDATED EXTRACTOR TO USE AppState DIRECTLY ---
+// --- AXUM EXTRACTOR FOR CUSTOM CLAIMS ---
 
+// Ensure this attribute is present and coming from the `async_trait` crate
 #[async_trait]
 impl FromRequestParts<AppState> for CustomClaims {
     type Rejection = (StatusCode, String);
