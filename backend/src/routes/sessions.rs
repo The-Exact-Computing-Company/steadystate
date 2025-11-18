@@ -10,7 +10,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
-    jwt::Claims,
+    jwt::CustomClaims,
     models::{Session, SessionInfo, SessionRequest, SessionState},
     state::AppState,
 };
@@ -53,7 +53,7 @@ async fn run_provisioning(
 
 async fn create_session(
     State(state): State<Arc<AppState>>,
-    claims: Claims, // Assuming you have an extractor for JWT claims
+    claims: CustomClaims,
     Json(request): Json<SessionRequest>,
 ) -> (StatusCode, Json<SessionInfo>) {
     let session_id = Uuid::new_v4().to_string();
