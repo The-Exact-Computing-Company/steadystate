@@ -3,7 +3,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use reqwest::Client;
 use tracing::info;
 use uuid::Uuid;
@@ -20,6 +19,7 @@ pub type SessionStore = DashMap<String, Session>;
 // --- Centralized Configuration ---
 #[derive(Clone)]
 pub struct Config {
+    // Auth Keys
     pub enable_fake_auth: bool,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
@@ -27,11 +27,20 @@ pub struct Config {
     pub gitlab_client_secret: Option<String>,
     pub orchid_client_id: Option<String>,
     pub orchid_client_secret: Option<String>,
+    
+    // Timeouts & TTLs
+    pub device_poll_interval: u64,
+    pub jwt_ttl_secs: u64,
+    pub refresh_ttl_secs: u64,
+
+    // Compute
+    pub noenv_flake_path: String,
+    pub default_compute_provider: String,
 }
 
 impl Config {
-    pub fn from_env() -> Self {
-        Self {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
             enable_fake_auth: std::env::var("ENABLE_FAKE_AUTH").is_ok(),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
@@ -39,27 +48,31 @@ impl Config {
             gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
             orchid_client_id: std::env::var("ORCHID_CLIENT_ID").ok(),
             orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
-        }
+            
+            device_poll_interval: std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(15),
+            jwt_ttl_secs: std::env::var("JWT_TTL_SECS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(900),
+            refresh_ttl_secs: std::env::var("REFRESH_TTL_SECS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(14 * 24 * 3600),
+            
+            noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
+                .context("NOENV_FLAKE_PATH must be set")?,
+            default_compute_provider: std::env::var("DEFAULT_COMPUTE_PROVIDER")
+                .unwrap_or_else(|_| "local".to_string()),
+        })
     }
 }
 
-static DEFAULT_DEVICE_POLL_MAX_INTERVAL_SECS: Lazy<u64> = Lazy::new(|| {
-    std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(15)
-});
-
 // --- AppState Definition ---
-// We implement Clone manually to ensure it's cheap (Arc-based).
+// Derived Clone is now efficient because complex types are wrapped in Arc/DashMap.
 #[derive(Clone)]
 pub struct AppState {
     pub http: Client,
     pub jwt: JwtKeys,
-    pub device_max_interval: u64,
     pub config: Config,
 
-    // Auth state (DashMap is internally Arc'd)
+    // Auth state
     pub device_pending: DashMap<String, PendingDevice>,
     pub refresh_store: DashMap<String, RefreshRecord>,
     pub providers: DashMap<ProviderId, AuthProviderDyn>,
@@ -67,13 +80,15 @@ pub struct AppState {
 
     // Compute & Session state
     pub sessions: SessionStore,
-    // Wrapped in Arc for cheap cloning of AppState
+    // Map is wrapped in Arc to allow cheap cloning of AppState
     pub compute_providers: Arc<HashMap<String, Arc<dyn ComputeProvider>>>,
-    pub default_compute_provider: String,
 }
 
 impl AppState {
     pub async fn try_new() -> anyhow::Result<Arc<Self>> {
+        // 1. Load Config first to fail fast on missing env vars
+        let config = Config::from_env()?;
+
         let http = Client::builder()
             .user_agent("steadystate-backend/0.1")
             .timeout(Duration::from_secs(30))
@@ -83,39 +98,29 @@ impl AppState {
 
         let secret = std::env::var("JWT_SECRET").context("JWT_SECRET not set")?;
         let issuer = std::env::var("JWT_ISSUER").unwrap_or("steadystate".into());
-        let ttl = std::env::var("JWT_TTL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(900);
+        let jwt = JwtKeys::new(&secret, &issuer, config.jwt_ttl_secs);
 
-        let jwt = JwtKeys::new(&secret, &issuer, ttl);
-
-        // --- COMPUTE PROVIDER SETUP ---
+        // 2. Setup Compute Providers
         let mut compute_providers = HashMap::<String, Arc<dyn ComputeProvider>>::new();
 
-        let noenv_flake_path = std::env::var("NOENV_FLAKE_PATH")
-            .context("NOENV_FLAKE_PATH must be set to the absolute path of the backend/flakes/noenv directory")?;
-        let local_provider = Arc::new(LocalComputeProvider::new(noenv_flake_path.into()));
+        // Initialize local provider using config path
+        let local_provider = Arc::new(LocalComputeProvider::new(config.noenv_flake_path.clone().into()));
         compute_providers.insert(local_provider.id().to_string(), local_provider);
 
-        let default_compute_provider = std::env::var("DEFAULT_COMPUTE_PROVIDER")
-            .unwrap_or_else(|_| "local".to_string());
-
-        // --- BUILD FINAL APP STATE ---
+        // 3. Build State
         let state = Arc::new(Self {
             http,
             jwt,
-            device_max_interval: *DEFAULT_DEVICE_POLL_MAX_INTERVAL_SECS,
-            config: Config::from_env(),
+            config,
             device_pending: DashMap::new(),
             refresh_store: DashMap::new(),
             providers: DashMap::new(),
             provider_factories: DashMap::new(),
             sessions: SessionStore::new(),
-            compute_providers: Arc::new(compute_providers), // Wrap in Arc
-            default_compute_provider,
+            compute_providers: Arc::new(compute_providers),
         });
 
+        // 4. Register Auth Providers
         auth::register_builtin_providers(&state);
 
         Ok(state)
@@ -145,12 +150,9 @@ impl AppState {
 
     pub fn issue_refresh_token(&self, login: String, provider: ProviderId) -> String {
         let token = Uuid::new_v4().to_string();
-        let ttl_secs: u64 = std::env::var("REFRESH_TTL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(14 * 24 * 3600);
-
-        let expires_at = now() + ttl_secs;
+        
+        // Use cached TTL from config
+        let expires_at = now() + self.config.refresh_ttl_secs;
 
         self.refresh_store.insert(token.clone(), RefreshRecord {
             login,
@@ -167,4 +169,4 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-}
+} 
