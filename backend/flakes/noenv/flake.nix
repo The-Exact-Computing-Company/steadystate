@@ -1,5 +1,5 @@
 {
-  description = "SteadyState NOENV base development environment";
+  description = "SteadyState --noenv environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
