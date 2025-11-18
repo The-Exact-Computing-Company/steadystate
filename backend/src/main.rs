@@ -7,6 +7,7 @@ use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, fmt};
 
+// Declare all the top-level modules your binary will use.
 mod state;
 mod jwt;
 mod models;
@@ -15,8 +16,6 @@ mod auth;
 mod compute;
 
 use crate::state::AppState;
-// Import the modules, not the functions directly
-use crate::routes::{auth, sessions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,9 +41,10 @@ async fn main() -> anyhow::Result<()> {
     // ---- Router Setup ----
     //
     let app: Router = Router::new()
-        // Correctly call the router function from within each module
-        .nest("/auth", auth::router())
-        .nest("/sessions", sessions::router())
+        // Use the full path from the crate root to the router function.
+        // This is the clearest and most idiomatic way.
+        .nest("/auth", crate::routes::auth::router())
+        .nest("/sessions", crate::routes::sessions::router())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -65,5 +65,4 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-} 
-
+}
