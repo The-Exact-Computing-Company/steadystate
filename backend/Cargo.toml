@@ -22,3 +22,5 @@ dashmap = "6"
 tower-http = { version = "0.6.6", features = ["cors", "trace"] }
 async-trait = "0.1"
 shell-escape = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
