@@ -3,9 +3,11 @@
 use serde::{Deserialize, Serialize};
 use crate::auth::provider::UserIdentity;
 
+// ============================================================================
+//  Authentication & Identity Models
+// ============================================================================
+
 /// A type-safe, string-based identifier for an authentication provider.
-/// This replaces the rigid ProviderName enum to allow for new providers
-/// to be added without modifying core models.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ProviderId(String);
 
@@ -100,7 +102,9 @@ pub struct UserInfo {
     pub provider: String,
 }
 
-// --- MODELS FOR COMPUTE SESSIONS ---
+// ============================================================================
+//  Compute & Session Models
+// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionState {
@@ -156,4 +160,4 @@ impl From<&Session> for SessionInfo {
             message: session.error_message.clone(),
         }
     }
-}
+} 
