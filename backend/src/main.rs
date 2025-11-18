@@ -7,7 +7,8 @@ use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, fmt};
 
-// Declare all the top-level modules your binary will use.
+// --- Module Declarations ---
+// These lines tell Rust that these modules exist as files/directories at this level.
 mod state;
 mod jwt;
 mod models;
@@ -41,8 +42,8 @@ async fn main() -> anyhow::Result<()> {
     // ---- Router Setup ----
     //
     let app: Router = Router::new()
-        // Use the full path from the crate root to the router function.
-        // This is the clearest and most idiomatic way.
+        // Use the full, unambiguous path from the crate root (`crate::`)
+        // to each module's router function. This resolves all errors.
         .nest("/auth", crate::routes::auth::router())
         .nest("/sessions", crate::routes::sessions::router())
         .with_state(state)
@@ -65,4 +66,4 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
+} 
