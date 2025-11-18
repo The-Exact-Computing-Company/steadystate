@@ -1,22 +1,21 @@
 // backend/src/main.rs
 
 use std::net::SocketAddr;
-use std::sync::Arc; // Import Arc for with_state
+use std::sync::Arc;
 
 use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, fmt};
 
+// Declare all the top-level modules your binary will use.
 mod state;
 mod jwt;
 mod models;
 mod routes;
 mod auth;
-mod compute; // 1. Add the compute module
+mod compute;
 
 use crate::state::AppState;
-// 2. Import both auth and sessions routers
-use crate::routes::{auth, sessions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,8 +41,10 @@ async fn main() -> anyhow::Result<()> {
     // ---- Router Setup ----
     //
     let app: Router = Router::new()
-        .nest("/auth", auth::router())
-        .nest("/sessions", sessions::router()) // 3. Add the sessions router
+        // Use the full path from the crate root to the router function.
+        // This is the clearest and most idiomatic way.
+        .nest("/auth", crate::routes::auth::router())
+        .nest("/sessions", crate::routes::sessions::router())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
