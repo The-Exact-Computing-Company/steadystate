@@ -1,13 +1,13 @@
 // backend/src/main.rs
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{EnvFilter, fmt};
 
-// --- Module Declarations ---
-// These lines tell Rust that these modules exist as files/directories at this level.
+// Declare all the top-level modules your binary will use.
 mod state;
 mod jwt;
 mod models;
@@ -41,13 +41,10 @@ async fn main() -> anyhow::Result<()> {
     // ---- Router Setup ----
     //
     let app: Router = Router::new()
-        // Use the full, unambiguous path from the crate root (`crate::`)
-        // to each module's router function. This resolves all errors.
+        // Use the full, unambiguous path from the crate root to each router.
         .nest("/auth", crate::routes::auth::router())
         .nest("/sessions", crate::routes::sessions::router())
-        .with_state(state)
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http());
+        .with_state(state);
 
     //
     // ---- Bind & Serve ----
@@ -62,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("SteadyState backend listening on http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.layer(CorsLayer::permissive()).layer(TraceLayer::new_for_http())).await?;
 
     Ok(())
-} 
+}
