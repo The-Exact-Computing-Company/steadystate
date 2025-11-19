@@ -14,6 +14,7 @@
       pkgs = import nixpkgs { inherit system; };
 
       # Google antigravity
+      isCI = builtins.getEnv "CI" == "true" || builtins.getEnv "CI" == "1";
       agpkgs = import antigravity-pkgs {
         inherit system;
         config.allowUnfree = true;
@@ -81,7 +82,7 @@
           cli
           treemerge.packages.${system}.default
           antigravity
-        ];
+        ] ++ (if isCI then [] else [ antigravity ]);
 
         shellHook = ''
           echo "🔧 Entering SteadyState dev shell"
