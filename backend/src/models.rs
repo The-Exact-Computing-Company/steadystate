@@ -26,11 +26,11 @@ impl From<&str> for ProviderId {
 #[derive(Clone)]
 pub struct PendingDevice {
     pub provider: ProviderId,
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub interval: u64,
-    pub created_at: u64,
+    pub _device_code: String,
+    pub _user_code: String,
+    pub _verification_uri: String,
+    pub _interval: u64,
+    pub _created_at: u64,
 }
 
 #[derive(Clone)]
@@ -120,13 +120,13 @@ pub enum SessionState {
 pub struct Session {
     pub id: String,
     pub state: SessionState,
-    pub repo_url: String,
-    pub branch: Option<String>,
-    pub environment: Option<String>,
+    pub _repo_url: String,
+    pub _branch: Option<String>,
+    pub _environment: Option<String>,
     pub endpoint: Option<String>,
     pub compute_provider: String,
-    pub creator_login: String,
-    pub created_at: std::time::SystemTime,
+    pub _creator_login: String,
+    pub _created_at: std::time::SystemTime,
     pub updated_at: std::time::SystemTime,
     pub error_message: Option<String>,
 }
@@ -137,7 +137,8 @@ pub struct SessionRequest {
     pub repo_url: String,
     pub branch: Option<String>,
     pub environment: Option<String>,
-    pub provider_config: Option<serde_json::Value>,
+    #[serde(rename = "provider_config")]
+    pub _provider_config: Option<serde_json::Value>,
 }
 
 /// The information about a session that is sent back to the CLI.

@@ -25,6 +25,7 @@ pub enum DevicePollOutcome {
 // Any type implementing AuthProvider must also implement Debug, Send, and Sync.
 #[async_trait]
 pub trait AuthProvider: std::fmt::Debug + Send + Sync {
+    #[allow(dead_code)]
     fn id(&self) -> ProviderId;
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse>;
     async fn poll_device_flow(

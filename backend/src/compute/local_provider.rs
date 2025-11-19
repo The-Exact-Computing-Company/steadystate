@@ -13,6 +13,49 @@ use tokio::time::{timeout, Duration};
 use crate::compute::ComputeProvider;
 use crate::models::{Session, SessionRequest, SessionState};
 
+#[async_trait::async_trait]
+pub trait CommandExecutor: Send + Sync + std::fmt::Debug {
+    async fn run_status(&self, cmd: &str, args: &[&str]) -> Result<std::process::ExitStatus>;
+    async fn run_capture(&self, cmd: &str, args: &[&str]) -> Result<(u32, Box<dyn tokio::io::AsyncRead + Unpin + Send>)>;
+    async fn run_shell(&self, script: &str) -> Result<std::process::ExitStatus>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RealCommandExecutor;
+
+#[async_trait::async_trait]
+impl CommandExecutor for RealCommandExecutor {
+    async fn run_status(&self, cmd: &str, args: &[&str]) -> Result<std::process::ExitStatus> {
+        Command::new(cmd)
+            .args(args)
+            .status()
+            .await
+            .context(format!("Failed to execute {}", cmd))
+    }
+
+    async fn run_capture(&self, cmd: &str, args: &[&str]) -> Result<(u32, Box<dyn tokio::io::AsyncRead + Unpin + Send>)> {
+        let mut c = Command::new(cmd);
+        c.args(args);
+        c.stdout(std::process::Stdio::piped());
+        c.stderr(std::process::Stdio::piped()); // Capture stderr too if needed, or null it
+
+        let mut child = c.spawn().context(format!("Failed to spawn {}", cmd))?;
+        let pid = child.id().ok_or_else(|| anyhow!("Failed to get PID"))?;
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to capture stdout"))?;
+        
+        Ok((pid, Box::new(stdout)))
+    }
+
+    async fn run_shell(&self, script: &str) -> Result<std::process::ExitStatus> {
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .status()
+            .await
+            .context("Failed to execute shell script")
+    }
+}
+
 #[derive(Debug)]
 struct LocalSession {
     pid: u32,
@@ -28,6 +71,7 @@ pub struct LocalProviderState {
 pub struct LocalComputeProvider {
     flake_path: PathBuf,
     state: Arc<LocalProviderState>,
+    executor: Box<dyn CommandExecutor>,
 }
 
 impl LocalComputeProvider {
@@ -35,6 +79,16 @@ impl LocalComputeProvider {
         Self {
             flake_path,
             state: Arc::new(LocalProviderState::default()),
+            executor: Box::new(RealCommandExecutor),
+        }
+    }
+
+    /// Constructor for testing with a mock executor
+    pub fn new_with_executor(flake_path: PathBuf, executor: Box<dyn CommandExecutor>) -> Self {
+        Self {
+            flake_path,
+            state: Arc::new(LocalProviderState::default()),
+            executor,
         }
     }
 
@@ -50,103 +104,98 @@ impl LocalComputeProvider {
             
         Ok((base, repo_path))
     }
-}
 
-/// Helper to wrap a command so it runs with the Nix profile sourced.
-fn nix_shell_command(cmd: &str) -> Command {
-    let mut c = Command::new("sh");
-    let full = format!(
-        r#"
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        fi
-        {}
-        "#,
-        cmd
-    );
-    c.arg("-c").arg(full);
-    c
-}
+    async fn ensure_nix_installed(&self) -> Result<()> {
+        // 1. Check if nix is already in PATH
+        let status = self.executor.run_status("sh", &["-c", "command -v nix >/dev/null 2>&1"]).await
+            .context("Failed to check for nix")?;
 
-async fn ensure_nix_installed() -> Result<()> {
-    // 1. Check if nix is already in PATH
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg("command -v nix >/dev/null 2>&1")
-        .status()
-        .await
-        .context("Failed to check for nix")?;
+        if status.success() {
+            return Ok(());
+        }
 
-    if status.success() {
-        return Ok(());
+        tracing::info!("Nix not found; installing Lix...");
+        
+        // 2. Install Lix non-interactively
+        let install_cmd = r#"curl --proto '=https' --tlsv1.2 -sSf -L https://install.lix.systems/lix | sh -s -- install --no-confirm"#;
+        let status = self.executor.run_shell(install_cmd).await
+            .context("Failed to spawn Lix installer")?;
+
+        if !status.success() {
+            return Err(anyhow!("Lix installer failed"));
+        }
+        
+        tracing::info!("Lix installation completed successfully");
+        Ok(())
     }
 
-    tracing::info!("Nix not found; installing Lix...");
-    
-    // 2. Install Lix non-interactively
-    let install_cmd = r#"curl --proto '=https' --tlsv1.2 -sSf -L https://install.lix.systems/lix | sh -s -- install --no-confirm"#;
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(install_cmd)
-        .status()
-        .await
-        .context("Failed to spawn Lix installer")?;
+    async fn clone_repo(&self, repo_url: &str, dest: &Path) -> Result<()> {
+        tracing::info!("Cloning repo {} into {}", repo_url, dest.display());
+        
+        let status = self.executor.run_status("git", &["clone", "--depth=1", repo_url, dest.to_str().unwrap()]).await
+            .context("Failed to spawn git clone")?;
 
-    if !status.success() {
-        return Err(anyhow!("Lix installer failed"));
+        if !status.success() {
+            return Err(anyhow!("git clone failed for {}", repo_url));
+        }
+        Ok(())
     }
-    
-    tracing::info!("Lix installation completed successfully");
-    Ok(())
-}
 
-async fn clone_repo(repo_url: &str, dest: &Path) -> Result<()> {
-    tracing::info!("Cloning repo {} into {}", repo_url, dest.display());
-    
-    let status = Command::new("git")
-        .arg("clone")
-        .arg("--depth=1")
-        .arg(repo_url)
-        .arg(dest)
-        .status()
-        .await
-        .context("Failed to spawn git clone")?;
+    async fn launch_upterm_in_noenv(&self, flake_path: &Path, working_dir: &Path) -> Result<(u32, String)> {
+        let inner_cmd = "upterm host --force-command=bash";
+        
+        // We use shell_escape to safely insert paths into the shell string.
+        let safe_workdir = shell_escape::escape(working_dir.to_string_lossy().into());
+        let safe_flake = shell_escape::escape(flake_path.to_string_lossy().into());
+        
+        let full_cmd = format!(
+            "cd {} && nix develop {}#default --command {}",
+            safe_workdir, safe_flake, inner_cmd
+        );
 
-    if !status.success() {
-        return Err(anyhow!("git clone failed for {}", repo_url));
+        tracing::info!("Starting upterm session...");
+        
+        let nix_wrapper = format!(
+            r#"
+            if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+              . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+            fi
+            {}
+            "#,
+            full_cmd
+        );
+        
+        let (pid, stdout) = self.executor.run_capture("sh", &["-c", &nix_wrapper]).await
+            .context("Failed to spawn nix develop/upterm")?;
+
+        // We wait for the invite link to appear in stdout.
+        let invite = timeout(Duration::from_secs(30), capture_upterm_invite(stdout))
+            .await
+            .context("Timed out waiting for upterm invite")??;
+
+        Ok((pid, invite))
     }
-    Ok(())
+
+    async fn kill_pid(&self, pid: u32) -> Result<()> {
+        tracing::info!("Killing local session process with pid={}", pid);
+        let cmd = format!("kill -TERM {}", pid);
+        let status = self.executor.run_shell(&cmd).await
+            .context("Failed to spawn kill")?;
+            
+        if !status.success() {
+            tracing::warn!("kill returned non-zero for pid={}", pid);
+        }
+        Ok(())
+    }
 }
 
-async fn launch_upterm_in_noenv(flake_path: &Path, working_dir: &Path) -> Result<(u32, String)> {
-    let inner_cmd = "upterm host --force-command=bash";
-    
-    // We use shell_escape to safely insert paths into the shell string.
-    let safe_workdir = shell_escape::escape(working_dir.to_string_lossy().into());
-    let safe_flake = shell_escape::escape(flake_path.to_string_lossy().into());
-    
-    let full_cmd = format!(
-        "cd {} && nix develop {}#default --command {}",
-        safe_workdir, safe_flake, inner_cmd
-    );
 
-    tracing::info!("Starting upterm session...");
-    
-    let mut cmd = nix_shell_command(&full_cmd);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().context("Failed to spawn nix develop/upterm")?;
-    let pid = child.id().ok_or_else(|| anyhow!("Failed to obtain PID of upterm process"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to capture upterm stdout"))?;
 
-    // We wait for the invite link to appear in stdout.
-    let invite = timeout(Duration::from_secs(30), capture_upterm_invite(stdout))
-        .await
-        .context("Timed out waiting for upterm invite")??;
 
-    Ok((pid, invite))
-}
+
+
+
 
 async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Unpin) -> Result<String> {
     let reader = BufReader::new(stdout);
@@ -163,21 +212,7 @@ async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Unpin) -> Res
     Err(anyhow!("Upterm did not print an invite line"))
 }
 
-async fn kill_pid(pid: u32) -> Result<()> {
-    tracing::info!("Killing local session process with pid={}", pid);
-    let cmd = format!("kill -TERM {}", pid);
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .status()
-        .await
-        .context("Failed to spawn kill")?;
-        
-    if !status.success() {
-        tracing::warn!("kill returned non-zero for pid={}", pid);
-    }
-    Ok(())
-}
+
 
 #[async_trait::async_trait]
 impl ComputeProvider for LocalComputeProvider {
@@ -186,13 +221,13 @@ impl ComputeProvider for LocalComputeProvider {
     async fn start_session(&self, session: &mut Session, request: &SessionRequest) -> Result<()> {
         tracing::info!("Starting local NOENV session: id={} repo={}", session.id, request.repo_url);
         
-        ensure_nix_installed().await?;
+        self.ensure_nix_installed().await?;
         
         let (workspace_root, repo_path) = self.create_workspace(&session.id)?;
         
-        clone_repo(&request.repo_url, &repo_path).await?;
+        self.clone_repo(&request.repo_url, &repo_path).await?;
         
-        let (pid, invite) = launch_upterm_in_noenv(&self.flake_path, &repo_path).await?;
+        let (pid, invite) = self.launch_upterm_in_noenv(&self.flake_path, &repo_path).await?;
         
         // Store session state (PID) so we can kill it later.
         self.state.live_sessions.insert(session.id.clone(), LocalSession { pid, workspace_root });
@@ -209,7 +244,7 @@ impl ComputeProvider for LocalComputeProvider {
         
         if let Some((_, local_session)) = self.state.live_sessions.remove(&session.id) {
             if local_session.pid != 0 {
-                let _ = kill_pid(local_session.pid).await;
+                let _ = self.kill_pid(local_session.pid).await;
             }
             if let Err(e) = std::fs::remove_dir_all(&local_session.workspace_root) {
                 tracing::warn!("Failed to remove workspace at {}: {:#}", local_session.workspace_root.display(), e);

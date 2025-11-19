@@ -39,3 +39,4 @@ jobs:
           export CARGO_BUILD_JOBS=1
           export RUSTFLAGS="-C debuginfo=0 -C opt-level=0"
           nix develop --command cargo test -p steadystate
+          nix develop --command cargo test -p steadystate-backend

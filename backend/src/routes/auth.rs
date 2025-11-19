@@ -1,6 +1,6 @@
 // backend/src/routes/auth.rs
 
-use std::sync::Arc;
+
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -39,12 +39,12 @@ pub async fn device_start(
         .map_err(internal)?;
 
     state.device_pending.insert(start.device_code.clone(), PendingDevice {
-        provider: provider_id,
-        device_code: start.device_code.clone(),
-        user_code: start.user_code.clone(),
-        verification_uri: start.verification_uri.clone(),
-        interval: start.interval,
-        created_at: now(),
+        provider: q.provider.unwrap_or("github".into()).into(),
+        _device_code: start.device_code.clone(),
+        _user_code: start.user_code.clone(),
+        _verification_uri: start.verification_uri.clone(),
+        _interval: start.interval,
+        _created_at: now(),
     });
 
     Ok(Json(start))

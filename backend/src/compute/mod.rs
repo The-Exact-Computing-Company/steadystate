@@ -4,6 +4,9 @@ use crate::models::{Session, SessionRequest};
 
 pub mod local_provider;
 
+#[cfg(test)]
+mod tests;
+
 #[async_trait::async_trait]
 pub trait ComputeProvider: Send + Sync + std::fmt::Debug {
     fn id(&self) -> &'static str;

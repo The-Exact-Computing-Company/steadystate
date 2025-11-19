@@ -2,36 +2,24 @@
 
 // ... (same imports)
 use std::net::SocketAddr;
-use std::sync::Arc;
-
 use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing_subscriber::{EnvFilter, fmt};
-
-mod state;
-mod jwt;
-mod models;
-mod routes;
-mod auth;
-mod compute;
-
-use crate::state::AppState;
+use steadystate_backend::state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ... (logging setup)
+    tracing_subscriber::fmt::init();
 
     let state = AppState::try_new().await?;
 
     let app: Router = Router::new()
-        .nest("/auth", crate::routes::auth::router())
-        .nest("/sessions", crate::routes::sessions::router())
+        .nest("/auth", steadystate_backend::routes::auth::router())
+        .nest("/sessions", steadystate_backend::routes::sessions::router())
         // Dereference the Arc<AppState> to pass AppState by value (it clones cheaply now)
         .with_state((*state).clone()) 
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
-    // ... (bind & serve)
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|s| s.parse().ok())
