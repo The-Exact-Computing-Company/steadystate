@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "antigravity-pkgs": {
+      "locked": {
+        "lastModified": 1763535436,
+        "narHash": "sha256-w8OpLVew+iTNq4rKqlxAvGG1HRsuAgHjd/C/7MlyA0w=",
+        "owner": "xiaoxiangmoe",
+        "repo": "nixpkgs",
+        "rev": "33d2dab41afb2bcc93c4b592418ad3d7e8f5efed",
+        "type": "github"
+      },
+      "original": {
+        "owner": "xiaoxiangmoe",
+        "ref": "antigravity",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -70,6 +86,7 @@
     },
     "root": {
       "inputs": {
+        "antigravity-pkgs": "antigravity-pkgs",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "treemerge": "treemerge"
