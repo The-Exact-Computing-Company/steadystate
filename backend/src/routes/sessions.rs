@@ -18,8 +18,8 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(create_session))
-        .route("/:id", get(get_session_status))
-        .route("/:id", delete(terminate_session))
+        .route("/{id}", get(get_session_status))
+        .route("/{id}", delete(terminate_session))
 }
 
 async fn run_provisioning(
