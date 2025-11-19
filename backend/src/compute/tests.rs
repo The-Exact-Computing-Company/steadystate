@@ -188,3 +188,117 @@ async fn test_terminate_session() {
     let calls = executor.get_calls();
     assert!(calls.iter().any(|c| c.args.iter().any(|a| a.contains("kill -TERM"))));
 }
+
+#[tokio::test]
+async fn test_start_session_git_failure() {
+    let executor = Box::new(MockCommandExecutor::new());
+    // Mock git clone failure
+    executor.add_response("git", 1, "fatal: repository not found");
+
+    let provider = LocalComputeProvider::new_with_executor(
+        PathBuf::from("/tmp/flake"),
+        executor.clone()
+    );
+
+    let mut session = Session {
+        id: "test-session-git-fail".into(),
+        _repo_url: "https://github.com/user/repo".into(),
+        _branch: None,
+        _environment: None,
+        compute_provider: "local".into(),
+        _creator_login: "user1".into(),
+        state: SessionState::Provisioning,
+        endpoint: None,
+        _created_at: std::time::SystemTime::now(),
+        updated_at: std::time::SystemTime::now(),
+        error_message: None,
+    };
+
+    let request = SessionRequest {
+        repo_url: "https://github.com/user/repo".into(),
+        branch: None,
+        environment: None,
+        _provider_config: None,
+    };
+
+    let result = provider.start_session(&mut session, &request).await;
+    assert!(result.is_err());
+    // The provider does not update state on failure (caller does), so it should remain Provisioning
+    assert!(matches!(session.state, SessionState::Provisioning));
+}
+
+#[tokio::test]
+async fn test_start_session_upterm_failure() {
+    let executor = Box::new(MockCommandExecutor::new());
+    // Mock upterm failure (non-zero exit code)
+    executor.add_response("upterm", 1, "Error: failed to start session");
+
+    let provider = LocalComputeProvider::new_with_executor(
+        PathBuf::from("/tmp/flake"),
+        executor.clone()
+    );
+
+    let mut session = Session {
+        id: "test-session-upterm-fail".into(),
+        _repo_url: "https://github.com/user/repo".into(),
+        _branch: None,
+        _environment: None,
+        compute_provider: "local".into(),
+        _creator_login: "user1".into(),
+        state: SessionState::Provisioning,
+        endpoint: None,
+        _created_at: std::time::SystemTime::now(),
+        updated_at: std::time::SystemTime::now(),
+        error_message: None,
+    };
+
+    let request = SessionRequest {
+        repo_url: "https://github.com/user/repo".into(),
+        branch: None,
+        environment: None,
+        _provider_config: None,
+    };
+
+    let result = provider.start_session(&mut session, &request).await;
+    assert!(result.is_err());
+    assert!(matches!(session.state, SessionState::Provisioning));
+}
+
+#[tokio::test]
+async fn test_start_session_nix_failure() {
+    let executor = Box::new(MockCommandExecutor::new());
+    // Mock nix check failure
+    executor.add_response("command -v nix", 1, "");
+    // And mock installer failure too, otherwise it tries to install
+    executor.add_response("sh", 1, "Installer failed"); 
+
+    let provider = LocalComputeProvider::new_with_executor(
+        PathBuf::from("/tmp/flake"),
+        executor.clone()
+    );
+
+    let mut session = Session {
+        id: "test-session-nix-fail".into(),
+        _repo_url: "https://github.com/user/repo".into(),
+        _branch: None,
+        _environment: None,
+        compute_provider: "local".into(),
+        _creator_login: "user1".into(),
+        state: SessionState::Provisioning,
+        endpoint: None,
+        _created_at: std::time::SystemTime::now(),
+        updated_at: std::time::SystemTime::now(),
+        error_message: None,
+    };
+
+    let request = SessionRequest {
+        repo_url: "https://github.com/user/repo".into(),
+        branch: None,
+        environment: None,
+        _provider_config: None,
+    };
+
+    let result = provider.start_session(&mut session, &request).await;
+    assert!(result.is_err());
+    assert!(matches!(session.state, SessionState::Provisioning));
+}
