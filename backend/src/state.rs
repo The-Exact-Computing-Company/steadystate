@@ -73,10 +73,10 @@ pub struct AppState {
     pub config: Config,
 
     // Auth state
-    pub device_pending: DashMap<String, PendingDevice>,
-    pub refresh_store: DashMap<String, RefreshRecord>,
-    pub providers: DashMap<ProviderId, AuthProviderDyn>,
-    pub provider_factories: DashMap<String, AuthProviderFactoryDyn>,
+    pub device_pending: Arc<DashMap<String, PendingDevice>>,
+    pub refresh_store: Arc<DashMap<String, RefreshRecord>>,
+    pub providers: Arc<DashMap<ProviderId, AuthProviderDyn>>,
+    pub provider_factories: Arc<DashMap<String, AuthProviderFactoryDyn>>,
 
     // Compute & Session state
     pub sessions: SessionStore,
@@ -112,10 +112,10 @@ impl AppState {
             http,
             jwt,
             config,
-            device_pending: DashMap::new(),
-            refresh_store: DashMap::new(),
-            providers: DashMap::new(),
-            provider_factories: DashMap::new(),
+            device_pending: Arc::new(DashMap::new()),
+            refresh_store: Arc::new(DashMap::new()),
+            providers: Arc::new(DashMap::new()),
+            provider_factories: Arc::new(DashMap::new()),
             sessions: SessionStore::new(),
             compute_providers: Arc::new(compute_providers),
         });
