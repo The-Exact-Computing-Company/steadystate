@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing_subscriber::EnvFilter;
+
 
 mod state;
 mod jwt;

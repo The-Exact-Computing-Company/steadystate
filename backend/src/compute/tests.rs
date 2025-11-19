@@ -122,9 +122,9 @@ async fn test_start_session_success() {
     };
 
     let request = SessionRequest {
-        _repo_url: "https://github.com/user/repo".into(),
-        _branch: None,
-        _environment: None,
+        repo_url: "https://github.com/user/repo".into(),
+        branch: None,
+        environment: None,
         _provider_config: None,
     };
 
@@ -174,9 +174,9 @@ async fn test_terminate_session() {
         error_message: None,
     };
     let request = SessionRequest { 
-        _repo_url: "repo".into(),
-        _branch: None,
-        _environment: None,
+        repo_url: "repo".into(),
+        branch: None,
+        environment: None,
         _provider_config: None,
     };
     

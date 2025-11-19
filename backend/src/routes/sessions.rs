@@ -70,14 +70,14 @@ async fn create_session(
     let session = Session {
         id: session_id.clone(),
         state: SessionState::Provisioning,
-        repo_url: request.repo_url.clone(),
-        branch: request.branch.clone(),
-        environment: request.environment.clone(),
+        _repo_url: request.repo_url.clone(),
+        _branch: request.branch.clone(),
+        _environment: request.environment.clone(),
         endpoint: None,
         // FIX IS HERE: Access default_compute_provider via config
         compute_provider: state.config.default_compute_provider.clone(),
-        creator_login: claims.sub,
-        created_at: now,
+        _creator_login: claims.sub,
+        _created_at: now,
         updated_at: now,
         error_message: None,
     };

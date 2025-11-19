@@ -120,17 +120,12 @@ pub enum SessionState {
 pub struct Session {
     pub id: String,
     pub state: SessionState,
-    #[serde(rename = "repo_url")]
     pub _repo_url: String,
-    #[serde(rename = "branch")]
     pub _branch: Option<String>,
-    #[serde(rename = "environment")]
     pub _environment: Option<String>,
     pub endpoint: Option<String>,
     pub compute_provider: String,
-    #[serde(rename = "creator_login")]
     pub _creator_login: String,
-    #[serde(rename = "created_at")]
     pub _created_at: std::time::SystemTime,
     pub updated_at: std::time::SystemTime,
     pub error_message: Option<String>,
