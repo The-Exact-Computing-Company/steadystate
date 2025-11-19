@@ -44,12 +44,12 @@ impl Config {
             enable_fake_auth: std::env::var("ENABLE_FAKE_AUTH").is_ok(),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            gitlab_client_id: std::env::var("GITLAB_CLIENT_ID").ok(),
-            gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
-            orchid_client_id: std::env::var("ORCHID_CLIENT_ID").ok(),
-            orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
+            _gitlab_client_id: std::env::var("GITLAB_CLIENT_ID").ok(),
+            _gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
+            _orchid_client_id: std::env::var("ORCHID_CLIENT_ID").ok(),
+            _orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
             
-            device_poll_interval: std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
+            _device_poll_interval: std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(15),
             jwt_ttl_secs: std::env::var("JWT_TTL_SECS")
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(900),

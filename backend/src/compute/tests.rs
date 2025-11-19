@@ -109,23 +109,23 @@ async fn test_start_session_success() {
 
     let mut session = Session {
         id: "test-session".into(),
-        repo_url: "https://github.com/user/repo".into(),
-        branch: None,
-        environment: None,
+        _repo_url: "https://github.com/user/repo".into(),
+        _branch: None,
+        _environment: None,
         compute_provider: "local".into(),
-        creator_login: "user1".into(),
+        _creator_login: "user1".into(),
         state: SessionState::Provisioning,
         endpoint: None,
-        created_at: std::time::SystemTime::now(),
+        _created_at: std::time::SystemTime::now(),
         updated_at: std::time::SystemTime::now(),
         error_message: None,
     };
 
     let request = SessionRequest {
-        repo_url: "https://github.com/user/repo".into(),
-        branch: None,
-        environment: None,
-        provider_config: None,
+        _repo_url: "https://github.com/user/repo".into(),
+        _branch: None,
+        _environment: None,
+        _provider_config: None,
     };
 
     provider.start_session(&mut session, &request).await.unwrap();
@@ -162,22 +162,22 @@ async fn test_terminate_session() {
 
     let mut session = Session {
         id: "test-session-kill".into(),
-        repo_url: "repo".into(),
-        branch: None,
-        environment: None,
+        _repo_url: "repo".into(),
+        _branch: None,
+        _environment: None,
         compute_provider: "local".into(),
-        creator_login: "user1".into(),
+        _creator_login: "user1".into(),
         state: SessionState::Provisioning,
         endpoint: None,
-        created_at: std::time::SystemTime::now(),
+        _created_at: std::time::SystemTime::now(),
         updated_at: std::time::SystemTime::now(),
         error_message: None,
     };
     let request = SessionRequest { 
-        repo_url: "repo".into(),
-        branch: None,
-        environment: None,
-        provider_config: None,
+        _repo_url: "repo".into(),
+        _branch: None,
+        _environment: None,
+        _provider_config: None,
     };
     
     provider.start_session(&mut session, &request).await.unwrap();
