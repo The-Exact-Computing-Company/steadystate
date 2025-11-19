@@ -1,0 +1,174 @@
+use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::process::ExitStatus;
+use std::os::unix::process::ExitStatusExt;
+use anyhow::{Result, anyhow};
+use async_trait::async_trait;
+use tokio::io::AsyncRead;
+
+use crate::compute::local_provider::{CommandExecutor, LocalComputeProvider};
+use crate::compute::ComputeProvider;
+use crate::models::{Session, SessionRequest, SessionState};
+
+#[derive(Debug, Clone)]
+struct MockCommandCall {
+    cmd: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MockCommandExecutor {
+    calls: Arc<Mutex<Vec<MockCommandCall>>>,
+    // Map of command -> (exit_code, stdout)
+    responses: Arc<Mutex<Vec<(String, i32, String)>>>,
+}
+
+impl MockCommandExecutor {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn add_response(&self, cmd_contains: &str, exit_code: i32, stdout: &str) {
+        self.responses.lock().unwrap().push((cmd_contains.to_string(), exit_code, stdout.to_string()));
+    }
+
+    fn get_calls(&self) -> Vec<MockCommandCall> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl CommandExecutor for MockCommandExecutor {
+    async fn run_status(&self, cmd: &str, args: &[&str]) -> Result<ExitStatus> {
+        self.calls.lock().unwrap().push(MockCommandCall {
+            cmd: cmd.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        });
+
+        // Simple matching logic for now
+        let responses = self.responses.lock().unwrap();
+        for (contains, code, _) in responses.iter() {
+            if cmd.contains(contains) || args.iter().any(|a| a.contains(contains)) {
+                return Ok(ExitStatus::from_raw(*code));
+            }
+        }
+
+        // Default success
+        Ok(ExitStatus::from_raw(0))
+    }
+
+    async fn run_capture(&self, cmd: &str, args: &[&str]) -> Result<(u32, impl AsyncRead + Unpin + Send)> {
+        self.calls.lock().unwrap().push(MockCommandCall {
+            cmd: cmd.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        });
+
+        let responses = self.responses.lock().unwrap();
+        let mut stdout_content = String::new();
+        
+        for (contains, _, stdout) in responses.iter() {
+            if cmd.contains(contains) || args.iter().any(|a| a.contains(contains)) {
+                stdout_content = stdout.clone();
+                break;
+            }
+        }
+
+        Ok((1234, std::io::Cursor::new(stdout_content)))
+    }
+
+    async fn run_shell(&self, script: &str) -> Result<ExitStatus> {
+        self.calls.lock().unwrap().push(MockCommandCall {
+            cmd: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+        });
+
+        let responses = self.responses.lock().unwrap();
+        for (contains, code, _) in responses.iter() {
+            if script.contains(contains) {
+                return Ok(ExitStatus::from_raw(*code));
+            }
+        }
+
+        Ok(ExitStatus::from_raw(0))
+    }
+}
+
+#[tokio::test]
+async fn test_start_session_success() {
+    let executor = Box::new(MockCommandExecutor::new());
+    // Mock upterm output
+    executor.add_response("upterm", 0, "Invite: ssh://user@host:22\n");
+
+    let provider = LocalComputeProvider::new_with_executor(
+        PathBuf::from("/tmp/flake"),
+        executor.clone()
+    );
+
+    let mut session = Session {
+        id: "test-session".into(),
+        user_id: "user1".into(),
+        provider_id: "local".into(),
+        state: SessionState::Pending,
+        endpoint: None,
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now(),
+    };
+
+    let request = SessionRequest {
+        repo_url: "https://github.com/user/repo".into(),
+    };
+
+    provider.start_session(&mut session, &request).await.unwrap();
+
+    assert_eq!(session.state, SessionState::Running);
+    assert_eq!(session.endpoint, Some("Invite: ssh://user@host:22\n".to_string()));
+
+    let calls = executor.get_calls();
+    // Verify sequence: check nix, (maybe install lix), clone, upterm
+    // 1. check nix (sh -c command -v nix)
+    // 2. clone repo (git clone ...)
+    // 3. upterm (sh -c ... upterm ...)
+    
+    // Note: ensure_nix_installed checks for nix. If it returns success (default in mock), it skips install.
+    
+    assert!(calls.iter().any(|c| c.args.iter().any(|a| a.contains("command -v nix"))));
+    assert!(calls.iter().any(|c| c.cmd == "git" && c.args[0] == "clone"));
+    assert!(calls.iter().any(|c| c.args.iter().any(|a| a.contains("upterm host"))));
+}
+
+#[tokio::test]
+async fn test_terminate_session() {
+    let executor = Box::new(MockCommandExecutor::new());
+    let provider = LocalComputeProvider::new_with_executor(
+        PathBuf::from("/tmp/flake"),
+        executor.clone()
+    );
+
+    // Manually inject a session into state (this is tricky because state is private/internal)
+    // But we can start a session first to populate state.
+    
+    // Mock upterm output for start_session
+    executor.add_response("upterm", 0, "Invite: ssh://user@host:22\n");
+
+    let mut session = Session {
+        id: "test-session-kill".into(),
+        user_id: "user1".into(),
+        provider_id: "local".into(),
+        state: SessionState::Pending,
+        endpoint: None,
+        created_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now(),
+    };
+    let request = SessionRequest { repo_url: "repo".into() };
+    
+    provider.start_session(&mut session, &request).await.unwrap();
+
+    // Now terminate
+    provider.terminate_session(&session).await.unwrap();
+
+    let calls = executor.get_calls();
+    assert!(calls.iter().any(|c| c.args.iter().any(|a| a.contains("kill -TERM"))));
+}
