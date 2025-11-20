@@ -207,7 +207,8 @@ Run 'upterm session current' to display this screen again
     let cursor = Box::new(std::io::Cursor::new(output));
     let result = crate::compute::local_provider::capture_upterm_invite(cursor).await;
     assert!(result.is_ok());
-    let invite = result.unwrap();
+    let (pid, invite) = result.unwrap();
+    assert_eq!(pid, None);
     assert_eq!(invite, "ssh BFO1HH1sZDg28RvdWpam:MTc4MTFlNDBjZTk0ZTgudm0udXB0ZXJtLmludGVrbmFsOjIyMjI=@uptermd.upterm.dev");
 }
 

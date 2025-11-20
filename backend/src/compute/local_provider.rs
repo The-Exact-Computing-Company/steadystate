@@ -9,7 +9,7 @@ use futures::StreamExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
-use std::os::unix::process::CommandExt;
+
 
 use crate::compute::ComputeProvider;
 use crate::models::{Session, SessionRequest, SessionState};
@@ -206,6 +206,8 @@ impl LocalComputeProvider {
 
         tracing::info!("Starting upterm session with command: {}", full_cmd);
         
+        // Use setsid to detach from TTY and avoid SIGTTIN when running in background.
+        // We use `setsid -w` to wait for the child, and we print the PID of the new session leader.
         let nix_wrapper = format!(
             r#"
             if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
@@ -216,17 +218,21 @@ impl LocalComputeProvider {
             unset SSH_ASKPASS
             unset DISPLAY
             unset SSH_AUTH_SOCK
-            {}
+            
+            # Run with setsid to detach from TTY
+            # We use sh -c to print the PID then exec upterm
+            setsid -w sh -c 'echo "PID: $$"; {}'
+            
             echo "DEBUG: full_cmd finished with exit code $?" >&2
             "#,
             full_cmd
         );
         
         tracing::info!("Spawning upterm command...");
-        let (pid, stdout, stderr) = self.executor.run_capture("sh", &["-c", &nix_wrapper]).await
+        let (wrapper_pid, stdout, stderr) = self.executor.run_capture("sh", &["-c", &nix_wrapper]).await
             .context("Failed to spawn nix develop/upterm")?;
 
-        tracing::info!("Upterm spawned with PID {}", pid);
+        tracing::info!("Upterm wrapper spawned with PID {}", wrapper_pid);
 
         // Spawn a task to log stderr
         let stderr_reader = BufReader::new(stderr);
@@ -244,15 +250,20 @@ impl LocalComputeProvider {
         let invite_result = timeout(Duration::from_secs(30), capture_upterm_invite(stdout)).await;
 
         match invite_result {
-            Ok(Ok(invite)) => Ok((pid, invite)),
+            Ok(Ok((captured_pid, invite))) => {
+                // If we captured a PID from setsid, use it. Otherwise fall back to wrapper PID (less reliable for kill).
+                let final_pid = captured_pid.unwrap_or(wrapper_pid);
+                tracing::info!("Session ready. Wrapper PID: {}, Final PID: {}", wrapper_pid, final_pid);
+                Ok((final_pid, invite))
+            },
             Ok(Err(e)) => {
                 tracing::error!("Upterm failed to provide invite: {:#}", e);
-                let _ = self.kill_pid(pid).await;
+                let _ = self.kill_pid(wrapper_pid).await;
                 Err(e)
             }
             Err(_) => {
                 tracing::error!("Timed out waiting for upterm invite");
-                let _ = self.kill_pid(pid).await;
+                let _ = self.kill_pid(wrapper_pid).await;
                 Err(anyhow!("Timed out waiting for upterm invite"))
             }
         }
@@ -279,23 +290,31 @@ impl LocalComputeProvider {
 
 
 
-pub(crate) async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Unpin) -> Result<String> {
+pub(crate) async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Unpin) -> Result<(Option<u32>, String)> {
     let reader = BufReader::new(stdout);
     let mut lines = tokio_stream::wrappers::LinesStream::new(reader.lines());
+
+    let mut pid = None;
 
     while let Some(line_res) = lines.next().await {
         let line = line_res?;
         tracing::warn!(upterm_stdout = %line, "upterm stdout");
         let trimmed = line.trim();
-        if trimmed.starts_with("Invite: ssh") {
+        
+        if trimmed.starts_with("PID: ") {
+            if let Ok(p) = trimmed.strip_prefix("PID: ").unwrap_or("").trim().parse::<u32>() {
+                tracing::info!("Captured upterm PID: {}", p);
+                pid = Some(p);
+            }
+        } else if trimmed.starts_with("Invite: ssh") {
             tracing::info!("Captured upterm invite: {}", trimmed);
-            return Ok(trimmed.to_string());
+            return Ok((pid, trimmed.to_string()));
         } else if trimmed.starts_with("SSH Session:") {
             // Format: "SSH Session:            ssh ..."
             if let Some(ssh_cmd) = trimmed.strip_prefix("SSH Session:") {
                 let ssh_cmd = ssh_cmd.trim();
                 tracing::info!("Captured upterm invite: {}", ssh_cmd);
-                return Ok(ssh_cmd.to_string());
+                return Ok((pid, ssh_cmd.to_string()));
             }
         }
     }
