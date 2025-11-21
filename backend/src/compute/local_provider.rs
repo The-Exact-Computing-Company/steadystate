@@ -183,11 +183,8 @@ impl LocalComputeProvider {
             } else {
                 // For local testing: point to repo's flake
                 // We assume the flake is at the root of the repo (working_dir)
-                // or flake_path is already absolute/relative correct.
-                // The user's sketch used: format!("{}#{}", working_dir.display(), "")
-                // But flake_path passed to this function is already the path to the flake (or repo root).
-                // Let's use the absolute path to the directory containing flake.nix
-                format!("{}", flake_path.display())
+                // Since we cd into working_dir in the wrapper script, we can just use "."
+                ".".to_string()
             }
         };
 
