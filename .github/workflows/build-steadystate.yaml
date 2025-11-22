@@ -1,0 +1,35 @@
+name: Build and Cache
+
+on:
+  push: {}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        system:
+          - x86_64-linux
+          - aarch64-darwin
+    runs-on: ${{ contains(matrix.system, 'darwin') && 'macos-latest' || 'ubuntu-latest' }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: The-Exact-Computing-Company/steadystate
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: rstats-on-nix
+          authToken: '${{ secrets.CACHIX_AUTH }}'
+
+      - name: Build and push steadystate cli to Cachix
+        run: |
+          nix build .#cli --print-build-logs
+          cachix push rstats-on-nix "$(readlink -f result)"
+
+      - name: Build and push steadystate backend to Cachix
+        run: |
+          nix build .#backend --print-build-logs
+          cachix push rstats-on-nix "$(readlink -f result)"
