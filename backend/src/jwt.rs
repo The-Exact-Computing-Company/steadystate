@@ -1,6 +1,7 @@
 // backend/src/jwt.rs
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use axum::{
     extract::FromRequestParts,
@@ -15,6 +16,11 @@ pub struct JwtKeys {
     key: HS256Key,
     issuer: String,
     ttl_duration: Duration,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct InternalCustomClaims {
+    provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -33,12 +39,11 @@ impl JwtKeys {
     }
 
     pub fn sign(&self, login: &str, provider: &str) -> Result<String> {
-        let custom_claims = CustomClaims {
-            sub: login.to_string(),
+        let internal_claims = InternalCustomClaims {
             provider: provider.to_string(),
         };
 
-        let claims = Claims::with_custom_claims(custom_claims, self.ttl_duration)
+        let claims = Claims::with_custom_claims(internal_claims, self.ttl_duration)
             .with_issuer(self.issuer.clone())
             .with_subject(login.to_string());
 
@@ -55,22 +60,27 @@ impl JwtKeys {
         };
 
         let claims = self.key
-            .verify_token::<CustomClaims>(token, Some(options))
+            .verify_token::<InternalCustomClaims>(token, Some(options))
             .map_err(|e| anyhow!("Invalid or expired JWT: {}", e))?;
         
-        Ok(claims.custom)
+        let sub = claims.subject.ok_or_else(|| anyhow!("JWT missing subject claim"))?;
+
+        Ok(CustomClaims {
+            sub,
+            provider: claims.custom.provider,
+        })
     }
 }
 
 // --- AXUM 0.8 EXTRACTOR FOR CUSTOM CLAIMS ---
 // NOTE: Do NOT use #[async_trait] here. Axum 0.8 uses standard async fn traits.
 
-impl FromRequestParts<AppState> for CustomClaims {
+impl FromRequestParts<Arc<AppState>> for CustomClaims {
     type Rejection = (StatusCode, String);
 
     async fn from_request_parts(
         parts: &mut Parts,
-        state: &AppState,
+        state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers

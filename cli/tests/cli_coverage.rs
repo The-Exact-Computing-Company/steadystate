@@ -105,7 +105,7 @@ fn up_rejects_invalid_repository_url() {
     let tempdir = TempDir::new().expect("tempdir");
     write_session(&tempdir, "tester", "jwt", Some(4_000_000_000));
 
-    let output = run_cli(Some(&tempdir), &[], &["up", "not-a-url"]);
+    let output = run_cli(Some(&tempdir), &[], &["up", "not-a-url", "--env=noenv"]);
     assert!(!output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Invalid repository URL"));
@@ -183,13 +183,13 @@ fn up_prints_human_output_on_success() {
     let tempdir = TempDir::new().expect("tempdir");
     create_session_with_future_expiry(&tempdir);
 
-    let response = r#"{"id":"session-123","ssh_url":"ssh://example.com"}"#.to_string();
+    let response = r#"{"id":"session-123","state":"Running","endpoint":"ssh://example.com","message":null,"compute_provider":"local"}"#.to_string();
     let (base_url, handle) = spawn_mock_server(response);
 
     let output = run_cli(
         Some(&tempdir),
         &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["up", "https://example.com/repo.git"],
+        &["up", "https://example.com/repo.git", "--env=noenv"],
     );
     assert!(output.status.success());
 
@@ -211,13 +211,13 @@ fn up_prints_json_on_success() {
     let tempdir = TempDir::new().expect("tempdir");
     create_session_with_future_expiry(&tempdir);
 
-    let response = r#"{"id":"session-456","ssh_url":"ssh://json.example.com"}"#.to_string();
+    let response = r#"{"id":"session-456","state":"Running","endpoint":"ssh://json.example.com","message":null,"compute_provider":"local"}"#.to_string();
     let (base_url, handle) = spawn_mock_server(response);
 
     let output = run_cli(
         Some(&tempdir),
         &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["up", "https://example.com/repo.git", "--json"],
+        &["up", "https://example.com/repo.git", "--env=noenv", "--json"],
     );
     assert!(output.status.success());
 
@@ -232,5 +232,5 @@ fn up_prints_json_on_success() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse json");
     assert_eq!(value["id"], "session-456");
-    assert_eq!(value["ssh_url"], "ssh://json.example.com");
+    assert_eq!(value["endpoint"], "ssh://json.example.com");
 }

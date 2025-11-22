@@ -40,7 +40,7 @@ impl AuthProvider for GitHubAuth {
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse> {
         let params = [
             ("client_id", self.client_id.as_str()),
-            ("scope", "read:user"),
+            ("scope", "read:user repo"),
         ];
 
         let resp = self.http
@@ -96,12 +96,15 @@ impl AuthProvider for GitHubAuth {
                     .json::<GhUser>()
                     .await?;
 
-                Ok(DevicePollOutcome::Complete(UserIdentity {
-                    id: user.id.to_string(),
-                    login: user.login,
-                    email: user.email,
-                    provider: "github".into(),
-                }))
+                Ok(DevicePollOutcome::Complete {
+                    identity: UserIdentity {
+                        id: user.id.to_string(),
+                        login: user.login,
+                        email: user.email,
+                        provider: "github".into(),
+                    },
+                    provider_access_token: Some(access_token),
+                })
             }
             DeviceTokenOut::Err(err) => match err.error {
                 GitHubError::AuthorizationPending => Ok(DevicePollOutcome::Pending),

@@ -58,7 +58,7 @@ impl Config {
             
             noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
                 .context("NOENV_FLAKE_PATH must be set")?,
-            default_compute_provider: std::env::var("DEFAULT_COMPUTE_PROVIDER")
+            default_compute_provider: std::env::var("STEADYSTATE_PROVIDER")
                 .unwrap_or_else(|_| "local".to_string()),
         })
     }
@@ -77,6 +77,8 @@ pub struct AppState {
     pub refresh_store: Arc<DashMap<String, RefreshRecord>>,
     pub providers: Arc<DashMap<ProviderId, AuthProviderDyn>>,
     pub provider_factories: Arc<DashMap<String, AuthProviderFactoryDyn>>,
+    // Key: (provider, login) -> access_token
+    pub provider_tokens: Arc<DashMap<(String, String), String>>,
 
     // Compute & Session state
     pub sessions: SessionStore,
@@ -116,6 +118,7 @@ impl AppState {
             refresh_store: Arc::new(DashMap::new()),
             providers: Arc::new(DashMap::new()),
             provider_factories: Arc::new(DashMap::new()),
+            provider_tokens: Arc::new(DashMap::new()),
             sessions: SessionStore::new(),
             compute_providers: Arc::new(compute_providers),
         });

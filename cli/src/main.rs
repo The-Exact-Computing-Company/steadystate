@@ -63,6 +63,15 @@ enum Commands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+        /// Allow specific GitHub users to connect (can be used multiple times)
+        #[arg(long)]
+        allow: Vec<String>,
+        /// Make the session public (anyone with the link can connect)
+        #[arg(long)]
+        public: bool,
+        /// Environment to load (e.g. "noenv")
+        #[arg(long)]
+        env: Option<String>,
     },
 }
 
@@ -153,17 +162,54 @@ async fn logout(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
+async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>) -> Result<()> {
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
+
+    // Validate --env flag
+    let env_val = match env {
+        Some(e) => e,
+        None => {
+            eprintln!("Error: --env flag is required.");
+            eprintln!("Valid options:");
+            eprintln!("  --env=noenv                 Use minimal curated environment");
+            eprintln!("  --env=flake                 Use repository's flake.nix");
+            eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
+            eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
+            return Ok(());
+        }
+    };
+
+    // Check if env is valid
+    let is_valid = env_val == "noenv" ||
+                   env_val == "flake" ||
+                   env_val == "legacy-nix" ||
+                   (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
+
+    if !is_valid {
+        eprintln!("Error: Invalid --env option: {}", env_val);
+        eprintln!("Valid options:");
+        eprintln!("  --env=noenv                 Use minimal curated environment");
+        eprintln!("  --env=flake                 Use repository's flake.nix");
+        eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
+        eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
+        return Ok(());
+    }
+
+    let payload = serde_json::json!({
+        "repo_url": repo,
+        "allowed_users": if allow.is_empty() { None } else { Some(allow.clone()) },
+        "public": public,
+        "environment": env_val
+    });
 
     let resp: UpResponse = request_with_auth(
         client,
         |c, jwt| {
             c.post(format!("{}/sessions", &*BACKEND_URL))
                 .bearer_auth(jwt)
-                .json(&serde_json::json!({ "repo": repo.clone() }))
+                .json(&payload)
         },
         None,
     )
@@ -173,7 +219,61 @@ async fn up(client: &Client, repo: String, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("✅ Session created: {}", resp.id);
-        println!("SSH: {}", resp.ssh_url);
+        
+        // Poll until the session is ready or fails
+        if resp.endpoint.is_none() && resp.state == "Provisioning" {
+            println!("⏳ Provisioning session...");
+            
+            let mut attempts = 0;
+            let max_attempts = 60; // 60 * 2s = 2 minutes timeout
+            
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                attempts += 1;
+                
+                let status: UpResponse = request_with_auth(
+                    client,
+                    |c, jwt| {
+                        c.get(format!("{}/sessions/{}", &*BACKEND_URL, resp.id))
+                            .bearer_auth(jwt)
+                    },
+                    None,
+                )
+                .await?;
+                
+                match status.state.as_str() {
+                    "Running" => {
+                        if let Some(endpoint) = status.endpoint {
+                            println!("✅ Session ready!");
+                            println!("SSH: {}", endpoint);
+                        } else {
+                            println!("⚠️  Session is running but no endpoint available");
+                        }
+                        break;
+                    }
+                    "Failed" => {
+                        println!("❌ Session provisioning failed");
+                        if let Some(msg) = status.message {
+                            println!("Error: {}", msg);
+                        }
+                        return Err(anyhow::anyhow!("Session provisioning failed"));
+                    }
+                    "Provisioning" => {
+                        if attempts >= max_attempts {
+                            println!("⏱️  Timed out waiting for session. Check status later with:");
+                            println!("  curl -H 'Authorization: Bearer <token>' {}/sessions/{}", &*BACKEND_URL, resp.id);
+                            break;
+                        }
+                        // Continue polling
+                    }
+                    other => {
+                        println!("Session state: {}", other);
+                    }
+                }
+            }
+        } else if let Some(endpoint) = resp.endpoint {
+            println!("SSH: {}", endpoint);
+        }
     }
 
     Ok(())
@@ -255,8 +355,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Up { repo, json } => {
-            if let Err(e) = up(&client, repo, json).await {
+        Commands::Up { repo, json, allow, public, env } => {
+            if let Err(e) = up(&client, repo, json, allow, public, env).await {
                 let msg = format!("{:#}", e);
                 let usage_error = msg.contains("Invalid repository URL.");
 

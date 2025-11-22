@@ -40,12 +40,15 @@ impl AuthProvider for FakeAuth {
 
     async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<DevicePollOutcome> {
         if device_code == "fake-device-code-123" {
-            Ok(DevicePollOutcome::Complete(UserIdentity {
-                id: "fake-user-id-456".into(),
-                login: "ci-test-user".into(),
-                email: Some("ci@test.local".into()),
-                provider: "fake".into(),
-            }))
+            Ok(DevicePollOutcome::Complete {
+                identity: UserIdentity {
+                    id: "fake-user-id-456".into(),
+                    login: "ci-test-user".into(),
+                    email: Some("ci@test.local".into()),
+                    provider: "fake".into(),
+                },
+                provider_access_token: None,
+            })
         } else {
             Ok(DevicePollOutcome::Pending)
         }

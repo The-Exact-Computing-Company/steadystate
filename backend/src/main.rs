@@ -15,8 +15,9 @@ async fn main() -> anyhow::Result<()> {
     let app: Router = Router::new()
         .nest("/auth", steadystate_backend::routes::auth::router())
         .nest("/sessions", steadystate_backend::routes::sessions::router())
-        // Dereference the Arc<AppState> to pass AppState by value (it clones cheaply now)
-        .with_state((*state).clone()) 
+        // Pass Arc<AppState> directly - do NOT dereference and clone!
+        // Each clone of Arc points to the same underlying AppState.
+        .with_state(state.clone()) 
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 

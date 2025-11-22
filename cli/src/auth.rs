@@ -37,7 +37,9 @@ struct PollResponse {
 #[derive(Deserialize, Serialize)]
 pub struct UpResponse {
     pub id: String,
-    pub ssh_url: String,
+    pub state: String,
+    pub endpoint: Option<String>,
+    pub message: Option<String>,
 }
 
 /// Initiates OAuth device flow authentication.
@@ -264,9 +266,11 @@ where
         .context("API request failed")?;
 
     // Step 4: If backend returns 401 → fail clearly, do not retry
+    // Step 4: If backend returns 401 → fail clearly, do not retry
     if resp.status().as_u16() == 401 {
+        let body = resp.text().await.unwrap_or_default();
         anyhow::bail!(
-            "Your session has expired or been revoked. Run `steadystate login` again."
+            "Your session has expired or been revoked. Run `steadystate login` again.\nServer says: {}", body
         );
     }
 

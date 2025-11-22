@@ -19,7 +19,10 @@ pub struct UserIdentity {
 pub enum DevicePollOutcome {
     Pending,
     SlowDown,
-    Complete(UserIdentity),
+    Complete {
+        identity: UserIdentity,
+        provider_access_token: Option<String>,
+    },
 }
 
 // Any type implementing AuthProvider must also implement Debug, Send, and Sync.

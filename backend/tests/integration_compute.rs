@@ -46,7 +46,9 @@ async fn test_integration_nix_check() {
         repo_url: "https://github.com/this-repo/does-not-exist-12345.git".into(),
         branch: None,
         environment: None,
-        _provider_config: None,
+        provider_config: None,
+        allowed_users: None,
+        public: false,
     };
 
     let result = provider.start_session(&mut session, &request).await;

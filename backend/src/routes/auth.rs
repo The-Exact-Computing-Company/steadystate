@@ -1,6 +1,6 @@
 // backend/src/routes/auth.rs
 
-
+use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -17,7 +17,7 @@ use crate::{
     state::AppState,
 };
 
-pub fn router() -> Router<AppState> {
+pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/device", post(device_start))
         .route("/poll", post(poll))
@@ -27,7 +27,7 @@ pub fn router() -> Router<AppState> {
 }
 
 pub async fn device_start(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Query(q): Query<DeviceQuery>,
 ) -> Result<Json<DeviceStartResponse>, (StatusCode, String)> {
     let provider_id = ProviderId::from(q.provider.as_deref().unwrap_or("github"));
@@ -51,7 +51,7 @@ pub async fn device_start(
 }
 
 pub async fn poll(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(q): Json<PollQuery>,
 ) -> Result<Json<PollOut>, (StatusCode, String)> {
     let pending = match state.device_pending.get(&q.device_code) {
@@ -75,7 +75,7 @@ pub async fn poll(
     };
 
     match provider.poll_device_flow(&q.device_code).await {
-        Ok(DevicePollOutcome::Complete(identity)) => {
+        Ok(DevicePollOutcome::Complete { identity, provider_access_token }) => {
             info!(
                 "device flow complete for {} via {}",
                 identity.login,
@@ -89,6 +89,13 @@ pub async fn poll(
                 .sign(&identity.login, provider_id.as_str())
                 .map_err(internal)?;
             let refresh_token = state.issue_refresh_token(identity.login.clone(), provider_id);
+
+            if let Some(token) = provider_access_token {
+                state.provider_tokens.insert(
+                    (identity.provider.clone(), identity.login.clone()),
+                    token
+                );
+            }
 
             Ok(Json(PollOut {
                 status: Some("complete".into()),
@@ -123,7 +130,7 @@ pub async fn poll(
 
 
 pub async fn refresh(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(inp): Json<RefreshIn>,
 ) -> Result<Json<RefreshOut>, (StatusCode, String)> {
     let rec = state
@@ -150,7 +157,7 @@ pub async fn refresh(
 
 
 pub async fn revoke(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(inp): Json<RevokeIn>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state.refresh_store.remove(&inp.refresh_token);

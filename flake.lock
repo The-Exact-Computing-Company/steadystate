@@ -89,7 +89,8 @@
         "antigravity-pkgs": "antigravity-pkgs",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "treemerge": "treemerge"
+        "treemerge": "treemerge",
+        "upterm-pkgs": "upterm-pkgs"
       }
     },
     "systems": {
@@ -138,6 +139,22 @@
       "original": {
         "owner": "b-rodrigues",
         "repo": "treemerge",
+        "type": "github"
+      }
+    },
+    "upterm-pkgs": {
+      "locked": {
+        "lastModified": 1763713341,
+        "narHash": "sha256-gsr78s1uHo4rlcJyibwGdr/w2+r+k6R8WbVLb1jW9MM=",
+        "owner": "b-rodrigues",
+        "repo": "nixpkgs",
+        "rev": "32bf1a61e7dda62c358626945aa64076b5aedaee",
+        "type": "github"
+      },
+      "original": {
+        "owner": "b-rodrigues",
+        "ref": "update_upterm",
+        "repo": "nixpkgs",
         "type": "github"
       }
     }

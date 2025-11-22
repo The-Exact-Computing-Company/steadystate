@@ -1,5 +1,6 @@
 // backend/src/routes/sessions.rs
 
+use std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -14,7 +15,7 @@ use crate::{
     state::AppState,
 };
 
-pub fn router() -> Router<AppState> {
+pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", post(create_session))
         .route("/{id}", get(get_session_status))
@@ -22,7 +23,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn run_provisioning(
-    app_state: AppState,
+    app_state: Arc<AppState>,
     session_id: String,
     request: SessionRequest,
 ) {
@@ -60,9 +61,9 @@ async fn run_provisioning(
 }
 
 async fn create_session(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     claims: CustomClaims,
-    Json(request): Json<SessionRequest>,
+    Json(mut request): Json<SessionRequest>,
 ) -> (StatusCode, Json<SessionInfo>) {
     let session_id = Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now();
@@ -76,7 +77,7 @@ async fn create_session(
         endpoint: None,
         // FIX IS HERE: Access default_compute_provider via config
         compute_provider: state.config.default_compute_provider.clone(),
-        _creator_login: claims.sub,
+        _creator_login: claims.sub.clone(),
         _created_at: now,
         updated_at: now,
         error_message: None,
@@ -85,6 +86,22 @@ async fn create_session(
     let session_info = SessionInfo::from(&session);
     
     state.sessions.insert(session_id.clone(), session);
+    tracing::info!("Session {} inserted into map, total sessions: {}", session_id, state.sessions.len());
+
+    // --- Inject GitHub token if available ---
+    if claims.provider == "github" {
+        if let Some(token) = state
+            .provider_tokens
+            .get(&("github".to_string(), claims.sub.clone()))
+        {
+            request.provider_config = Some(serde_json::json!({
+                "github": {
+                    "login": claims.sub,
+                    "access_token": token.value().clone(),
+                }
+            }));
+        }
+    }
 
     // state is cheap to clone now
     tokio::spawn(run_provisioning(state.clone(), session_id, request));
@@ -93,17 +110,25 @@ async fn create_session(
 }
 
 async fn get_session_status(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
+    _claims: CustomClaims,
     Path(id): Path<String>,
 ) -> Result<Json<SessionInfo>, StatusCode> {
+    tracing::info!("GET /sessions/{}, total sessions in map: {}", id, state.sessions.len());
     match state.sessions.get(&id) {
-        Some(session) => Ok(Json(SessionInfo::from(&*session))),
-        None => Err(StatusCode::NOT_FOUND),
+        Some(session) => {
+            tracing::info!("Found session {} in state {:?}", id, session.state);
+            Ok(Json(SessionInfo::from(&*session)))
+        }
+        None => {
+            tracing::warn!("Session {} not found in map", id);
+            Err(StatusCode::NOT_FOUND)
+        }
     }
 }
 
 async fn terminate_session(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> StatusCode {
     if let Some(mut session) = state.sessions.get_mut(&id) {

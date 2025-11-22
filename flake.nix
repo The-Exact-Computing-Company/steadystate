@@ -5,10 +5,11 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
     treemerge.url = "github:b-rodrigues/treemerge";
+    upterm-pkgs.url = "github:b-rodrigues/nixpkgs/update_upterm";
     antigravity-pkgs.url = "github:xiaoxiangmoe/nixpkgs/antigravity";
   };
 
-  outputs = { self, nixpkgs, flake-utils, treemerge, antigravity-pkgs }:
+  outputs = { self, nixpkgs, flake-utils, treemerge, antigravity-pkgs, upterm-pkgs }:
     flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs { inherit system; };
@@ -19,7 +20,11 @@
         inherit system;
         config.allowUnfree = true;
       };
+      # Updated upterm
+      upkgs = import upterm-pkgs {inherit system;};
+
       antigravity = agpkgs.antigravity; # typically how overlays expose it
+      upterm = upkgs.upterm;
 
       workspaceSrc = pkgs.lib.cleanSource ./.;
 
@@ -57,7 +62,8 @@
         '';
       };
 
-      terminal = pkgs.lib.getExe' pkgs.xterm "xterm";
+      #terminal = pkgs.lib.getExe' pkgs.xterm "xterm";
+      terminal = pkgs.lib.getExe' pkgs.kitty "kitty";
 
     in {
       packages.default = cli;
@@ -81,8 +87,8 @@
           backend
           cli
           treemerge.packages.${system}.default
-          antigravity
-        ] ++ (if isCI then [] else [ antigravity ]);
+          upterm
+        ] ++ (if isCI then [] else [ antigravity pkgs.gemini-cli]);
 
         shellHook = ''
           echo "🔧 Entering SteadyState dev shell"
