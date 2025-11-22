@@ -526,6 +526,15 @@ impl ComputeProvider for LocalComputeProvider {
 
     async fn start_session(&self, session: &mut Session, request: &SessionRequest) -> Result<()> {
         tracing::info!("Starting local NOENV session: id={} repo={}", session.id, request.repo_url);
+
+        // Check mode
+        if let Some(mode) = &request.mode {
+            if mode == "collab" {
+                return Err(anyhow!("Collaboration mode (SSH) is not implemented yet"));
+            } else if mode != "pair" {
+                return Err(anyhow!("Invalid mode: {}", mode));
+            }
+        }
         
         self.ensure_nix_installed().await?;
         

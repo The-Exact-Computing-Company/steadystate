@@ -141,6 +141,7 @@ pub struct SessionRequest {
     pub allowed_users: Option<Vec<String>>,
     #[serde(default)]
     pub public: bool,
+    pub mode: Option<String>,
 }
 
 /// The information about a session that is sent back to the CLI.

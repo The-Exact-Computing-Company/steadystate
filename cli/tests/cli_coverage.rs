@@ -189,7 +189,7 @@ fn up_prints_human_output_on_success() {
     let output = run_cli(
         Some(&tempdir),
         &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["up", "https://example.com/repo.git", "--env=noenv"],
+        &["up", "https://example.com/repo.git", "--env=noenv", "--mode=pair"],
     );
     assert!(output.status.success());
 
@@ -217,7 +217,7 @@ fn up_prints_json_on_success() {
     let output = run_cli(
         Some(&tempdir),
         &[("STEADYSTATE_BACKEND", base_url.clone())],
-        &["up", "https://example.com/repo.git", "--env=noenv", "--json"],
+        &["up", "https://example.com/repo.git", "--env=noenv", "--json", "--mode=pair"],
     );
     assert!(output.status.success());
 

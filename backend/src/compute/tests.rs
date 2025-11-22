@@ -128,6 +128,7 @@ async fn test_start_session_success() {
         provider_config: None,
         allowed_users: None,
         public: false,
+        mode: Some("pair".to_string()),
     };
 
     provider.start_session(&mut session, &request).await.unwrap();
@@ -182,6 +183,7 @@ async fn test_terminate_session() {
         provider_config: None,
         allowed_users: None,
         public: false,
+        mode: Some("pair".to_string()),
     };
     
     provider.start_session(&mut session, &request).await.unwrap();
@@ -264,6 +266,7 @@ async fn test_start_session_git_failure() {
         provider_config: None,
         allowed_users: None,
         public: false,
+        mode: Some("pair".to_string()),
     };
 
     let result = provider.start_session(&mut session, &request).await;
@@ -304,6 +307,7 @@ async fn test_start_session_upterm_failure() {
         provider_config: None,
         allowed_users: None,
         public: false,
+        mode: Some("pair".to_string()),
     };
 
     let result = provider.start_session(&mut session, &request).await;
@@ -345,6 +349,7 @@ async fn test_start_session_nix_failure() {
         provider_config: None,
         allowed_users: None,
         public: false,
+        mode: Some("pair".to_string()),
     };
 
     let result = provider.start_session(&mut session, &request).await;

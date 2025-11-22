@@ -49,6 +49,7 @@ async fn test_integration_nix_check() {
         provider_config: None,
         allowed_users: None,
         public: false,
+        mode: Some("pair".to_string()),
     };
 
     let result = provider.start_session(&mut session, &request).await;

@@ -72,6 +72,9 @@ enum Commands {
         /// Environment to load (e.g. "noenv")
         #[arg(long)]
         env: Option<String>,
+        /// Session mode: "pair" or "collab"
+        #[arg(long)]
+        mode: Option<String>,
     },
 }
 
@@ -162,7 +165,7 @@ async fn logout(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>) -> Result<()> {
+async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>) -> Result<()> {
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
@@ -197,11 +200,37 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         return Ok(());
     }
 
+    // Validate --mode flag
+    let mode_val = match mode {
+        Some(m) => m,
+        None => {
+            eprintln!("Error: --mode flag is required.");
+            eprintln!("Valid options:");
+            eprintln!("  --mode=pair    Pair programming mode (Upterm)");
+            eprintln!("  --mode=collab  Collaboration mode (SSH)");
+            return Ok(());
+        }
+    };
+
+    if mode_val != "pair" && mode_val != "collab" {
+        eprintln!("Error: Invalid --mode option: {}", mode_val);
+        eprintln!("Valid options:");
+        eprintln!("  --mode=pair    Pair programming mode (Upterm)");
+        eprintln!("  --mode=collab  Collaboration mode (SSH)");
+        return Ok(());
+    }
+
+    if mode_val == "collab" {
+        eprintln!("Error: --mode=collab is not implemented yet.");
+        return Ok(());
+    }
+
     let payload = serde_json::json!({
         "repo_url": repo,
         "allowed_users": if allow.is_empty() { None } else { Some(allow.clone()) },
         "public": public,
-        "environment": env_val
+        "environment": env_val,
+        "mode": mode_val
     });
 
     let resp: UpResponse = request_with_auth(
@@ -355,8 +384,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Up { repo, json, allow, public, env } => {
-            if let Err(e) = up(&client, repo, json, allow, public, env).await {
+        Commands::Up { repo, json, allow, public, env, mode } => {
+            if let Err(e) = up(&client, repo, json, allow, public, env, mode).await {
                 let msg = format!("{:#}", e);
                 let usage_error = msg.contains("Invalid repository URL.");
 

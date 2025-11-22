@@ -67,7 +67,7 @@
       };
 
       #terminal = pkgs.lib.getExe' pkgs.xterm "xterm";
-      terminal = pkgs.lib.getExe' pkgs.kitty "kitty";
+      terminal = pkgs.lib.getExe' pkgs.ghostty "ghostty";
 
     in {
       packages.default = cli;
