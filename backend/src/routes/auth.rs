@@ -165,7 +165,7 @@ pub async fn revoke(
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("System time is before UNIX EPOCH").as_secs()
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {

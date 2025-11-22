@@ -97,7 +97,7 @@ async fn whoami(json_output: bool) -> Result<()> {
                 if let Some(exp) = sess.jwt_exp {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("System time is before UNIX EPOCH")
                         .as_secs();
                     if exp > now {
                         let remaining = exp - now;
@@ -342,7 +342,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Refresh => match perform_refresh(&client, None).await {
+        Commands::Refresh => match perform_refresh(&client, None, None).await {
             Ok(_) => println!("Token refreshed."),
             Err(e) => {
                 error!("refresh failed: {:#}", e);

@@ -140,7 +140,8 @@ impl LocalComputeProvider {
     async fn clone_repo(&self, repo_url: &str, dest: &Path) -> Result<()> {
         tracing::info!("Cloning repo {} into {}", repo_url, dest.display());
         
-        let status = self.executor.run_status("git", &["clone", "--depth=1", repo_url, dest.to_str().unwrap()]).await
+        let dest_str = dest.to_str().ok_or_else(|| anyhow!("Invalid path encoding for dest"))?;
+        let status = self.executor.run_status("git", &["clone", "--depth=1", repo_url, dest_str]).await
             .context("Failed to spawn git clone")?;
 
         if !status.success() {
@@ -259,7 +260,7 @@ impl LocalComputeProvider {
         
         if let Ok(mut file) = std::fs::File::create(&key_file_path) {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = file.metadata().unwrap().permissions();
+            let mut perms = file.metadata()?.permissions();
             perms.set_mode(0o600);
             let _ = file.set_permissions(perms);
             
@@ -499,7 +500,8 @@ async fn ensure_fork_and_clone(
     let fork_clone_url = format!("https://x-access-token:{}@github.com/{}/{}.git", gh.access_token, user, repo);
     tracing::info!("Cloning fork {} into {}", fork_clone_url.replace(&gh.access_token, "***"), dest.display());
     
-    let status = executor.run_status("git", &["clone", "--depth=1", &fork_clone_url, dest.to_str().unwrap()]).await
+    let dest_str = dest.to_str().ok_or_else(|| anyhow!("Invalid path encoding for dest"))?;
+    let status = executor.run_status("git", &["clone", "--depth=1", &fork_clone_url, dest_str]).await
         .context("Failed to spawn git clone")?;
 
     if !status.success() {
@@ -508,7 +510,7 @@ async fn ensure_fork_and_clone(
 
     // 4. Add upstream remote pointing at the original repo (best effort)
     let upstream_url = format!("https://github.com/{}/{}.git", owner, repo);
-    let status = executor.run_status("git", &["-C", dest.to_str().unwrap(), "remote", "add", "upstream", &upstream_url]).await
+    let status = executor.run_status("git", &["-C", dest_str, "remote", "add", "upstream", &upstream_url]).await
         .context("Failed to add upstream remote")?;
 
     if !status.success() {
