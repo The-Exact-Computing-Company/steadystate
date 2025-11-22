@@ -75,7 +75,7 @@ pub async fn device_login(client: &Client, provider: &str) -> Result<()> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::with_template("{spinner} {msg}")
-            .unwrap()
+            .expect("Progress bar template is valid")
             .tick_strings(&["⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"]),
     );
     spinner.enable_steady_tick(Duration::from_millis(120));
@@ -187,11 +187,11 @@ pub struct RefreshResponse {
 }
 
 /// Refreshes JWT using stored refresh token.
-pub async fn perform_refresh(client: &Client, login_override: Option<String>) -> Result<RefreshResponse> {
+pub async fn perform_refresh(client: &Client, login_override: Option<String>, override_dir: Option<&PathBuf>) -> Result<RefreshResponse> {
     let username = match login_override {
         Some(login) => login,
         None => {
-            read_session(None)
+            read_session(override_dir)
                 .await
                 .context("No active session found. Run 'steadystate login' first.")?
                 .login
@@ -213,7 +213,7 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>) ->
 
     if resp.status().as_u16() == 401 {
         let _ = delete_refresh_token(&username).await;
-        let _ = remove_session(None).await;
+        let _ = remove_session(override_dir).await;
         anyhow::bail!(
             "Refresh token has expired or been revoked. Run 'steadystate login' to authenticate again."
         );
@@ -226,7 +226,7 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>) ->
     let refresh_resp: RefreshResponse = resp.json().await.context("parse refresh response")?;
 
     let new_session = Session::new(username, refresh_resp.jwt.clone());
-    write_session(&new_session, None).await?;
+    write_session(&new_session, override_dir).await?;
 
     Ok(refresh_resp)
 }
@@ -254,7 +254,7 @@ where
     // Step 2: If JWT is near expiry → refresh proactively
     if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
         info!("JWT has expired or is near expiry, refreshing proactively");
-        let refresh_resp = perform_refresh(client, Some(session.login))
+        let refresh_resp = perform_refresh(client, Some(session.login), _override_dir)
             .await
             .context("Session expired and refresh failed")?;
         jwt = refresh_resp.jwt;
@@ -406,7 +406,7 @@ mod tests {
         let _ctx = TestContext::new();
         let client = Client::builder().pool_max_idle_per_host(0).build().unwrap();
 
-        let result = perform_refresh(&client, None).await;
+        let result = perform_refresh(&client, None, Some(&_ctx.path)).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(err_msg.contains("No active session found. Run 'steadystate login' first."));
@@ -422,7 +422,7 @@ mod tests {
             .await
             .expect("write session");
 
-        let result = perform_refresh(&client, Some("test_user".to_string())).await;
+        let result = perform_refresh(&client, Some("test_user".to_string()), Some(&ctx.path)).await;
         assert!(result.is_err());
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(err_msg.contains("No refresh token found"));

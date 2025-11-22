@@ -27,7 +27,7 @@ impl Session {
         if let Some(exp) = self.jwt_exp {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("System time is before UNIX EPOCH")
                 .as_secs();
             exp <= now + buffer_secs
         } else {

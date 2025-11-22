@@ -170,6 +170,6 @@ impl AppState {
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("System time is before UNIX EPOCH")
         .as_secs()
 } 
