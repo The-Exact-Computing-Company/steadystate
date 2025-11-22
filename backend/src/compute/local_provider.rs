@@ -157,6 +157,7 @@ impl LocalComputeProvider {
         allowed_users: Option<&[String]>,
         public: bool,
         environment: Option<&str>,
+        session_id: &str,
     ) -> Result<(u32, String)> {
         // We run upterm from the host (backend environment), which wraps the nix develop session.
         // This ensures upterm is found (since it's in the host env) and the user lands in the nix dev shell.
@@ -254,7 +255,7 @@ impl LocalComputeProvider {
         let authorized_keys = fetch_authorized_keys(github_user, allowed_users).await;
         
         // Write keys to a temporary file
-        let key_file_path = "/tmp/steadystate_authorized_keys".to_string();
+        let key_file_path = format!("/tmp/steadystate_authorized_keys_{}", session_id);
         
         if let Ok(mut file) = std::fs::File::create(&key_file_path) {
             use std::os::unix::fs::PermissionsExt;
@@ -561,6 +562,7 @@ impl ComputeProvider for LocalComputeProvider {
             request.allowed_users.as_deref(),
             request.public,
             request.environment.as_deref(),
+            &session.id,
         ).await?;
         
         // Store session state (PID) so we can kill it later.
@@ -582,6 +584,10 @@ impl ComputeProvider for LocalComputeProvider {
             }
             if let Err(e) = std::fs::remove_dir_all(&local_session.workspace_root) {
                 tracing::warn!("Failed to remove workspace at {}: {:#}", local_session.workspace_root.display(), e);
+            }
+            let key_file_path = format!("/tmp/steadystate_authorized_keys_{}", session.id);
+            if let Err(e) = std::fs::remove_file(&key_file_path) {
+                tracing::warn!("Failed to remove key file at {}: {:#}", key_file_path, e);
             }
         } else {
             tracing::warn!("terminate_session called, but no live session state found for id={}", session.id);
