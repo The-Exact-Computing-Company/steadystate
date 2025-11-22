@@ -14,16 +14,16 @@
     let
       pkgs = import nixpkgs { inherit system; };
 
-      # Google antigravity
       isCI = builtins.getEnv "CI" == "true" || builtins.getEnv "CI" == "1";
-      agpkgs = import antigravity-pkgs {
+      
+      # Only import antigravity packages when NOT in CI
+      agpkgs = if isCI then null else import antigravity-pkgs {
         inherit system;
         config.allowUnfree = true;
       };
-      # Updated upterm
+      
       upkgs = import upterm-pkgs {inherit system;};
-
-      antigravity = agpkgs.antigravity; # typically how overlays expose it
+      antigravity = if isCI then null else agpkgs.antigravity;
       upterm = upkgs.upterm;
 
       workspaceSrc = pkgs.lib.cleanSource ./.;
@@ -42,6 +42,8 @@
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.openssl ];
 
+        # Skip tests in CI builds - tests run in separate CI action
+        # Run tests locally for fast feedback during development
         doCheck = !isCI;
 
         OPENSSL_NO_VENDOR = 1;
@@ -90,7 +92,7 @@
           cli
           treemerge.packages.${system}.default
           upterm
-        ] ++ (if isCI then [] else [ antigravity pkgs.gemini-cli]);
+        ] ++ pkgs.lib.optionals (!isCI) [ antigravity pkgs.gemini-cli ];
 
         shellHook = ''
           echo "🔧 Entering SteadyState dev shell"
