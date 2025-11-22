@@ -231,11 +231,6 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         return Ok(());
     }
 
-    if mode_val == "collab" {
-        eprintln!("Error: --mode=collab is not implemented yet.");
-        return Ok(());
-    }
-
     let payload = serde_json::json!({
         "repo_url": repo,
         "allowed_users": if allow.is_empty() { None } else { Some(allow.clone()) },

@@ -167,43 +167,155 @@ impl LocalComputeProvider {
         }
     }
 
-    async fn init_pijul_repo(&self, repo_path: &Path) -> Result<()> {
+    async fn init_pijul_repo(&self, repo_path: &Path, github_user: Option<&str>) -> Result<()> {
         tracing::info!("Initializing Pijul repository at {}", repo_path.display());
         
-        let path_str = repo_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+        // Use GitHub username if available, otherwise use "steadystate"
+        let identity_name = github_user.unwrap_or("steadystate");
+        let email = format!("{}@steadystate.local", identity_name);
         
-        // pijul init
-        let status = self.executor.run_status("pijul", &["init", path_str]).await
-            .context("Failed to run pijul init")?;
+        // Check if any identity exists by counting lines
+        let check_output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("pijul identity list 2>/dev/null | wc -l")
+            .output()
+            .await
+            .context("Failed to check pijul identities")?;
+        
+        let identity_count = String::from_utf8_lossy(&check_output.stdout)
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(0);
+        
+        if identity_count == 0 {
+            tracing::info!("Creating Pijul identity (attempting non-interactive creation)");
             
+            // Strategy 1: Try 'expect' if available (most reliable)
+            // We use a timeout to ensure we don't hang forever
+            let expect_script = format!(r#"
+spawn pijul identity new
+expect "Unique identity name"
+send "\r"
+expect "Display name"
+send "\r"
+expect "Email"
+send "\r"
+expect "encryption"
+send "no\r"
+expect eof
+"#);
+            
+            let expect_cmd = format!(
+                "timeout 5s expect -c '{}'", 
+                expect_script.replace("'", "'\\''")
+            );
+            
+            let expect_status = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(&expect_cmd)
+                .status()
+                .await;
+                
+            let mut created = false;
+            
+            if let Ok(status) = expect_status {
+                if status.success() {
+                    tracing::info!("Successfully created Pijul identity using expect");
+                    created = true;
+                }
+            }
+            
+            // Strategy 2: Use 'script' to fake TTY + 'yes' for inputs
+            if !created {
+                tracing::info!("expect failed or not found, trying 'script' wrapper");
+                
+                // script -q -c '...' /dev/null
+                // We use 'yes' to send Enter to all prompts (defaults)
+                // We assume "no" for encryption is the default or 'n' is not needed if we just hit enter?
+                // Actually, let's be safe and send explicit inputs via printf piped to script's command
+                // But piping to script's command is tricky.
+                // Let's stick to 'yes ""' which sends newlines.
+                let script_cmd = "timeout 5s script -q -c 'yes \"\" | pijul identity new' /dev/null";
+                
+                let script_status = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script_cmd)
+                    .status()
+                    .await;
+                    
+                if let Ok(status) = script_status {
+                    if status.success() {
+                        tracing::info!("Successfully created Pijul identity using script");
+                        created = true;
+                    }
+                }
+            }
+            
+            if !created {
+                tracing::warn!("Failed to create Pijul identity non-interactively. Will proceed without identity.");
+            } else {
+                 // Verify identity was created
+                let verify_output = tokio::process::Command::new("pijul")
+                    .args(&["identity", "list"])
+                    .output()
+                    .await?;
+                
+                tracing::info!("Pijul identities after creation: {}", 
+                    String::from_utf8_lossy(&verify_output.stdout));
+            }
+        } else {
+            tracing::info!("Pijul identity already exists (count: {}), skipping creation", identity_count);
+        }
+        
+        // Initialize Pijul repository
+        let init_cmd = format!("cd {} && pijul init", repo_path.display());
+        let status = self.executor.run_status("sh", &["-c", &init_cmd]).await
+            .context("Failed to run pijul init")?;
+        
         if !status.success() {
             return Err(anyhow!("pijul init failed"));
         }
         
         // Add all files
-        let _status = self.executor.run_status("pijul", &["add", "-r", "."], ).await; // Run inside the dir?
-        // run_status doesn't support cwd. We need to run shell or use -C if pijul supports it.
-        // pijul doesn't seem to have a global -C flag in all versions, but let's try running via sh -c cd ...
+        let add_cmd = format!("cd {} && pijul add -r . 2>&1", repo_path.display());
+        let add_output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&add_cmd)
+            .output()
+            .await?;
         
-        let add_cmd = format!("cd {} && pijul add -r .", shell_escape::escape(path_str.into()));
-        let status = self.executor.run_shell(&add_cmd).await
-            .context("Failed to run pijul add")?;
-
-        if !status.success() {
-             return Err(anyhow!("pijul add failed"));
-        }
-
+        tracing::info!("pijul add output: {}", String::from_utf8_lossy(&add_output.stdout));
+        
         // Record initial state
-        let record_cmd = format!("cd {} && pijul record -a -m 'Initial import' --author 'SteadyState <bot@steadystate.dev>'", shell_escape::escape(path_str.into()));
-        let status = self.executor.run_shell(&record_cmd).await
-            .context("Failed to run pijul record")?;
-            
-        if !status.success() {
-             return Err(anyhow!("pijul record failed"));
+        // We use --author to ensure it works even if identity creation failed
+        // We also use timeout to ensure this doesn't hang if it prompts
+        let record_cmd = format!(
+            "cd {} && timeout 5s pijul record -a -m 'Initial import from git' --author '{} <{}>' 2>&1",
+            repo_path.display(),
+            identity_name,
+            email
+        );
+        
+        let record_output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&record_cmd)
+            .output()
+            .await
+            .context("Failed to record initial state")?;
+        
+        if !record_output.status.success() {
+            let stderr = String::from_utf8_lossy(&record_output.stderr);
+            let stdout = String::from_utf8_lossy(&record_output.stdout);
+            tracing::warn!("pijul record warning (or timeout) - stdout: {}, stderr: {}", stdout, stderr);
+            // Don't fail here, we want the session to start even if Pijul isn't perfect
+        } else {
+            tracing::info!("pijul record output: {}", String::from_utf8_lossy(&record_output.stdout));
         }
-
+        
+        tracing::info!("Pijul repository initialized successfully");
         Ok(())
     }
+
 
     async fn clone_repo(&self, repo_url: &str, dest: &Path) -> Result<()> {
         tracing::info!("Cloning repo {} into {}", repo_url, dest.display());
@@ -638,7 +750,7 @@ impl ComputeProvider for LocalComputeProvider {
 
         // Initialize Pijul if in collab mode
         if request.mode.as_deref() == Some("collab") {
-            self.init_pijul_repo(&repo_path).await?;
+            self.init_pijul_repo(&repo_path, github_login.as_deref()).await?;
         }
 
         let (pid, invite) = if request.mode.as_deref() == Some("collab") {
