@@ -1093,12 +1093,44 @@ impl LocalComputeProvider {
         let log_path = sshd_dir.join("sshd.log");
         let pid_path = sshd_dir.join("sshd.pid");
 
-        // 2. Copy steadystate binary to session_root/bin
+        // 2. Copy steadystate CLI binary to session bin
         let bin_dir = session_root.join("bin");
         std::fs::create_dir_all(&bin_dir).context("Failed to create bin dir")?;
-        let current_exe = std::env::current_exe().context("Failed to get current exe")?;
+        
+        tracing::info!("Locating steadystate CLI binary...");
+        
         let target_exe = bin_dir.join("steadystate");
-        std::fs::copy(&current_exe, &target_exe).context("Failed to copy steadystate binary")?;
+        
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            // Try to find steadystate CLI in the same directory as the backend first
+            let current_exe = std::env::current_exe()?;
+            let current_dir = current_exe.parent().ok_or_else(|| anyhow!("Failed to get current exe directory"))?;
+            let mut cli_exe = current_dir.join("steadystate");
+            
+            // If not found, try to find it in PATH
+            if !cli_exe.exists() {
+                tracing::info!("steadystate binary not found in {:?}, searching PATH...", current_dir);
+                if let Ok(output) = std::process::Command::new("which").arg("steadystate").output() {
+                    if output.status.success() {
+                        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let path = PathBuf::from(path_str);
+                        if path.exists() {
+                            cli_exe = path;
+                        }
+                    }
+                }
+            }
+            
+            if !cli_exe.exists() {
+                return Err(anyhow!("steadystate CLI binary not found at {} or in PATH. Ensure it is built and available.", cli_exe.display()));
+            }
+
+            tracing::info!("Found steadystate CLI at: {:?}", cli_exe);
+            std::fs::copy(&cli_exe, &target_exe).context("Failed to copy steadystate binary")?;
+            Ok(())
+        }).await??;
+        
+        tracing::info!("steadystate CLI binary copied successfully.");
         
         // 3. Prepare Authorized Keys with ForceCommand
         let authorized_keys = fetch_authorized_keys(github_user, allowed_users).await;
@@ -1117,7 +1149,7 @@ impl LocalComputeProvider {
 set -e
 
 USER_ID="$1"
-export REPO_ROOT="{}"
+export REPO_ROOT="{session_root}"
 export PATH="$REPO_ROOT/bin:$PATH"
 ACTIVE_USERS_FILE="$REPO_ROOT/active-users"
 ACTIVITY_LOG="$REPO_ROOT/activity-log"
@@ -1125,6 +1157,8 @@ SYNC_LOG="$REPO_ROOT/sync-log"
 export ACTIVITY_LOG
 export SYNC_LOG
 export SESSION_ROOT="$REPO_ROOT"
+export NOENV_FLAKE_PATH="{noenv_flake_path}"
+export JWT_SECRET="{jwt_secret}"
 
 # Add user to active-users
 echo "$USER_ID" >> "$ACTIVE_USERS_FILE"
@@ -1185,7 +1219,11 @@ WELCOME
     
     exec bash -l
 fi
-"#, session_root = session_root.display());
+"#, 
+        session_root = session_root.display(),
+        noenv_flake_path = self.flake_path.display(),
+        jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "placeholder_secret".to_string())
+        );
 
         std::fs::write(&wrapper_path, wrapper_content).context("Failed to write wrapper script")?;
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
