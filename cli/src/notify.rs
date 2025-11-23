@@ -61,6 +61,9 @@ pub fn watch() -> Result<()> {
         
         println!("┌─────────────────────────────────────────────────────────────┐");
         println!("│ SteadyState Session: {:<38} │", session_id);
+        if let Ok(link) = std::env::var("MAGIC_LINK") {
+             println!("│ Magic Link: {:<47} │", link);
+        }
         println!("│ Repo: {:<53} │", repo_name);
         println!("└─────────────────────────────────────────────────────────────┘");
         println!();

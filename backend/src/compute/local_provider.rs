@@ -1144,6 +1144,12 @@ impl LocalComputeProvider {
         // ------------------------------------------------------------
         let wrapper_path = sshd_dir.join("wrapper.sh");
         
+        // Generate port early so we can include it in the magic link
+        let port = 20000 + (rand::random::<u16>() % 10000);
+        let user = std::env::var("USER").unwrap_or("steadystate".into());
+        let invite = format!("ssh://{}@localhost:{}", user, port);
+        let magic_link = format!("steadystate://collab/{}?ssh={}", session_id, urlencoding::encode(&invite));
+        
         // Use /usr/bin/env bash for portability (NixOS doesn't always have /bin/bash)
         let wrapper_content = format!(r#"#!/usr/bin/env bash
 set -e
@@ -1159,6 +1165,8 @@ export SYNC_LOG
 export SESSION_ROOT="$REPO_ROOT"
 export NOENV_FLAKE_PATH="{noenv_flake_path}"
 export JWT_SECRET="{jwt_secret}"
+export SESSION_ID="{session_id}"
+export MAGIC_LINK="{magic_link}"
 
 # Add user to active-users
 echo "$USER_ID" >> "$ACTIVE_USERS_FILE"
@@ -1222,7 +1230,9 @@ fi
 "#, 
         session_root = session_root.display(),
         noenv_flake_path = self.flake_path.display(),
-        jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "placeholder_secret".to_string())
+        jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "placeholder_secret".to_string()),
+        session_id = session_id,
+        magic_link = magic_link
         );
 
         std::fs::write(&wrapper_path, wrapper_content).context("Failed to write wrapper script")?;
@@ -1240,7 +1250,8 @@ fi
         }
 
         // 4. Generate sshd_config with better settings
-        let port = 20000 + (rand::random::<u16>() % 10000);
+        // 4. Generate sshd_config with better settings
+        // Port is already generated above
         
         // Find sshd path
         let sshd_path = if Path::new("/usr/sbin/sshd").exists() {
