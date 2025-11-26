@@ -1496,6 +1496,7 @@ async fn fetch_github_collaborators(owner: &str, repo: &str, token: &str) -> Res
     
     let client = reqwest::Client::builder()
         .user_agent("steadystate-backend")
+        .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
     let url = format!("https://api.github.com/repos/{}/{}/collaborators", owner, repo);

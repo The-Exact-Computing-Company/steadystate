@@ -1,5 +1,4 @@
     Checking steadystate-backend v0.0.1 (/home/brodrigues/Documents/repos/steadystate/backend)
-    Checking steadystate v0.0.2 (/home/brodrigues/Documents/repos/steadystate/cli)
 warning: unused import: `PathBuf`
  --> cli/src/merge.rs:3:23
   |
@@ -8,19 +7,11 @@ warning: unused import: `PathBuf`
   |
   = note: `#[warn(unused_imports)]` on by default
 
-warning: unused import: `async_trait::async_trait`
- --> backend/src/compute/local_provider.rs:7:5
-  |
-7 | use async_trait::async_trait;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` on by default
-
-warning: unused import: `tracing::instrument`
-  --> backend/src/compute/local_provider.rs:14:5
-   |
-14 | use tracing::instrument;
-   |     ^^^^^^^^^^^^^^^^^^^
+warning: unused import: `yrs::updates::encoder::Encode`
+   --> cli/src/merge.rs:191:9
+    |
+191 |     use yrs::updates::encoder::Encode;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: value assigned to `final_magic_link` is never read
    --> cli/src/main.rs:255:13
@@ -31,152 +22,35 @@ warning: value assigned to `final_magic_link` is never read
     = help: maybe it is overwritten before being read?
     = note: `#[warn(unused_assignments)]` on by default
 
-error[E0599]: no method named `remove` found for struct `TextRef` in the current scope
-   --> cli/src/merge.rs:239:26
+warning: unused variable: `local_update`
+   --> cli/src/merge.rs:233:9
     |
-239 |                     text.remove(&mut txn, pos, len);
-    |                          ^^^^^^
+233 |     let local_update = apply_diff(local)?;
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_local_update`
     |
-help: there is a method `remove_range` with a similar name
-    |
-239 |                     text.remove_range(&mut txn, pos, len);
-    |                                ++++++
+    = note: `#[warn(unused_variables)]` on by default
 
-error[E0599]: no method named `remove` found for struct `TextRef` in the current scope
-   --> cli/src/merge.rs:262:26
+warning: unused variable: `canonical_update`
+   --> cli/src/merge.rs:234:9
     |
-262 |                     text.remove(&mut txn, pos, len);
-    |                          ^^^^^^
-    |
-help: there is a method `remove_range` with a similar name
-    |
-262 |                     text.remove_range(&mut txn, pos, len);
-    |                                ++++++
+234 |     let canonical_update = apply_diff(canonical)?;
+    |         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_canonical_update`
 
-error[E0382]: borrow of moved value: `base_s`
-   --> cli/src/merge.rs:157:56
+warning: unused variable: `text`
+   --> cli/src/merge.rs:238:9
     |
-121 |         let base_s = base_content.and_then(|c| String::from_utf8(c.clone()).ok());
-    |             ------ move occurs because `base_s` has type `std::option::Option<std::string::String>`, which does not implement the `Copy` trait
-...
-151 |             let b_text = base_s.unwrap_or_default();
-    |                          ------ ------------------- `base_s` moved due to this method call
-    |                          |
-    |                          help: consider calling `.as_ref()` or `.as_mut()` to borrow the type's contents
-...
-157 |             let is_binary = (base_content.is_some() && base_s.is_none()) ||
-    |                                                        ^^^^^^ value borrowed here after move
-    |
-note: `std::option::Option::<T>::unwrap_or_default` takes ownership of the receiver `self`, which moves `base_s`
-   --> /build/rustc-1.86.0-src/library/core/src/option.rs:1048:30
-help: you can `clone` the value and consume it, but this might not be your desired behavior
-    |
-151 |             let b_text = base_s.clone().unwrap_or_default();
-    |                                ++++++++
+238 |     let text = doc.get_or_insert_text("content");
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_text`
 
-error[E0382]: borrow of moved value: `local_s`
-   --> cli/src/merge.rs:158:57
-    |
-122 |         let local_s = local_content.and_then(|c| String::from_utf8(c.clone()).ok());
-    |             ------- move occurs because `local_s` has type `std::option::Option<std::string::String>`, which does not implement the `Copy` trait
-...
-152 |             let l_text = local_s.unwrap_or_default();
-    |                          ------- ------------------- `local_s` moved due to this method call
-    |                          |
-    |                          help: consider calling `.as_ref()` or `.as_mut()` to borrow the type's contents
-...
-158 |                             (local_content.is_some() && local_s.is_none()) ||
-    |                                                         ^^^^^^^ value borrowed here after move
-    |
-help: you can `clone` the value and consume it, but this might not be your desired behavior
-    |
-152 |             let l_text = local_s.clone().unwrap_or_default();
-    |                                 ++++++++
-
-error[E0382]: borrow of moved value: `canon_s`
-   --> cli/src/merge.rs:159:57
-    |
-123 |         let canon_s = canon_content.and_then(|c| String::from_utf8(c.clone()).ok());
-    |             ------- move occurs because `canon_s` has type `std::option::Option<std::string::String>`, which does not implement the `Copy` trait
-...
-153 |             let c_text = canon_s.unwrap_or_default();
-    |                          ------- ------------------- `canon_s` moved due to this method call
-    |                          |
-    |                          help: consider calling `.as_ref()` or `.as_mut()` to borrow the type's contents
-...
-159 |                             (canon_content.is_some() && canon_s.is_none());
-    |                                                         ^^^^^^^ value borrowed here after move
-    |
-help: you can `clone` the value and consume it, but this might not be your desired behavior
-    |
-153 |             let c_text = canon_s.clone().unwrap_or_default();
-    |                                 ++++++++
-
-error[E0716]: temporary value dropped while borrowed
-   --> cli/src/merge.rs:163:58
-    |
-163 |                 let base_bytes = base_content.unwrap_or(&vec![]);
-    |                                                          ^^^^^^ - temporary value is freed at the end of this statement
-    |                                                          |
-    |                                                          creates a temporary value which is freed while still in use
-...
-167 |                 if local_bytes != base_bytes && canon_bytes == base_bytes {
-    |                                   ---------- borrow later used here
-    |
-    = note: consider using a `let` binding to create a longer lived value
-    = note: this error originates in the macro `vec` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0716]: temporary value dropped while borrowed
-   --> cli/src/merge.rs:164:60
-    |
-164 |                 let local_bytes = local_content.unwrap_or(&vec![]);
-    |                                                            ^^^^^^ - temporary value is freed at the end of this statement
-    |                                                            |
-    |                                                            creates a temporary value which is freed while still in use
-...
-167 |                 if local_bytes != base_bytes && canon_bytes == base_bytes {
-    |                    ----------- borrow later used here
-    |
-    = note: consider using a `let` binding to create a longer lived value
-    = note: this error originates in the macro `vec` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0716]: temporary value dropped while borrowed
-   --> cli/src/merge.rs:165:60
-    |
-165 |                 let canon_bytes = canon_content.unwrap_or(&vec![]);
-    |                                                            ^^^^^^ - temporary value is freed at the end of this statement
-    |                                                            |
-    |                                                            creates a temporary value which is freed while still in use
-166 |
-167 |                 if local_bytes != base_bytes && canon_bytes == base_bytes {
-    |                                                 ----------- borrow later used here
-    |
-    = note: consider using a `let` binding to create a longer lived value
-    = note: this error originates in the macro `vec` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-Some errors have detailed explanations: E0382, E0599, E0716.
-For more information about an error, try `rustc --explain E0382`.
-warning: `steadystate` (bin "steadystate") generated 2 warnings
-error: could not compile `steadystate` (bin "steadystate") due to 8 previous errors; 2 warnings emitted
-warning: build failed, waiting for other jobs to finish...
-warning: unused variable: `stdout`
-    --> backend/src/compute/local_provider.rs:1198:19
-     |
-1198 |         let (pid, stdout, stderr) = self.executor.run_capture(&sshd_path, &args).await
-     |                   ^^^^^^ help: if this is intentional, prefix it with an underscore: `_stdout`
-     |
-     = note: `#[warn(unused_variables)]` on by default
-
-warning: unused import: `AsyncReadExt`
-  --> backend/src/compute/local_provider.rs:11:45
+warning: method `get` is never used
+  --> cli/src/merge.rs:24:12
    |
-11 | use tokio::io::{AsyncBufReadExt, BufReader, AsyncReadExt};
-   |                                             ^^^^^^^^^^^^
-
-warning: unused import: `std::os::unix::fs::PermissionsExt`
-  --> backend/src/compute/local_provider.rs:10:5
+17 | impl TreeSnapshot {
+   | ----------------- method in this implementation
+...
+24 |     pub fn get(&self, path: &str) -> Option<&FileContent> {
+   |            ^^^
    |
-10 | use std::os::unix::fs::PermissionsExt;
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(dead_code)]` on by default
 
-warning: `steadystate-backend` (lib) generated 5 warnings (run `cargo fix --lib -p steadystate-backend` to apply 2 suggestions)
+warning: `steadystate` (bin "steadystate") generated 7 warnings (run `cargo fix --bin "steadystate"` to apply 2 suggestions)
