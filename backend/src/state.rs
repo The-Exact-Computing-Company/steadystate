@@ -118,7 +118,7 @@ impl AppState {
             refresh_store: Arc::new(DashMap::new()),
             providers: Arc::new(DashMap::new()),
             provider_factories: Arc::new(DashMap::new()),
-            provider_tokens: Arc::new(DashMap::new()),
+            provider_tokens: Arc::new(load_tokens()),
             sessions: SessionStore::new(),
             compute_providers: Arc::new(compute_providers),
         });
@@ -165,6 +165,43 @@ impl AppState {
 
         token
     }
+    pub fn save_tokens(&self) -> Result<()> {
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let dir = std::path::PathBuf::from(home).join(".steadystate");
+        std::fs::create_dir_all(&dir)?;
+        let file_path = dir.join("tokens.json");
+
+        let mut map = HashMap::new();
+        for item in self.provider_tokens.iter() {
+            let (key, value) = item.pair();
+            // key is (provider, login)
+            map.insert(format!("{}:{}", key.0, key.1), value.clone());
+        }
+
+        let json = serde_json::to_string_pretty(&map)?;
+        std::fs::write(file_path, json)?;
+        Ok(())
+    }
+}
+
+fn load_tokens() -> DashMap<(String, String), String> {
+    let dash = DashMap::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let file_path = std::path::PathBuf::from(home).join(".steadystate").join("tokens.json");
+        if file_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(file_path) {
+                if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
+                    for (k, v) in map {
+                        if let Some((provider, login)) = k.split_once(':') {
+                            dash.insert((provider.to_string(), login.to_string()), v);
+                        }
+                    }
+                    info!("Loaded {} tokens from disk", dash.len());
+                }
+            }
+        }
+    }
+    dash
 }
 
 fn now() -> u64 {

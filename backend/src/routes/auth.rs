@@ -95,6 +95,9 @@ pub async fn poll(
                     (identity.provider.clone(), identity.login.clone()),
                     token
                 );
+                if let Err(e) = state.save_tokens() {
+                    warn!("Failed to persist tokens: {}", e);
+                }
             }
 
             Ok(Json(PollOut {

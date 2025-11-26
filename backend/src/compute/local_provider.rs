@@ -718,7 +718,11 @@ impl ComputeProvider for LocalComputeProvider {
     fn id(&self) -> &'static str { "local" }
 
     async fn start_session(&self, session: &mut Session, request: &SessionRequest) -> Result<()> {
-        tracing::info!("Starting local session: id={} repo={}", session.id, request.repo_url);
+    eprintln!("DEBUG: start_session CALLED for session {}", session.id);
+    eprintln!("DEBUG: Request allowed_users: {:?}", request.allowed_users);
+    eprintln!("DEBUG: Request provider_config is_some: {}", request.provider_config.is_some());
+    
+    tracing::info!("Starting local session: id={} repo={}", session.id, request.repo_url);
 
         // Check mode
         if let Some(mode) = &request.mode {
@@ -1443,6 +1447,7 @@ async fn fetch_authorized_keys(github_user: Option<&str>, allowed_users: Option<
     }
 
     tracing::info!("Fetching keys for users: {:?}", users_to_fetch);
+    eprintln!("DEBUG: fetch_authorized_keys fetching for: {:?}", users_to_fetch);
 
     for user in users_to_fetch {
         let url = format!("https://github.com/{}.keys", user);
@@ -1462,13 +1467,16 @@ async fn fetch_authorized_keys(github_user: Option<&str>, allowed_users: Option<
                             }
                         }
                         tracing::info!("Fetched {} keys for GitHub user {}", count, user);
+                        eprintln!("DEBUG: Fetched {} keys for {}", count, user);
                     }
                 } else {
                     tracing::warn!("Failed to fetch keys for {}: HTTP {}", user, resp.status());
+                    eprintln!("DEBUG: Failed to fetch keys for {}: HTTP {}", user, resp.status());
                 }
             }
             Err(e) => {
                 tracing::warn!("Failed to fetch keys for {}: {}", user, e);
+                eprintln!("DEBUG: Failed to fetch keys for {}: {}", user, e);
             }
         }
     }
@@ -1484,6 +1492,8 @@ struct GitHubCollaborator {
 
 async fn fetch_github_collaborators(owner: &str, repo: &str, token: &str) -> Result<Vec<String>> {
     tracing::info!("Fetching collaborators for {}/{}", owner, repo);
+    eprintln!("DEBUG: fetch_github_collaborators called for {}/{}", owner, repo);
+    
     let client = reqwest::Client::builder()
         .user_agent("steadystate-backend")
         .build()?;
@@ -1500,6 +1510,7 @@ async fn fetch_github_collaborators(owner: &str, repo: &str, token: &str) -> Res
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         tracing::error!("Failed to fetch collaborators: HTTP {} - {}", status, text);
+        eprintln!("DEBUG: GitHub API Error: HTTP {} - {}", status, text);
         return Err(anyhow::anyhow!("Failed to fetch collaborators: HTTP {}", status));
     }
 
@@ -1507,5 +1518,6 @@ async fn fetch_github_collaborators(owner: &str, repo: &str, token: &str) -> Res
     let logins: Vec<String> = collaborators.into_iter().map(|c| c.login).collect();
     
     tracing::info!("Found {} collaborators: {:?}", logins.len(), logins);
+    eprintln!("DEBUG: Found {} collaborators: {:?}", logins.len(), logins);
     Ok(logins)
 }
