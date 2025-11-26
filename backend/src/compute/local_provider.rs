@@ -792,6 +792,8 @@ impl ComputeProvider for LocalComputeProvider {
                 &full_repo_name
             ).await?;
             
+            eprintln!("DEBUG: start_session received invite: {}", invite);
+
             // Store session info
             let local_session = LocalSession {
                 pid,
@@ -805,6 +807,7 @@ impl ComputeProvider for LocalComputeProvider {
             
             // Generate Magic Link for Collab
             let magic_link = format!("steadystate://collab/{}?ssh={}", session.id, urlencoding::encode(&invite));
+            eprintln!("DEBUG: start_session generated magic_link: {}", magic_link);
             session.magic_link = Some(magic_link);
             
         } else {
@@ -1015,7 +1018,42 @@ impl LocalComputeProvider {
         // Generate port early so we can include it in the magic link
         let port = 20000 + (rand::random::<u16>() % 10000);
         let user = std::env::var("USER").unwrap_or("steadystate".into());
-        let invite = format!("ssh://{}@localhost:{}", user, port);
+        
+        // Try to detect hostname/IP
+        let hostname = if let Ok(host) = std::env::var("STEADYSTATE_ADVERTISED_HOST") {
+            eprintln!("Using advertised host from env: {}", host);
+            host
+        } else {
+            eprintln!("Attempting to detect public IP via 'ip route get 1.1.1.1'...");
+            match tokio::process::Command::new("ip").args(&["route", "get", "1.1.1.1"]).output().await {
+                Ok(output) => {
+                    if output.status.success() {
+                        let out = String::from_utf8_lossy(&output.stdout);
+                        eprintln!("'ip route' output: {}", out.trim());
+                        // Output format: "1.1.1.1 via ... src 192.168.178.42 ..."
+                        if let Some(start) = out.find("src ") {
+                            let rest = &out[start + 4..];
+                            let ip = rest.split_whitespace().next().unwrap_or("localhost").to_string();
+                            eprintln!("Parsed IP: {}", ip);
+                            ip
+                        } else {
+                            eprintln!("Could not find 'src' in 'ip route' output");
+                            "localhost".to_string()
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        eprintln!("'ip route' failed with status {}: {}", output.status, stderr);
+                        "localhost".to_string()
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to execute 'ip' command: {}", e);
+                    "localhost".to_string()
+                }
+            }
+        };
+
+        let invite = format!("ssh://{}@{}:{}", user, hostname, port);
         let magic_link = format!("steadystate://collab/{}?ssh={}", session_id, urlencoding::encode(&invite));
         
         // Use /usr/bin/env bash for portability (NixOS doesn't always have /bin/bash)
@@ -1284,26 +1322,7 @@ Subsystem sftp internal-sftp
         // Use current user for invite link
         let current_user = std::env::var("USER").unwrap_or_else(|_| "steady".to_string());
         
-        // Try to detect hostname/IP
-        let hostname = if let Ok(host) = std::env::var("STEADYSTATE_ADVERTISED_HOST") {
-            host
-        } else if let Ok(output) = Command::new("ip").args(&["route", "get", "1.1.1.1"]).output().await {
-             if output.status.success() {
-                 let out = String::from_utf8_lossy(&output.stdout);
-                 // Output format: "1.1.1.1 via ... src 192.168.178.42 ..."
-                 if let Some(start) = out.find("src ") {
-                     let rest = &out[start + 4..];
-                     rest.split_whitespace().next().unwrap_or("localhost").to_string()
-                 } else {
-                     "localhost".to_string()
-                 }
-             } else {
-                 "localhost".to_string()
-             }
-        } else {
-             "localhost".to_string()
-        };
-        
+        // Hostname is already detected above
         let invite = format!("ssh://{}@{}:{}", current_user, hostname, port);
         
         tracing::info!("SSHD ready. Connect with: {}", invite);
