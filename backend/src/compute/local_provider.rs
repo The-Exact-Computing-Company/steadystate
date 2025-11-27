@@ -177,35 +177,25 @@ impl LocalComputeProvider {
         let git_repo_str = git_repo.to_str().ok_or_else(|| anyhow!("Invalid path encoding"))?;
         let canonical_str = canonical_path.to_str().ok_or_else(|| anyhow!("Invalid path encoding"))?;
         
-        // 1. Clone bare
-        let status = self.executor.run_status("git", &["clone", "--bare", git_repo_str, canonical_str]).await
+        // 1. Clone non-bare (so we have a working tree for sync operations)
+        let status = self.executor.run_status("git", &["clone", git_repo_str, canonical_str]).await
             .context("Failed to create canonical git repo")?;
             
         if !status.success() {
-            return Err(anyhow!("git clone --bare failed"));
+            return Err(anyhow!("git clone failed"));
         }
 
-        // 2. Create session branch
+        // 2. Create and checkout session branch
         let branch_name = format!("steadystate/collab/{}", session_id);
-        // We need to run git inside the bare repo
-        // git -C canonical branch <branch> HEAD
-        let status = self.executor.run_status("git", &["-C", canonical_str, "branch", &branch_name, "HEAD"]).await
+        // git -C canonical checkout -b <branch>
+        let status = self.executor.run_status("git", &["-C", canonical_str, "checkout", "-b", &branch_name]).await
             .context("Failed to create session branch")?;
 
         if !status.success() {
              return Err(anyhow!("Failed to create session branch {}", branch_name));
         }
         
-        // 3. Update HEAD to point to session branch?
-        // For a bare repo, HEAD determines what is checked out by default when cloning.
-        // git -C canonical symbolic-ref HEAD refs/heads/<branch>
-        let ref_name = format!("refs/heads/{}", branch_name);
-        let status = self.executor.run_status("git", &["-C", canonical_str, "symbolic-ref", "HEAD", &ref_name]).await
-            .context("Failed to update HEAD to session branch")?;
-            
-        if !status.success() {
-             return Err(anyhow!("Failed to update HEAD to session branch"));
-        }
+        // No need to manually update HEAD or symbolic-ref, checkout -b does it.
         
         Ok(canonical_path)
     }
