@@ -5,6 +5,7 @@ use std::io::Write;
 use std::fs;
 use serde::{Deserialize, Serialize};
 use crate::merge;
+use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize)]
 struct WorktreeMeta {
@@ -108,16 +109,11 @@ pub fn sync() -> Result<()> {
     // 7. Reset local worktree
     println!("Refreshing worktree...");
     // Fetch from canonical (origin)
-    let fetch_status = Command::new("git")
-        .args(&["fetch", "origin"]) 
-        .status()?;
-    if !fetch_status.success() { return Err(anyhow::anyhow!("git fetch failed")); }
-
-    let reset_target = format!("origin/{}", session_branch);
-    let reset_status = Command::new("git")
-        .args(&["reset", "--hard", &reset_target])
-        .status()?;
-    if !reset_status.success() { return Err(anyhow::anyhow!("git reset failed")); }
+    // Note: We are running git fetch inside canonical to ensure it has latest from origin (though we just pushed to it)
+    // Actually, we want to update the worktree to match what is now in canonical.
+    // Since worktree is NOT a git repo (in Model A), we just copy files from canonical.
+    
+    sync_worktree_from_canonical(&canonical_path, &worktree_path)?;
 
     // 8. Update metadata
     let new_head = get_git_head(&canonical_path)?;
@@ -160,6 +156,9 @@ fn get_git_head(repo_path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// WARNING: This function is DESTRUCTIVE.
+/// It deletes all files in `repo_path` (except .git) and replaces them with `tree`.
+/// This is intended for the ephemeral `canonical` repository used in sessions.
 fn apply_tree_to_canonical(repo_path: &Path, tree: &crate::merge::TreeSnapshot) -> Result<()> {
     // Safety check
     if !repo_path.ends_with("canonical") {
@@ -191,6 +190,45 @@ fn apply_tree_to_canonical(repo_path: &Path, tree: &crate::merge::TreeSnapshot) 
         fs::write(full_path, content)?;
     }
     
+    Ok(())
+}
+
+fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> Result<()> {
+    // 1. Clear worktree (except .worktree and .git if it exists)
+    for entry in WalkDir::new(worktree_path).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if name == ".worktree" || name == ".git" {
+            continue;
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(path)?;
+        } else {
+            fs::remove_file(path)?;
+        }
+    }
+
+    // 2. Copy from canonical (except .git)
+    for entry in WalkDir::new(canonical_path).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        
+        let rel_path = path.strip_prefix(canonical_path)?;
+        let rel_path_str = rel_path.to_string_lossy();
+        
+        if rel_path_str.starts_with(".git") || rel_path_str.contains("/.git/") {
+            continue;
+        }
+
+        let dest_path = worktree_path.join(rel_path);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(path, dest_path)?;
+    }
+
     Ok(())
 }
 
