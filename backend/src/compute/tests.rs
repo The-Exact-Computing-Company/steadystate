@@ -138,10 +138,13 @@ async fn test_start_session_success() {
         mode: Some("pair".to_string()),
     };
 
-    provider.start_session(&mut session, &request).await.unwrap();
+    let result = provider.start_session(&session.id, &request).await.unwrap();
+    session.state = SessionState::Running;
+    session.endpoint = result.endpoint;
+    session.magic_link = result.magic_link;
 
     assert!(matches!(session.state, SessionState::Running));
-    assert_eq!(session.endpoint, Some("Invite: ssh://user@host:22".to_string()));
+    assert_eq!(session.endpoint, Some("ssh://user@host:22".to_string()));
 
     let calls = executor.get_calls();
     // Verify sequence: check nix, (maybe install lix), clone, upterm
@@ -206,7 +209,9 @@ async fn test_terminate_session() {
         mode: Some("pair".to_string()),
     };
     
-    provider.start_session(&mut session, &request).await.unwrap();
+    let result = provider.start_session(&session.id, &request).await.unwrap();
+    session.state = SessionState::Running;
+    session.endpoint = result.endpoint;
 
     // Now terminate
     provider.terminate_session(&session).await.unwrap();
@@ -237,7 +242,7 @@ Run 'upterm session current' to display this screen again
     assert!(result.is_ok());
     let (pid, invite, _remaining) = result.unwrap();
     assert_eq!(pid, None);
-    assert_eq!(invite, "ssh BFO1HH1sZDg28RvdWpam:MTc4MTFlNDBjZTk0ZTgudm0udXB0ZXJtLmludGVrbmFsOjIyMjI=@uptermd.upterm.dev");
+    assert_eq!(invite, "BFO1HH1sZDg28RvdWpam:MTc4MTFlNDBjZTk0ZTgudm0udXB0ZXJtLmludGVrbmFsOjIyMjI=@uptermd.upterm.dev");
 }
 
 #[tokio::test]
@@ -257,7 +262,7 @@ async fn test_capture_upterm_invite_parsing_new_format() {
     assert!(result.is_ok());
     let (pid, invite, _remaining) = result.unwrap();
     assert_eq!(pid, None);
-    assert_eq!(invite, "ssh FYjNpo96BizkITTpFfco@uptermd.upterm.dev");
+    assert_eq!(invite, "FYjNpo96BizkITTpFfco@uptermd.upterm.dev");
 }
 
 #[tokio::test]
@@ -271,7 +276,7 @@ async fn test_start_session_git_failure() {
         executor.clone()
     );
 
-    let mut session = Session {
+    let session = Session {
         id: "test-session-git-fail".into(),
         _repo_url: "https://github.com/user/repo".into(),
         _branch: None,
@@ -296,7 +301,7 @@ async fn test_start_session_git_failure() {
         mode: Some("pair".to_string()),
     };
 
-    let result = provider.start_session(&mut session, &request).await;
+    let result = provider.start_session(&session.id, &request).await;
     assert!(result.is_err());
     // The provider does not update state on failure (caller does), so it should remain Provisioning
     assert!(matches!(session.state, SessionState::Provisioning));
@@ -313,7 +318,7 @@ async fn test_start_session_upterm_failure() {
         executor.clone()
     );
 
-    let mut session = Session {
+    let session = Session {
         id: "test-session-upterm-fail".into(),
         _repo_url: "https://github.com/user/repo".into(),
         _branch: None,
@@ -338,7 +343,7 @@ async fn test_start_session_upterm_failure() {
         mode: Some("pair".to_string()),
     };
 
-    let result = provider.start_session(&mut session, &request).await;
+    let result = provider.start_session(&session.id, &request).await;
     assert!(result.is_err());
     assert!(matches!(session.state, SessionState::Provisioning));
 }
@@ -356,7 +361,7 @@ async fn test_start_session_nix_failure() {
         executor.clone()
     );
 
-    let mut session = Session {
+    let session = Session {
         id: "test-session-nix-fail".into(),
         _repo_url: "https://github.com/user/repo".into(),
         _branch: None,
@@ -381,7 +386,7 @@ async fn test_start_session_nix_failure() {
         mode: Some("pair".to_string()),
     };
 
-    let result = provider.start_session(&mut session, &request).await;
+    let result = provider.start_session(&session.id, &request).await;
     assert!(result.is_err());
     assert!(matches!(session.state, SessionState::Provisioning));
 }

@@ -108,16 +108,22 @@ pub async fn poll(
                 error: None,
             }))
         }
-        Ok(DevicePollOutcome::Pending) => Ok(Json(PollOut {
-            status: Some("pending".into()),
-            jwt: None, refresh_token: None, login: None,
-            error: None,
-        })),
-        Ok(DevicePollOutcome::SlowDown) => Ok(Json(PollOut {
-            status: Some("pending".into()),
-            jwt: None, refresh_token: None, login: None,
-            error: Some("slow_down".into()),
-        })),
+        Ok(DevicePollOutcome::Pending) => {
+            info!("poll pending for provider '{}'", provider_id.as_str());
+            Ok(Json(PollOut {
+                status: Some("pending".into()),
+                jwt: None, refresh_token: None, login: None,
+                error: None,
+            }))
+        },
+        Ok(DevicePollOutcome::SlowDown) => {
+            info!("poll slow_down for provider '{}'", provider_id.as_str());
+            Ok(Json(PollOut {
+                status: Some("pending".into()),
+                jwt: None, refresh_token: None, login: None,
+                error: Some("slow_down".into()),
+            }))
+        },
         Err(e) => {
             warn!("poll error for provider '{}': {}", provider_id.as_str(), e);
             Ok(Json(PollOut {

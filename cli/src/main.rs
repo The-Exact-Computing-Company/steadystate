@@ -150,7 +150,7 @@ async fn logout(client: &Client) -> Result<()> {
     };
     let username = session.login.clone();
 
-    if let Some(refresh) = get_refresh_token(&username).await? {
+    if let Some(refresh) = get_refresh_token(&username, None).await? {
         let url = format!("{}/auth/revoke", &*BACKEND_URL);
         match auth::send_with_retries(|| {
             client
@@ -171,7 +171,7 @@ async fn logout(client: &Client) -> Result<()> {
         }
     }
 
-    let _ = delete_refresh_token(&username).await;
+    let _ = delete_refresh_token(&username, None).await;
     let _ = remove_session(None).await;
     println!("Logged out (local tokens removed).");
     Ok(())

@@ -587,17 +587,19 @@ pub(crate) async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Un
                 tracing::info!("Captured upterm PID: {}", p);
                 pid = Some(p);
             }
-        } else if trimmed.starts_with("Invite: ssh") {
-            tracing::info!("Captured upterm invite: {}", trimmed);
+        } else if trimmed.starts_with("Invite: ") {
+            let invite = trimmed.strip_prefix("Invite: ").unwrap_or(trimmed).trim();
+            tracing::info!("Captured upterm invite: {}", invite);
             let remaining: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(lines.into_inner().into_inner());
-            return Ok((pid, trimmed.to_string(), BufReader::new(remaining)));
+            return Ok((pid, invite.to_string(), BufReader::new(remaining)));
         } else if trimmed.starts_with("SSH Session:") {
             // Format: "SSH Session:            ssh ..."
             if let Some(ssh_cmd) = trimmed.strip_prefix("SSH Session:") {
                 let ssh_cmd = ssh_cmd.trim();
-                tracing::info!("Captured upterm invite: {}", ssh_cmd);
+                let address = ssh_cmd.strip_prefix("ssh ").unwrap_or(ssh_cmd).trim();
+                tracing::info!("Captured upterm invite: {}", address);
                 let remaining: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(lines.into_inner().into_inner());
-                return Ok((pid, ssh_cmd.to_string(), BufReader::new(remaining)));
+                return Ok((pid, address.to_string(), BufReader::new(remaining)));
             }
         } else if line.contains("SSH Command:") {
             // New format (v0.18.0+): "│ ➤ SSH Command:   │ ssh ... │"
@@ -610,9 +612,10 @@ pub(crate) async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Un
                 } else {
                     rest.trim()
                 };
-                tracing::info!("Captured upterm invite (new format): {}", ssh_cmd);
+                let address = ssh_cmd.strip_prefix("ssh ").unwrap_or(ssh_cmd).trim();
+                tracing::info!("Captured upterm invite (new format): {}", address);
                 let remaining: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(lines.into_inner().into_inner());
-                return Ok((pid, ssh_cmd.to_string(), BufReader::new(remaining)));
+                return Ok((pid, address.to_string(), BufReader::new(remaining)));
             }
         }
     }
@@ -707,12 +710,10 @@ async fn ensure_fork_and_clone(
 impl ComputeProvider for LocalComputeProvider {
     fn id(&self) -> &'static str { "local" }
 
-    async fn start_session(&self, session: &mut Session, request: &SessionRequest) -> Result<()> {
-    eprintln!("DEBUG: start_session CALLED for session {}", session.id);
-    eprintln!("DEBUG: Request allowed_users: {:?}", request.allowed_users);
-    eprintln!("DEBUG: Request provider_config is_some: {}", request.provider_config.is_some());
-    
-    tracing::info!("Starting local session: id={} repo={}", session.id, request.repo_url);
+    async fn start_session(&self, session_id: &str, request: &SessionRequest) -> Result<crate::models::SessionStartResult> {
+        eprintln!("DEBUG: start_session CALLED for session {}", session_id);
+        
+        tracing::info!("Starting local session: id={} repo={}", session_id, request.repo_url);
 
         // Check mode
         if let Some(mode) = &request.mode {
@@ -723,8 +724,7 @@ impl ComputeProvider for LocalComputeProvider {
         
         self.ensure_nix_installed().await?;
 
-        
-        let (workspace_root, repo_path) = self.create_workspace(&session.id)?;
+        let (workspace_root, repo_path) = self.create_workspace(session_id)?;
         
         // --- GitHub Fork/Clone Logic ---
         if let Some(cfg) = &request.provider_config {
@@ -743,121 +743,99 @@ impl ComputeProvider for LocalComputeProvider {
         }
         
         // Extract GitHub login and token if available
-    let mut github_login = None;
-    let mut github_token = None;
-    if let Some(cfg) = &request.provider_config {
-         if let Some(gh_val) = cfg.get("github") {
-            if let Ok(gh) = serde_json::from_value::<GitHubComputeConfig>(gh_val.clone()) {
-                github_login = Some(gh.login);
-                github_token = Some(gh.access_token);
-            }
-         }
-    }
+        let mut github_login = None;
+        let mut github_token = None;
+        if let Some(cfg) = &request.provider_config {
+             if let Some(gh_val) = cfg.get("github") {
+                if let Ok(gh) = serde_json::from_value::<GitHubComputeConfig>(gh_val.clone()) {
+                    github_login = Some(gh.login);
+                    github_token = Some(gh.access_token);
+                }
+             }
+        }
 
-    // Determine allowed users
-    let mut allowed_users_list = request.allowed_users.clone();
-    
-    eprintln!("DEBUG: Initial allowed_users: {:?}", allowed_users_list);
-    eprintln!("DEBUG: Has GitHub token: {}", github_token.is_some());
-
-    // If no allowed users specified (and not explicitly "none"), default to all collaborators
-    if allowed_users_list.is_none() {
-        if let Some(token) = &github_token {
-            let mut repo_name = request.repo_url.split('/').last().unwrap_or("unknown");
-            if repo_name.ends_with(".git") {
-                repo_name = &repo_name[..repo_name.len() - 4];
-            }
-            let owner = request.repo_url.split('/').nth_back(1).unwrap_or("unknown");
-            
-            eprintln!("DEBUG: Attempting to fetch collaborators for {}/{}", owner, repo_name);
-
-            if owner != "unknown" && repo_name != "unknown" {
-                match fetch_github_collaborators(owner, repo_name, token).await {
-                    Ok(collaborators) => {
-                        eprintln!("DEBUG: Fetched collaborators: {:?}", collaborators);
-                        allowed_users_list = Some(collaborators);
-                    },
-                    Err(e) => {
-                        eprintln!("DEBUG: Failed to fetch collaborators: {}", e);
-                        tracing::warn!("Failed to fetch collaborators: {}. Defaulting to host only.", e);
+        // Determine allowed users
+        let mut allowed_users_list = request.allowed_users.clone();
+        
+        // If no allowed users specified (and not explicitly "none"), default to all collaborators
+        if allowed_users_list.is_none() {
+            if let Some(token) = &github_token {
+                let mut repo_name = request.repo_url.split('/').last().unwrap_or("unknown");
+                if repo_name.ends_with(".git") {
+                    repo_name = &repo_name[..repo_name.len() - 4];
+                }
+                let owner = request.repo_url.split('/').nth_back(1).unwrap_or("unknown");
+                
+                if owner != "unknown" && repo_name != "unknown" {
+                    match fetch_github_collaborators(owner, repo_name, token).await {
+                        Ok(collaborators) => {
+                            allowed_users_list = Some(collaborators);
+                        },
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch collaborators: {}. Defaulting to host only.", e);
+                        }
                     }
                 }
-            } else {
-                eprintln!("DEBUG: Could not parse owner/repo from URL: {}", request.repo_url);
             }
-        } else {
-            eprintln!("DEBUG: No GitHub token available, skipping collaborator fetch.");
+        } else if let Some(users) = &allowed_users_list {
+            // If "none" is specified, clear the list (host only)
+            if users.contains(&"none".to_string()) {
+                allowed_users_list = Some(Vec::new());
+            }
         }
-    } else if let Some(users) = &allowed_users_list {
-        // If "none" is specified, clear the list (host only)
-        if users.contains(&"none".to_string()) {
-            eprintln!("DEBUG: 'none' specified, clearing allowed users.");
-            allowed_users_list = Some(Vec::new());
-        }
-    }
-        
 
         // 4. Initialize Canonical Git Repo (if collab mode)
-        let is_collab = request.mode.as_deref().unwrap_or("pair") == "collab";
-        
-        if is_collab {
-            // Initialize canonical repo
-            self.init_canonical_git_repo(&workspace_root, &repo_path, &session.id).await?;
-            
-            // Install scripts
-            self.install_steadystate_commands(&workspace_root)?;
-            
-            // Create logs
-            std::fs::File::create(workspace_root.join("sync-log"))?;
-            std::fs::File::create(workspace_root.join("activity-log"))?;
-            
-            // Start event daemon
+        if request.mode.as_deref() == Some("collab") {
+             self.init_canonical_git_repo(&workspace_root, &repo_path, session_id).await?;
+             self.install_steadystate_commands(&workspace_root)?;
+
+            let repo_name = repo_path.file_name().and_then(|s| s.to_str()).unwrap_or("repo");
+            let (pid, invite) = self.launch_sshd_for_collab(
+                &workspace_root,
+                github_login.as_deref(),
+                allowed_users_list.as_deref(),
+                session_id,
+                repo_name,
+                github_token.as_deref(),
+            ).await?;
+
             let event_daemon_pid = self.start_event_daemon(&workspace_root).await?;
-            
-            // Extract repo name from URL
-            let repo_name = request.repo_url.split('/').last().unwrap_or("unknown");
-            let owner = request.repo_url.split('/').nth_back(1).unwrap_or("unknown");
-            let full_repo_name = if owner != "unknown" && repo_name != "unknown" {
-                format!("{}/{}", owner, repo_name)
-            } else {
-                "unknown".to_string()
-            };
 
-            // 5. Launch SSHD for collaboration
-        let (pid, invite) = self.launch_sshd_for_collab(
-            &workspace_root,
-            github_login.as_deref(),
-            allowed_users_list.as_deref(),
-            &session.id,
-            &full_repo_name,
-            github_token.as_deref()
-        ).await?;
-            
-            eprintln!("DEBUG: start_session received invite: {}", invite);
-
-            // Store session info
-            let local_session = LocalSession {
+            // Store session info in local state
+            self.state.live_sessions.insert(session_id.to_string(), LocalSession {
                 pid,
                 event_daemon_pid,
                 workspace_root: workspace_root.clone(),
+            });
+
+            // 6. Generate Result
+            let endpoint = if invite.starts_with("ssh://") {
+                invite.clone()
+            } else {
+                format!("ssh://{}", invite)
             };
-            self.state.live_sessions.insert(session.id.clone(), local_session);
             
-            session.state = SessionState::Running;
-            session.endpoint = Some(invite.clone());
-            
-            // Generate Magic Link for Collab
-            let magic_link = format!("steadystate://collab/{}?ssh={}", session.id, urlencoding::encode(&invite));
-            eprintln!("DEBUG: start_session generated magic_link: {}", magic_link);
-            session.magic_link = Some(magic_link);
-            
+            // Generate Magic Link
+            let magic_link = if let Some(mode) = &request.mode {
+                let mut url = url::Url::parse(&format!("steadystate://{}", mode)).unwrap();
+                
+                if mode == "pair" {
+                    url.query_pairs_mut().append_pair("upterm", &endpoint);
+                } else if mode == "collab" {
+                    url.query_pairs_mut().append_pair("ssh", &endpoint);
+                }
+                Some(url.to_string())
+            } else {
+                None
+            };
+
+            Ok(crate::models::SessionStartResult {
+                endpoint: Some(endpoint),
+                magic_link,
+            })
         } else {
             // Legacy/Pair mode (Upterm)
             
-
-
-            
-            // Launch Upterm
             // Launch Upterm
              let (pid, invite) = self.launch_upterm_in_noenv(
                 &self.flake_path,
@@ -866,7 +844,7 @@ impl ComputeProvider for LocalComputeProvider {
                 allowed_users_list.as_deref(),
                 request.public,
                 request.environment.as_deref(),
-                &session.id,
+                session_id,
                 github_token.as_deref(),
             ).await?;
 
@@ -875,17 +853,22 @@ impl ComputeProvider for LocalComputeProvider {
                 event_daemon_pid: None,
                 workspace_root: repo_path,
             };
-            self.state.live_sessions.insert(session.id.clone(), local_session);
+            self.state.live_sessions.insert(session_id.to_string(), local_session);
 
-            session.state = SessionState::Running;
-            session.endpoint = Some(invite.clone());
+            let endpoint = if invite.starts_with("ssh://") {
+                invite.clone()
+            } else {
+                format!("ssh://{}", invite)
+            };
             
             // Generate Magic Link for Pair
-            let magic_link = format!("steadystate://pair/{}?ssh={}", session.id, urlencoding::encode(&invite));
-            session.magic_link = Some(magic_link);
+            let magic_link = format!("steadystate://pair/{}?ssh={}", session_id, urlencoding::encode(&invite));
+            
+            Ok(crate::models::SessionStartResult {
+                endpoint: Some(endpoint),
+                magic_link: Some(magic_link),
+            })
         }
-
-        Ok(())
     }
 
     async fn terminate_session(&self, session: &Session) -> Result<()> {
@@ -910,8 +893,6 @@ impl ComputeProvider for LocalComputeProvider {
         }
         Ok(())
     }
-
-
 }
 
 impl LocalComputeProvider {

@@ -179,4 +179,11 @@ impl From<&Session> for SessionInfo {
             magic_link: session.magic_link.clone(),
         }
     }
-} 
+}
+
+/// The result of a successful session start operation.
+#[derive(Debug)]
+pub struct SessionStartResult {
+    pub endpoint: Option<String>,
+    pub magic_link: Option<String>,
+}

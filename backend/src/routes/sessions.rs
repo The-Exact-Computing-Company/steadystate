@@ -42,21 +42,33 @@ async fn run_provisioning(
         return;
     };
 
-    // 3. Do the work
-    let result = if let Some(mut session_entry) = app_state.sessions.get_mut(&session_id) {
-        provider.start_session(&mut session_entry, &request).await
-    } else {
-        return;
-    };
+    // 3. Do the work (release lock first!)
+    // We clone request data needed for provisioning if necessary, but here we pass the whole request.
+    
+    // Release the lock by not holding a reference to session_entry across the await point.
+    // We already have provider_id and provider.
+    
+    let result = provider.start_session(&session_id, &request).await;
 
-    // 4. Handle failure
-    if let Err(e) = result {
-        tracing::error!("Provisioning failed for session {}: {:#}", session_id, e);
-        if let Some(mut session) = app_state.sessions.get_mut(&session_id) {
-            session.state = SessionState::Failed;
-            session.error_message = Some(format!("{:#}", e));
-            session.updated_at = std::time::SystemTime::now();
+    // 4. Handle result
+    if let Some(mut session) = app_state.sessions.get_mut(&session_id) {
+        match result {
+            Ok(start_result) => {
+                session.state = SessionState::Running;
+                session.endpoint = start_result.endpoint;
+                session.magic_link = start_result.magic_link;
+                session.updated_at = std::time::SystemTime::now();
+                tracing::info!("Session {} provisioned successfully", session_id);
+            }
+            Err(e) => {
+                tracing::error!("Provisioning failed for session {}: {:#}", session_id, e);
+                session.state = SessionState::Failed;
+                session.error_message = Some(format!("{:#}", e));
+                session.updated_at = std::time::SystemTime::now();
+            }
         }
+    } else {
+        tracing::warn!("Session {} disappeared after provisioning", session_id);
     }
 }
 
