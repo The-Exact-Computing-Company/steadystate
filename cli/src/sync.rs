@@ -15,7 +15,7 @@ struct WorktreeMeta {
     last_synced_commit: String,
 }
 
-pub fn sync() -> Result<()> {
+pub async fn sync() -> Result<()> {
     println!("Syncing changes (Y-CRDT)...");
 
     // 1. Determine paths
