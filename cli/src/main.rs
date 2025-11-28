@@ -595,7 +595,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Sync => {
-            if let Err(e) = sync::sync() {
+            if let Err(e) = sync::sync().await {
                 eprintln!("sync failed: {:#}", e);
                 std::process::exit(1);
             }

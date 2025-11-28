@@ -238,12 +238,10 @@ pub fn sync() -> Result<()> {
     let sync_log_path = repo_root_path.join("sync-log");
     
     // Try to get username from session, fallback to env var
-    let user = tokio::runtime::Handle::current().block_on(async {
-        match crate::session::read_session(None).await {
-            Ok(session) => session.login,
-            Err(_) => std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
-        }
-    });
+    let user = match crate::session::read_session(None).await {
+        Ok(session) => session.login,
+        Err(_) => std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+    };
 
     let timestamp = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
