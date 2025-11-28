@@ -347,7 +347,6 @@ fn build_base_update(base: &str) -> Result<Vec<u8>> {
     Ok(doc.transact().encode_state_as_update_v1(&yrs::StateVector::default()))
 }
 
-
 fn build_side_update(base_update: &[u8], base: &str, side: &str) -> Result<Vec<u8>> {
     let doc = Doc::new();
     {
@@ -357,8 +356,11 @@ fn build_side_update(base_update: &[u8], base: &str, side: &str) -> Result<Vec<u
     }
     let txt = doc.get_or_insert_text("content");
 
-    // Character-level diff for proper intra-line merge
-    let diff = TextDiff::from_chars(base, side);
+    // Word-level diff: best balance between granularity and readability
+    // - Fixes same-line different-word edits (the original bug)
+    // - Avoids character-level garbling when same word is edited
+    // - Produces "word1 word2" instead of "wor1d2" on conflicts
+    let diff = TextDiff::from_words(base, side);
     {
         let mut txn = doc.transact_mut();
         let mut pos: u32 = 0;
@@ -369,27 +371,21 @@ fn build_side_update(base_update: &[u8], base: &str, side: &str) -> Result<Vec<u
             
             match change.tag() {
                 ChangeTag::Equal => {
-                    // Content matches - advance position past it
                     pos += len;
                 }
                 ChangeTag::Delete => {
-                    // Remove content at current position
-                    // Safety check: ensure we don't try to remove beyond document end
-                    let doc_content = txt.get_string(&txn);
-                    let doc_len = doc_content.encode_utf16().count() as u32;
-                    
+                    // Bounds check to prevent Yrs panic
+                    let doc_len = txt.get_string(&txn).encode_utf16().count() as u32;
                     if pos < doc_len {
-                        let remove_len = len.min(doc_len - pos);
-                        if remove_len > 0 {
-                            txt.remove_range(&mut txn, pos, remove_len);
+                        let safe_len = len.min(doc_len - pos);
+                        if safe_len > 0 {
+                            txt.remove_range(&mut txn, pos, safe_len);
                         }
                     }
-                    // DON'T advance pos - the content is now gone
+                    // Don't advance pos - content was removed
                 }
                 ChangeTag::Insert => {
-                    // Insert new content at current position
                     txt.insert(&mut txn, pos, value);
-                    // Advance position past the inserted content
                     pos += len;
                 }
             }
