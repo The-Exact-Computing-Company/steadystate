@@ -64,6 +64,20 @@ impl TreeSnapshot {
     }
 }
 
+/// Check if a file should be ignored by the sync engine.
+fn is_ignored(path: &str) -> bool {
+    let path = Path::new(path);
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    
+    // Ignore list
+    file_name == ".viminfo" ||
+    file_name == ".DS_Store" ||
+    file_name == "Thumbs.db" ||
+    file_name.ends_with(".swp") ||
+    file_name.ends_with('~') ||
+    path.components().any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".worktree")
+}
+
 /// Materialize a tree from a Git commit in a repository.
 pub fn materialize_git_tree(repo_path: &Path, commit_hash: &str) -> Result<TreeSnapshot> {
     let mut snapshot = TreeSnapshot::new();
@@ -88,6 +102,10 @@ pub fn materialize_git_tree(repo_path: &Path, commit_hash: &str) -> Result<TreeS
     // Optimization: Use git cat-file --batch for larger repos, but loop is fine for MVP
     for file_path in files {
         if file_path.trim().is_empty() {
+            continue;
+        }
+
+        if is_ignored(file_path) {
             continue;
         }
 
@@ -130,7 +148,7 @@ pub fn materialize_fs_tree(root_path: &Path) -> Result<TreeSnapshot> {
         let rel_path = path.strip_prefix(root_path)?;
         let rel_path_str = rel_path.to_string_lossy();
 
-        if rel_path_str.starts_with(".git") || rel_path_str.starts_with(".worktree") || rel_path_str.contains("/.git/") {
+        if is_ignored(&rel_path_str) {
             continue;
         }
 
@@ -614,5 +632,20 @@ mod tests {
         // Should only have the real file, not the symlink
         assert!(snapshot.files.contains_key("real.txt"));
         assert!(!snapshot.files.contains_key("link.txt"));
+    }
+
+    #[test]
+    fn test_is_ignored() {
+        assert!(is_ignored(".viminfo"));
+        assert!(is_ignored("path/to/.viminfo"));
+        assert!(is_ignored(".DS_Store"));
+        assert!(is_ignored("foo.swp"));
+        assert!(is_ignored("foo.txt~"));
+        assert!(is_ignored(".git/config"));
+        assert!(is_ignored(".worktree/steadystate.json"));
+        
+        assert!(!is_ignored("foo.txt"));
+        assert!(!is_ignored("src/main.rs"));
+        assert!(!is_ignored(".gitignore"));
     }
 }
