@@ -211,6 +211,14 @@ pub async fn publish_command() -> Result<()> {
 
     println!("Publishing changes to {}...", session_branch);
 
+    // Resolve current user for fallback
+    let current_user = match crate::session::read_session(None).await {
+        Ok(session) => session.login,
+        Err(_) => std::env::var("STEADYSTATE_USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "unknown".to_string()),
+    };
+
     // Scope the lock
     {
         let _lock = lock_canonical(&canonical_path)?;
@@ -224,7 +232,7 @@ pub async fn publish_command() -> Result<()> {
         
         // Generate commit message with active users
         let sync_log_path = repo_root_path.join("sync-log");
-        let users = get_active_users(&sync_log_path).unwrap_or_else(|_| vec!["unknown".to_string()]);
+        let users = get_active_users(&sync_log_path, &current_user).unwrap_or_else(|_| vec![current_user.clone()]);
         let user_list = users.join(", ");
         let msg = format!("Changes from collab session between {}", user_list);
 
@@ -254,8 +262,8 @@ pub async fn publish_command() -> Result<()> {
             println!("No changes to commit.");
         }
 
-        // 3. Push
-        println!("Pushing to remote...");
+        // 3. Push to local canonical repo (intermediate)
+        println!("Pushing to session repo...");
         let push_status = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
@@ -263,9 +271,31 @@ pub async fn publish_command() -> Result<()> {
             .status()?;
             
         if !push_status.success() {
-            eprintln!("❌ Push failed. The remote branch is likely ahead of your local state.");
+            eprintln!("❌ Push to session repo failed. The remote branch is likely ahead of your local state.");
             eprintln!("💡 Run 'steadystate sync' to merge remote changes into your worktree, then try publishing again.");
             return Err(anyhow::anyhow!("Push failed"));
+        }
+
+        // 4. Push from session repo to GitHub (origin)
+        println!("Pushing to GitHub...");
+        // The 'repo' directory is a sibling of 'canonical'
+        let repo_path = canonical_path.parent().unwrap().join("repo");
+        
+        // We use -C because 'repo' is a bare repository (or might be)
+        // If it's not bare, this still works if pointing to the .git dir, but here 'repo' IS the git dir if bare.
+        // However, local_provider.rs initializes it as a clone. If it's a bare clone, 'repo' is the dir.
+        
+        let github_push_status = Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(&["push", "origin", &session_branch])
+            .status()?;
+
+        if !github_push_status.success() {
+            eprintln!("⚠️  Warning: Push to GitHub failed.");
+            eprintln!("   Your changes are saved in the session, but could not be pushed to GitHub.");
+            eprintln!("   Check your internet connection or GitHub permissions.");
+            // We don't return error here because the session state is consistent locally
         }
     }
 
@@ -273,12 +303,9 @@ pub async fn publish_command() -> Result<()> {
     Ok(())
 }
 
-fn get_active_users(log_path: &Path) -> Result<Vec<String>> {
+fn get_active_users(log_path: &Path, current_user: &str) -> Result<Vec<String>> {
     if !log_path.exists() {
-        let user = std::env::var("STEADYSTATE_USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "unknown".to_string());
-        return Ok(vec![user]);
+        return Ok(vec![current_user.to_string()]);
     }
 
     let content = fs::read_to_string(log_path)?;
@@ -296,10 +323,7 @@ fn get_active_users(log_path: &Path) -> Result<Vec<String>> {
     }
     
     if users.is_empty() {
-        let user = std::env::var("STEADYSTATE_USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "unknown".to_string());
-        users.push(user);
+        users.push(current_user.to_string());
     }
     
     Ok(users)
@@ -357,6 +381,14 @@ pub async fn sync() -> Result<()> {
     let meta_dir = ctx.meta_path.parent().unwrap().to_path_buf();
     let meta_path = ctx.meta_path; // Move happens here
     let repo_root_path = ctx.repo_root_path;
+
+    // Resolve user early
+    let user = match crate::session::read_session(None).await {
+        Ok(session) => session.login,
+        Err(_) => std::env::var("STEADYSTATE_USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "unknown".to_string()),
+    };
 
     println!("Base commit: {}", base_commit);
     println!("Session branch: {}", session_branch);
@@ -498,7 +530,7 @@ pub async fn sync() -> Result<()> {
 
         // 7. Commit
         println!("Committing...");
-        if let Err(e) = commit_changes(&canonical_path, &session_branch) {
+        if let Err(e) = commit_changes(&canonical_path, &session_branch, &user) {
             eprintln!("❌ Failed to commit: {}", e);
             eprintln!("🔄 Attempting recovery from backup...");
             
@@ -540,14 +572,6 @@ pub async fn sync() -> Result<()> {
     // 11. Update sync-log
     let sync_log_path = repo_root_path.join("sync-log");
     
-    // Try to get username from session, fallback to env var
-    let user = match crate::session::read_session(None).await {
-        Ok(session) => session.login,
-        Err(_) => std::env::var("STEADYSTATE_USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "unknown".to_string()),
-    };
-
     let timestamp = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -559,7 +583,7 @@ pub async fn sync() -> Result<()> {
     Ok(())
 }
 
-fn commit_changes(repo_path: &Path, _branch: &str) -> Result<()> {
+fn commit_changes(repo_path: &Path, _branch: &str, user: &str) -> Result<()> {
     let status = Command::new("git")
         .arg("-C")
         .arg(repo_path)
@@ -575,7 +599,6 @@ fn commit_changes(repo_path: &Path, _branch: &str) -> Result<()> {
         .status()?;
 
     if !diff_status.success() {
-        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
         let msg = format!("sync: SteadyState session by {}", user);
         
         let commit_status = Command::new("git")

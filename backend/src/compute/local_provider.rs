@@ -4,18 +4,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
-use std::os::unix::fs::PermissionsExt;
-use tokio::io::{AsyncBufReadExt, BufReader, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
-use tracing::instrument;
+use chrono::Local;
 
 
 use crate::compute::ComputeProvider;
-use crate::models::{Session, SessionRequest, SessionState};
+use crate::models::{Session, SessionRequest};
 
 #[async_trait::async_trait]
 pub trait CommandExecutor: Send + Sync + std::fmt::Debug {
@@ -169,7 +167,7 @@ impl LocalComputeProvider {
 
 
 
-    async fn init_canonical_git_repo(&self, session_root: &Path, git_repo: &Path, session_id: &str) -> Result<PathBuf> {
+    async fn init_canonical_git_repo(&self, session_root: &Path, git_repo: &Path, branch_name: &str) -> Result<PathBuf> {
         let canonical_path = session_root.join("canonical");
         tracing::info!("Initializing canonical Git repository at {}", canonical_path.display());
         
@@ -186,9 +184,8 @@ impl LocalComputeProvider {
         }
 
         // 2. Create and checkout session branch
-        let branch_name = format!("steadystate/collab/{}", session_id);
         // git -C canonical checkout -b <branch>
-        let status = self.executor.run_status("git", &["-C", canonical_str, "checkout", "-b", &branch_name]).await
+        let status = self.executor.run_status("git", &["-C", canonical_str, "checkout", "-b", branch_name]).await
             .context("Failed to create session branch")?;
 
         if !status.success() {
@@ -802,7 +799,10 @@ impl ComputeProvider for LocalComputeProvider {
 
         // 4. Initialize Canonical Git Repo (if collab mode)
         if request.mode.as_deref() == Some("collab") {
-             self.init_canonical_git_repo(&workspace_root, &repo_path, session_id).await?;
+             // Generate branch name with date: YYYYMMDD_collab_{session_id}
+             let branch_name = format!("{}_collab_{}", Local::now().format("%Y%m%d"), session_id);
+             
+             self.init_canonical_git_repo(&workspace_root, &repo_path, &branch_name).await?;
              
              let real_repo_name = request.repo_url.split('/').last()
                 .map(|s| s.trim_end_matches(".git"))
@@ -815,6 +815,7 @@ impl ComputeProvider for LocalComputeProvider {
                 github_login.as_deref(),
                 allowed_users_list.as_deref(),
                 session_id,
+                &branch_name,
                 real_repo_name,
                 github_token.as_deref(),
             ).await?;
@@ -963,6 +964,7 @@ impl LocalComputeProvider {
         github_user: Option<&str>,
         allowed_users: Option<&[String]>,
         session_id: &str,
+        branch_name: &str,
         repo_name: &str,
         github_token: Option<&str>,
     ) -> Result<(u32, String)> {
@@ -1140,7 +1142,7 @@ if [ ! -d "$WORKTREE" ]; then
     # Clone from canonical repo
     echo "Cloning workspace..." >> "$REPO_ROOT/clone.log"
     # Use git clone with session branch
-    git clone --branch steadystate/collab/{session_id} "$REPO_ROOT/canonical" "$WORKTREE" >> "$REPO_ROOT/clone.log" 2>&1 || {{
+    git clone --branch {branch_name} "$REPO_ROOT/canonical" "$WORKTREE" >> "$REPO_ROOT/clone.log" 2>&1 || {{
         echo "Failed to clone workspace" >> "$REPO_ROOT/clone.log"
         cat "$REPO_ROOT/clone.log"
         exit 1
@@ -1157,7 +1159,7 @@ if [ ! -d "$WORKTREE" ]; then
     # Initialize metadata
     mkdir -p "$WORKTREE/.worktree"
     HEAD_COMMIT=$(git rev-parse HEAD)
-    echo "{{\"session_branch\": \"steadystate/collab/{session_id}\", \"last_synced_commit\": \"$HEAD_COMMIT\"}}" > "$WORKTREE/.worktree/steadystate.json"
+    echo "{{\"session_branch\": \"{branch_name}\", \"last_synced_commit\": \"$HEAD_COMMIT\"}}" > "$WORKTREE/.worktree/steadystate.json"
     
     echo "Clone finished." >> "$REPO_ROOT/clone.log"
 fi
@@ -1309,7 +1311,7 @@ Subsystem sftp internal-sftp
 
         tracing::info!("Spawning sshd: {} {}", sshd_path, args.join(" "));
         
-        let (pid, stdout, stderr) = self.executor.run_capture(&sshd_path, &args).await
+        let (pid, _stdout, stderr) = self.executor.run_capture(&sshd_path, &args).await
             .context("Failed to spawn sshd")?;
 
         tracing::info!("SSHD spawned with PID {}", pid);
