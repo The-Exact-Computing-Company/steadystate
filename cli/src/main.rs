@@ -258,7 +258,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     .await?;
 
     let mut final_endpoint = resp.endpoint.clone();
-    let mut final_magic_link = resp.magic_link.clone(); // Assuming UpResponse now has magic_link
+
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -289,7 +289,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
                 match status.state.as_str() {
                     "Running" => {
                         final_endpoint = status.endpoint;
-                        final_magic_link = status.magic_link; // Update magic link from status
+                        let final_magic_link = status.magic_link; // Update magic link from status
                         
                         if let Some(endpoint) = &final_endpoint {
                             println!("✅ Session ready!");

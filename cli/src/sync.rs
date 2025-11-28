@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::merge;
 use walkdir::WalkDir;
 use fs2::FileExt;
-use similar::{ChangeTag, TextDiff};
+use similar::TextDiff;
 use crossterm::style::Stylize;
 
 #[derive(Serialize, Deserialize)]
@@ -334,7 +334,7 @@ fn sync_canonical_from_worktree(worktree_path: &Path, canonical_path: &Path) -> 
     for entry in fs::read_dir(canonical_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.file_name().unwrap() == ".git" { 
+        if path.file_name().map_or(false, |n| n == ".git") { 
             continue; 
         }
         
@@ -545,12 +545,14 @@ pub async fn sync() -> Result<()> {
         }
 
         // Clean up backup
-        Command::new("git")
+        if let Err(e) = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
             .args(&["update-ref", "-d", &backup_ref])
-            .status()
-            .ok();
+            .status() 
+        {
+            tracing::warn!("Failed to clean up backup ref {}: {}", backup_ref, e);
+        }
 
         // 8. Update metadata IMMEDIATELY after commit
         let new_head = get_git_head(&canonical_path)?;
@@ -628,7 +630,9 @@ fn append_to_sync_log(log_path: &Path, user: &str, timestamp: u64) -> Result<()>
     (&file).write_all(log_entry.as_bytes())
         .context("Failed to write to sync-log")?;
     
-    FileExt::unlock(&file).ok();
+    if let Err(e) = FileExt::unlock(&file) {
+        tracing::warn!("Failed to unlock sync-log: {}", e);
+    }
     Ok(())
 }
 
@@ -700,7 +704,7 @@ fn apply_tree_to_canonical(
     for entry in fs::read_dir(repo_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.file_name().unwrap() == ".git" { 
+        if path.file_name().map_or(false, |n| n == ".git") { 
             continue; 
         }
         
@@ -731,7 +735,7 @@ fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> 
     // 1. Clear worktree (except .worktree and .git if it exists)
     for entry in WalkDir::new(worktree_path).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        let name = path.file_name().unwrap().to_string_lossy();
+        let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
         if name == ".worktree" || name == ".git" {
             continue;
         }
@@ -769,7 +773,7 @@ fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> 
 fn lock_canonical(repo_path: &Path) -> Result<std::fs::File> {
     use fs2::FileExt;
     let lock_path = repo_path.join(".steadystate.lock");
-    let file = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -777,5 +781,17 @@ fn lock_canonical(repo_path: &Path) -> Result<std::fs::File> {
         .context("Failed to open lock file")?;
     
     file.lock_exclusive().context("Failed to acquire lock")?;
+    
+    // Write PID to lock file for debugging
+    // Note: We do not remove the file on drop because that introduces a race condition
+    // where a new process creates a new inode while another process locks the old one.
+    // flock cleans up the lock itself when the FD is closed (process death).
+    if let Err(e) = file.set_len(0) {
+        tracing::warn!("Failed to truncate lock file: {}", e);
+    }
+    if let Err(e) = file.write_all(format!("{}", std::process::id()).as_bytes()) {
+        tracing::warn!("Failed to write PID to lock file: {}", e);
+    }
+    
     Ok(file)
 }

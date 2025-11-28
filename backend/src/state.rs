@@ -16,6 +16,11 @@ use crate::models::{PendingDevice, ProviderId, RefreshRecord, Session};
 
 pub type SessionStore = DashMap<String, Session>;
 
+const DEFAULT_DEVICE_POLL_INTERVAL: u64 = 15;
+const DEFAULT_JWT_TTL: u64 = 900; // 15 minutes
+const DEFAULT_REFRESH_TTL: u64 = 14 * 24 * 3600; // 14 days
+const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 8;
+
 // --- Centralized Configuration ---
 #[derive(Clone)]
 pub struct Config {
@@ -50,11 +55,11 @@ impl Config {
             _orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
             
             _device_poll_interval: std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(15),
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL),
             jwt_ttl_secs: std::env::var("JWT_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(900),
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_JWT_TTL),
             refresh_ttl_secs: std::env::var("REFRESH_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(14 * 24 * 3600),
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_REFRESH_TTL),
             
             noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
                 .context("NOENV_FLAKE_PATH must be set")?,
@@ -94,7 +99,7 @@ impl AppState {
         let http = Client::builder()
             .user_agent("steadystate-backend/0.1")
             .timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(8)
+            .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST)
             .build()
             .context("build reqwest client")?;
 

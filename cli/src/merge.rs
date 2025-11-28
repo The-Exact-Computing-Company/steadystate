@@ -23,6 +23,7 @@ impl TreeSnapshot {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, path: &str) -> Option<&FileContent> {
         self.files.get(path)
     }
@@ -117,7 +118,7 @@ pub fn materialize_fs_tree(root_path: &Path) -> Result<TreeSnapshot> {
 #[derive(Debug)]
 enum Presence<'a> {
     Missing,
-    Binary(&'a [u8]),
+    Binary(#[allow(dead_code)] &'a [u8]),
     Text(String),
 }
 

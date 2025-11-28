@@ -479,7 +479,7 @@ where
             Err(err) => return Err(err.into()),
         }
     }
-    unreachable!("retry loop should return before exhausting attempts");
+    Err(anyhow::anyhow!("Max retries ({}) exceeded", MAX_NETWORK_RETRIES))
 }
 
 #[cfg(test)]

@@ -11,6 +11,12 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 use chrono::Local;
 
+const FORK_CREATION_DELAY_SECS: u64 = 3;
+const UPTERM_INVITE_TIMEOUT_SECS: u64 = 30;
+const SSHD_PORT_CHECK_TIMEOUT_SECS: u64 = 5;
+const GITHUB_KEYS_TIMEOUT_SECS: u64 = 3;
+const GITHUB_API_TIMEOUT_SECS: u64 = 10;
+
 
 use crate::compute::ComputeProvider;
 use crate::models::{Session, SessionRequest};
@@ -117,26 +123,28 @@ impl LocalComputeProvider {
             .unwrap_or_else(|_| home.join(".steadystate").join("sessions"));
 
         // Ensure two-level dirs (~/.steadystate/sessions) exist and secure
-        std::fs::create_dir_all(&base_root)
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&base_root)
             .with_context(|| format!("Failed to create {:?}", base_root))?;
-        
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&base_root, std::fs::Permissions::from_mode(0o700))
-            .context("Failed to chmod session root directory")?;
 
         // Create this session's directory
         let base = base_root.join(session_id);
-        std::fs::create_dir_all(&base)
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&base)
             .with_context(|| format!("Failed to create {:?}", base))?;
-        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))
-            .context("Failed to chmod session directory")?;
 
         // Repo path inside session
         let repo_path = base.join("repo");
-        std::fs::create_dir_all(&repo_path)
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&repo_path)
             .with_context(|| format!("Failed to create repo dir at {}", repo_path.display()))?;
-        std::fs::set_permissions(&repo_path, std::fs::Permissions::from_mode(0o700))
-            .context("Failed to chmod repo directory")?;
 
         Ok((base, repo_path))
     }
@@ -448,7 +456,7 @@ esac
         upterm_args.push("--accept".to_string());
 
         // 2. Authorization
-        let authorized_keys = fetch_authorized_keys(github_user, allowed_users, github_token).await;
+        let authorized_keys = fetch_authorized_keys(github_user, allowed_users, github_token).await?;
         
         // Write keys to a temporary file
         let key_file_path = format!("/tmp/steadystate_authorized_keys_{}", session_id);
@@ -530,7 +538,7 @@ esac
         });
 
         // We wait for the invite link to appear in stdout.
-        let invite_result = timeout(Duration::from_secs(30), capture_upterm_invite(stdout)).await;
+        let invite_result = timeout(Duration::from_secs(UPTERM_INVITE_TIMEOUT_SECS), capture_upterm_invite(stdout)).await;
 
         match invite_result {
             Ok(Ok((captured_pid, invite, remaining_stdout))) => {
@@ -691,7 +699,7 @@ async fn ensure_fork_and_clone(
         tracing::debug!("Fork response: {:?}", fork_resp.status());
 
         // Simple backoff: give GitHub a moment to materialize the fork
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(FORK_CREATION_DELAY_SECS)).await;
     }
 
     // 3. Clone the *fork* into dest
@@ -838,7 +846,8 @@ impl ComputeProvider for LocalComputeProvider {
             
             // Generate Magic Link
             let magic_link = if let Some(mode) = &request.mode {
-                let mut url = url::Url::parse(&format!("steadystate://{}", mode)).unwrap();
+                let mut url = url::Url::parse(&format!("steadystate://{}", mode))
+                    .map_err(|e| anyhow!("Invalid mode for URL: {}", e))?;
                 
                 if mode == "pair" {
                     url.query_pairs_mut().append_pair("upterm", &endpoint);
@@ -924,7 +933,7 @@ impl LocalComputeProvider {
         // For dev, we can try to run it via cargo or look in target dir.
         
         let exe_path = std::env::current_exe()?;
-        let bin_dir = exe_path.parent().unwrap();
+        let bin_dir = exe_path.parent().ok_or_else(|| anyhow!("Failed to get parent of executable"))?;
         let daemon_path = bin_dir.join("steady-eventd");
         
         let cmd_path = if daemon_path.exists() {
@@ -1050,7 +1059,7 @@ impl LocalComputeProvider {
         tracing::info!("steadystate CLI binary copied successfully.");
         
         // 3. Prepare Authorized Keys with ForceCommand
-        let authorized_keys = fetch_authorized_keys(github_user, allowed_users, github_token).await;
+        let authorized_keys = fetch_authorized_keys(github_user, allowed_users, github_token).await?;
         
         if authorized_keys.is_empty() {
             return Err(anyhow!("No authorized keys found. Cannot start SSHD without at least one key."));
@@ -1291,7 +1300,7 @@ Subsystem sftp internal-sftp
 
         // 5. Test the config first
         let test_output = Command::new(&sshd_path)
-            .args(&["-t", "-f", config_path.to_str().unwrap()])
+            .args(&["-t", "-f", config_path.to_str().ok_or_else(|| anyhow!("Invalid config path"))?])
             .output()
             .await
             .context("Failed to test sshd config")?;
@@ -1307,7 +1316,13 @@ Subsystem sftp internal-sftp
         // 6. Spawn sshd with explicit paths and logging to file
         // -D: no detach
         // -E log_file: append debug logs to log_file
-        let args = vec!["-f", config_path.to_str().unwrap(), "-D", "-E", log_path.to_str().unwrap()];
+        let args = vec![
+            "-f", 
+            config_path.to_str().ok_or_else(|| anyhow!("Invalid config path"))?, 
+            "-D", 
+            "-E", 
+            log_path.to_str().ok_or_else(|| anyhow!("Invalid log path"))?
+        ];
 
         tracing::info!("Spawning sshd: {} {}", sshd_path, args.join(" "));
         
@@ -1326,7 +1341,9 @@ Subsystem sftp internal-sftp
             while let Some(line_res) = lines.next().await {
                 if let Ok(line) = line_res {
                     tracing::warn!("SSHD STDERR: {}", line);
-                    stderr_lines_clone.lock().unwrap().push(line);
+                    if let Ok(mut lines) = stderr_lines_clone.lock() {
+                        lines.push(line);
+                    }
                 }
             }
         });
@@ -1344,7 +1361,9 @@ Subsystem sftp internal-sftp
                 tracing::error!("SSHD process {} died after launch", pid);
                 
                 // Collect captured stderr
-                let captured_stderr = stderr_lines.lock().unwrap().join("\n");
+                let captured_stderr = stderr_lines.lock()
+                    .map(|l| l.join("\n"))
+                    .unwrap_or_else(|_| "Failed to lock stderr lines".to_string());
                 
                 // Read the log file
                 let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -1362,7 +1381,7 @@ Subsystem sftp internal-sftp
         // Try to connect to the port to verify it's listening
         let port_check = format!("nc -z localhost {} 2>/dev/null || (sleep 1 && nc -z localhost {})", port, port);
         match timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(SSHD_PORT_CHECK_TIMEOUT_SECS),
             self.executor.run_status("sh", &["-c", &port_check])
         ).await {
             Ok(Ok(status)) if status.success() => {
@@ -1391,19 +1410,19 @@ struct AuthorizedKey {
     key: String,
 }
 
-async fn fetch_authorized_keys(github_user: Option<&str>, allowed_users: Option<&[String]>, github_token: Option<&str>) -> Vec<AuthorizedKey> {
+async fn fetch_authorized_keys(github_user: Option<&str>, allowed_users: Option<&[String]>, github_token: Option<&str>) -> Result<Vec<AuthorizedKey>> {
     tracing::info!("Starting fetch_authorized_keys");
     // Use a Set to deduplicate keys
     let mut unique_keys = std::collections::HashSet::new();
     let mut result = Vec::new();
     
     let mut client_builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(GITHUB_KEYS_TIMEOUT_SECS))
         .user_agent("steadystate-backend");
 
     if let Some(token) = github_token {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
+        headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().context("Invalid auth header value")?);
         client_builder = client_builder.default_headers(headers);
     }
 
@@ -1484,7 +1503,7 @@ async fn fetch_authorized_keys(github_user: Option<&str>, allowed_users: Option<
     }
 
     tracing::info!("fetch_authorized_keys completed. Found {} keys total.", result.len());
-    result
+    Ok(result)
 }
 
 #[derive(serde::Deserialize)]
@@ -1515,7 +1534,7 @@ async fn fetch_github_collaborators(owner: &str, repo: &str, token: &str) -> Res
     
     let client = reqwest::Client::builder()
         .user_agent("steadystate-backend")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(GITHUB_API_TIMEOUT_SECS))
         .build()?;
 
     // 1. Fetch Repository Details to check for fork
@@ -1532,11 +1551,11 @@ async fn fetch_github_collaborators(owner: &str, repo: &str, token: &str) -> Res
         if let Ok(repo_info) = repo_resp.json::<GitHubRepo>().await {
             if repo_info.fork {
                 if let Some(parent) = repo_info.parent {
-                    upstream_owner_repo = Some((parent.owner.login, parent.name));
                     eprintln!("DEBUG: Repository is a fork. Upstream: {}/{}", 
-                        upstream_owner_repo.as_ref().unwrap().0, 
-                        upstream_owner_repo.as_ref().unwrap().1
+                        parent.owner.login, 
+                        parent.name
                     );
+                    upstream_owner_repo = Some((parent.owner.login, parent.name));
                 }
             }
         }

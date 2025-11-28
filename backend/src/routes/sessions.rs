@@ -8,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use uuid::Uuid;
+use serde_json::json;
 
 use crate::{
     jwt::CustomClaims,
@@ -72,6 +73,15 @@ async fn run_provisioning(
     }
 }
 
+/// Creates a new session.
+///
+/// # Arguments
+/// * `state` - The application state.
+/// * `claims` - The JWT claims of the user creating the session.
+/// * `request` - JSON body containing session details (repo URL, branch, etc.).
+///
+/// # Returns
+/// * `202 Accepted` with the initial session info.
 async fn create_session(
     State(state): State<Arc<AppState>>,
     claims: CustomClaims,
@@ -122,11 +132,20 @@ async fn create_session(
     (StatusCode::ACCEPTED, Json(session_info))
 }
 
+/// Retrieves the status of a session.
+///
+/// # Arguments
+/// * `state` - The application state.
+/// * `id` - The session ID.
+///
+/// # Returns
+/// * `200 OK` with the session info.
+/// * `404 Not Found` if the session does not exist.
 async fn get_session_status(
     State(state): State<Arc<AppState>>,
     _claims: CustomClaims,
     Path(id): Path<String>,
-) -> Result<Json<SessionInfo>, StatusCode> {
+) -> Result<Json<SessionInfo>, (StatusCode, Json<serde_json::Value>)> {
     tracing::info!("GET /sessions/{}, total sessions in map: {}", id, state.sessions.len());
     match state.sessions.get(&id) {
         Some(session) => {
@@ -135,11 +154,20 @@ async fn get_session_status(
         }
         None => {
             tracing::warn!("Session {} not found in map", id);
-            Err(StatusCode::NOT_FOUND)
+            Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" }))))
         }
     }
 }
 
+/// Terminates a session.
+///
+/// # Arguments
+/// * `state` - The application state.
+/// * `id` - The session ID.
+///
+/// # Returns
+/// * `202 Accepted` if termination was initiated.
+/// * `404 Not Found` if the session does not exist.
 async fn terminate_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
