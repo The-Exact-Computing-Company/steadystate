@@ -28,7 +28,7 @@ async fn test_integration_nix_check() {
     // Let's try to run a session with a non-existent repo, expecting a git failure from the REAL git command.
     // This verifies that the RealCommandExecutor is working and propagating errors.
 
-    let mut session = Session {
+    let session = Session {
         id: "integration-test-session".into(),
         _repo_url: "https://github.com/this-repo/does-not-exist-12345.git".into(),
         _branch: None,
@@ -53,7 +53,7 @@ async fn test_integration_nix_check() {
         mode: Some("pair".to_string()),
     };
 
-    let result = provider.start_session(&mut session, &request).await;
+    let result = provider.start_session(&session.id, &request).await;
     
     // We expect an error because the repo doesn't exist.
     // If RealCommandExecutor is working, it will try to run `git clone ...` and fail.

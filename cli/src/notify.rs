@@ -7,7 +7,7 @@ pub fn watch() -> Result<()> {
     // Clear screen
     print!("\x1B[2J\x1B[1;1H");
     
-    let repo_root = std::env::var("REPO_ROOT").unwrap_or_else(|_| "../..".to_string());
+    let repo_root = std::env::var("REPO_ROOT").unwrap_or_else(|_| "..".to_string());
     let sync_log_path = Path::new(&repo_root).join("sync-log");
     let active_users_path = Path::new(&repo_root).join("active-users");
     
@@ -20,7 +20,7 @@ pub fn watch() -> Result<()> {
 
     // Wait for file to exist
     while !sync_log_path.exists() {
-        println!("Waiting for sync-log...");
+        println!("Waiting for sync-log at {}...", sync_log_path.display());
         thread::sleep(Duration::from_secs(1));
     }
 

@@ -150,7 +150,7 @@ async fn logout(client: &Client) -> Result<()> {
     };
     let username = session.login.clone();
 
-    if let Some(refresh) = get_refresh_token(&username).await? {
+    if let Some(refresh) = get_refresh_token(&username, None).await? {
         let url = format!("{}/auth/revoke", &*BACKEND_URL);
         match auth::send_with_retries(|| {
             client
@@ -171,7 +171,7 @@ async fn logout(client: &Client) -> Result<()> {
         }
     }
 
-    let _ = delete_refresh_token(&username).await;
+    let _ = delete_refresh_token(&username, None).await;
     let _ = remove_session(None).await;
     println!("Logged out (local tokens removed).");
     Ok(())
@@ -448,6 +448,14 @@ async fn join(url_str: String) -> Result<()> {
                 } else {
                     args.push(host.to_string());
                 }
+
+                // Inject username if available
+                let shell_cmd = if let Ok(session) = crate::session::read_session(None).await {
+                    format!("export STEADYSTATE_USERNAME={}; exec $SHELL -l", session.login)
+                } else {
+                    "exec $SHELL -l".to_string()
+                };
+                args.push(shell_cmd);
                 
                 use std::os::unix::process::CommandExt;
                 let err = std::process::Command::new("ssh")
@@ -595,7 +603,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Sync => {
-            if let Err(e) = sync::sync() {
+            if let Err(e) = sync::sync().await {
                 eprintln!("sync failed: {:#}", e);
                 std::process::exit(1);
             }

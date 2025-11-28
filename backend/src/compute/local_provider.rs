@@ -177,40 +177,30 @@ impl LocalComputeProvider {
         let git_repo_str = git_repo.to_str().ok_or_else(|| anyhow!("Invalid path encoding"))?;
         let canonical_str = canonical_path.to_str().ok_or_else(|| anyhow!("Invalid path encoding"))?;
         
-        // 1. Clone bare
-        let status = self.executor.run_status("git", &["clone", "--bare", git_repo_str, canonical_str]).await
+        // 1. Clone non-bare (so we have a working tree for sync operations)
+        let status = self.executor.run_status("git", &["clone", git_repo_str, canonical_str]).await
             .context("Failed to create canonical git repo")?;
             
         if !status.success() {
-            return Err(anyhow!("git clone --bare failed"));
+            return Err(anyhow!("git clone failed"));
         }
 
-        // 2. Create session branch
+        // 2. Create and checkout session branch
         let branch_name = format!("steadystate/collab/{}", session_id);
-        // We need to run git inside the bare repo
-        // git -C canonical branch <branch> HEAD
-        let status = self.executor.run_status("git", &["-C", canonical_str, "branch", &branch_name, "HEAD"]).await
+        // git -C canonical checkout -b <branch>
+        let status = self.executor.run_status("git", &["-C", canonical_str, "checkout", "-b", &branch_name]).await
             .context("Failed to create session branch")?;
 
         if !status.success() {
              return Err(anyhow!("Failed to create session branch {}", branch_name));
         }
         
-        // 3. Update HEAD to point to session branch?
-        // For a bare repo, HEAD determines what is checked out by default when cloning.
-        // git -C canonical symbolic-ref HEAD refs/heads/<branch>
-        let ref_name = format!("refs/heads/{}", branch_name);
-        let status = self.executor.run_status("git", &["-C", canonical_str, "symbolic-ref", "HEAD", &ref_name]).await
-            .context("Failed to update HEAD to session branch")?;
-            
-        if !status.success() {
-             return Err(anyhow!("Failed to update HEAD to session branch"));
-        }
+        // No need to manually update HEAD or symbolic-ref, checkout -b does it.
         
         Ok(canonical_path)
     }
 
-    fn install_steadystate_commands(&self, session_root: &Path) -> Result<()> {
+    fn install_steadystate_commands(&self, session_root: &Path, repo_name: &str) -> Result<()> {
         let bin_dir = session_root.join("bin");
         std::fs::create_dir_all(&bin_dir).context("Failed to create bin directory")?;
         
@@ -223,7 +213,7 @@ impl LocalComputeProvider {
         let sync_script = r#"#!/bin/bash
 set -e
 
-USER_ID="${USER:-unknown}"
+USER_ID="${STEADYSTATE_USERNAME:-${USER:-unknown}}"
 # Default to PWD if USER_WORKSPACE not set (fallback)
 WORKSPACE="${USER_WORKSPACE:-$PWD}"
 # We need to find session root if not set
@@ -233,12 +223,12 @@ if [ -z "$SESSION_ROOT" ]; then
 fi
 
 CANONICAL="${CANONICAL_REPO:-$SESSION_ROOT/canonical}"
-ACTIVITY_LOG="${ACTIVITY_LOG:-$SESSION_ROOT/activity-log}"
+SYNC_LOG="${SYNC_LOG:-$SESSION_ROOT/sync-log}"
 
 log_activity() {
     local action="$1"
-    if [ -f "$ACTIVITY_LOG" ]; then
-        echo "$(date -Iseconds),$USER_ID,$action" >> "$ACTIVITY_LOG"
+    if [ -f "$SYNC_LOG" ]; then
+        echo "$(date -Iseconds),$USER_ID,$action" >> "$SYNC_LOG"
     fi
 }
 
@@ -290,9 +280,25 @@ echo "✓ Sync complete!"
         // Make executable
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&sync_path, std::fs::Permissions::from_mode(0o755))?;
+
+        // 2.5 Create initial sync-log
+        let sync_log_path = session_root.join("sync-log");
+        if !sync_log_path.exists() {
+             let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+             let initial_log = format!("{} system Session started\n", timestamp);
+             std::fs::write(&sync_log_path, initial_log).context("Failed to create initial sync-log")?;
+             std::fs::set_permissions(&sync_log_path, std::fs::Permissions::from_mode(0o644))?;
+        }
         
         // 3. Create wrapper script (steadystate)
-        let wrapper_script = r#"#!/bin/bash
+        let wrapper_script = format!(r#"#!/bin/bash
+# Export REPO_ROOT so CLI knows where to look for sync-log
+export REPO_ROOT="$(dirname "$PWD")"
+export REPO_NAME="{}"
+
 case "$1" in
     sync)
         exec steadystate-sync
@@ -318,7 +324,7 @@ case "$1" in
         fi
         ;;
 esac
-"#;
+"#, repo_name);
         let wrapper_path = bin_dir.join("steadystate");
         std::fs::write(&wrapper_path, wrapper_script)?;
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
@@ -597,17 +603,19 @@ pub(crate) async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Un
                 tracing::info!("Captured upterm PID: {}", p);
                 pid = Some(p);
             }
-        } else if trimmed.starts_with("Invite: ssh") {
-            tracing::info!("Captured upterm invite: {}", trimmed);
+        } else if trimmed.starts_with("Invite: ") {
+            let invite = trimmed.strip_prefix("Invite: ").unwrap_or(trimmed).trim();
+            tracing::info!("Captured upterm invite: {}", invite);
             let remaining: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(lines.into_inner().into_inner());
-            return Ok((pid, trimmed.to_string(), BufReader::new(remaining)));
+            return Ok((pid, invite.to_string(), BufReader::new(remaining)));
         } else if trimmed.starts_with("SSH Session:") {
             // Format: "SSH Session:            ssh ..."
             if let Some(ssh_cmd) = trimmed.strip_prefix("SSH Session:") {
                 let ssh_cmd = ssh_cmd.trim();
-                tracing::info!("Captured upterm invite: {}", ssh_cmd);
+                let address = ssh_cmd.strip_prefix("ssh ").unwrap_or(ssh_cmd).trim();
+                tracing::info!("Captured upterm invite: {}", address);
                 let remaining: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(lines.into_inner().into_inner());
-                return Ok((pid, ssh_cmd.to_string(), BufReader::new(remaining)));
+                return Ok((pid, address.to_string(), BufReader::new(remaining)));
             }
         } else if line.contains("SSH Command:") {
             // New format (v0.18.0+): "│ ➤ SSH Command:   │ ssh ... │"
@@ -620,9 +628,10 @@ pub(crate) async fn capture_upterm_invite(stdout: impl tokio::io::AsyncRead + Un
                 } else {
                     rest.trim()
                 };
-                tracing::info!("Captured upterm invite (new format): {}", ssh_cmd);
+                let address = ssh_cmd.strip_prefix("ssh ").unwrap_or(ssh_cmd).trim();
+                tracing::info!("Captured upterm invite (new format): {}", address);
                 let remaining: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(lines.into_inner().into_inner());
-                return Ok((pid, ssh_cmd.to_string(), BufReader::new(remaining)));
+                return Ok((pid, address.to_string(), BufReader::new(remaining)));
             }
         }
     }
@@ -717,12 +726,10 @@ async fn ensure_fork_and_clone(
 impl ComputeProvider for LocalComputeProvider {
     fn id(&self) -> &'static str { "local" }
 
-    async fn start_session(&self, session: &mut Session, request: &SessionRequest) -> Result<()> {
-    eprintln!("DEBUG: start_session CALLED for session {}", session.id);
-    eprintln!("DEBUG: Request allowed_users: {:?}", request.allowed_users);
-    eprintln!("DEBUG: Request provider_config is_some: {}", request.provider_config.is_some());
-    
-    tracing::info!("Starting local session: id={} repo={}", session.id, request.repo_url);
+    async fn start_session(&self, session_id: &str, request: &SessionRequest) -> Result<crate::models::SessionStartResult> {
+        eprintln!("DEBUG: start_session CALLED for session {}", session_id);
+        
+        tracing::info!("Starting local session: id={} repo={}", session_id, request.repo_url);
 
         // Check mode
         if let Some(mode) = &request.mode {
@@ -733,8 +740,7 @@ impl ComputeProvider for LocalComputeProvider {
         
         self.ensure_nix_installed().await?;
 
-        
-        let (workspace_root, repo_path) = self.create_workspace(&session.id)?;
+        let (workspace_root, repo_path) = self.create_workspace(session_id)?;
         
         // --- GitHub Fork/Clone Logic ---
         if let Some(cfg) = &request.provider_config {
@@ -753,121 +759,103 @@ impl ComputeProvider for LocalComputeProvider {
         }
         
         // Extract GitHub login and token if available
-    let mut github_login = None;
-    let mut github_token = None;
-    if let Some(cfg) = &request.provider_config {
-         if let Some(gh_val) = cfg.get("github") {
-            if let Ok(gh) = serde_json::from_value::<GitHubComputeConfig>(gh_val.clone()) {
-                github_login = Some(gh.login);
-                github_token = Some(gh.access_token);
-            }
-         }
-    }
+        let mut github_login = None;
+        let mut github_token = None;
+        if let Some(cfg) = &request.provider_config {
+             if let Some(gh_val) = cfg.get("github") {
+                if let Ok(gh) = serde_json::from_value::<GitHubComputeConfig>(gh_val.clone()) {
+                    github_login = Some(gh.login);
+                    github_token = Some(gh.access_token);
+                }
+             }
+        }
 
-    // Determine allowed users
-    let mut allowed_users_list = request.allowed_users.clone();
-    
-    eprintln!("DEBUG: Initial allowed_users: {:?}", allowed_users_list);
-    eprintln!("DEBUG: Has GitHub token: {}", github_token.is_some());
-
-    // If no allowed users specified (and not explicitly "none"), default to all collaborators
-    if allowed_users_list.is_none() {
-        if let Some(token) = &github_token {
-            let mut repo_name = request.repo_url.split('/').last().unwrap_or("unknown");
-            if repo_name.ends_with(".git") {
-                repo_name = &repo_name[..repo_name.len() - 4];
-            }
-            let owner = request.repo_url.split('/').nth_back(1).unwrap_or("unknown");
-            
-            eprintln!("DEBUG: Attempting to fetch collaborators for {}/{}", owner, repo_name);
-
-            if owner != "unknown" && repo_name != "unknown" {
-                match fetch_github_collaborators(owner, repo_name, token).await {
-                    Ok(collaborators) => {
-                        eprintln!("DEBUG: Fetched collaborators: {:?}", collaborators);
-                        allowed_users_list = Some(collaborators);
-                    },
-                    Err(e) => {
-                        eprintln!("DEBUG: Failed to fetch collaborators: {}", e);
-                        tracing::warn!("Failed to fetch collaborators: {}. Defaulting to host only.", e);
+        // Determine allowed users
+        let mut allowed_users_list = request.allowed_users.clone();
+        
+        // If no allowed users specified (and not explicitly "none"), default to all collaborators
+        if allowed_users_list.is_none() {
+            if let Some(token) = &github_token {
+                let mut repo_name = request.repo_url.split('/').last().unwrap_or("unknown");
+                if repo_name.ends_with(".git") {
+                    repo_name = &repo_name[..repo_name.len() - 4];
+                }
+                let owner = request.repo_url.split('/').nth_back(1).unwrap_or("unknown");
+                
+                if owner != "unknown" && repo_name != "unknown" {
+                    match fetch_github_collaborators(owner, repo_name, token).await {
+                        Ok(collaborators) => {
+                            allowed_users_list = Some(collaborators);
+                        },
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch collaborators: {}. Defaulting to host only.", e);
+                        }
                     }
                 }
-            } else {
-                eprintln!("DEBUG: Could not parse owner/repo from URL: {}", request.repo_url);
             }
-        } else {
-            eprintln!("DEBUG: No GitHub token available, skipping collaborator fetch.");
+        } else if let Some(users) = &allowed_users_list {
+            // If "none" is specified, clear the list (host only)
+            if users.contains(&"none".to_string()) {
+                allowed_users_list = Some(Vec::new());
+            }
         }
-    } else if let Some(users) = &allowed_users_list {
-        // If "none" is specified, clear the list (host only)
-        if users.contains(&"none".to_string()) {
-            eprintln!("DEBUG: 'none' specified, clearing allowed users.");
-            allowed_users_list = Some(Vec::new());
-        }
-    }
-        
 
         // 4. Initialize Canonical Git Repo (if collab mode)
-        let is_collab = request.mode.as_deref().unwrap_or("pair") == "collab";
-        
-        if is_collab {
-            // Initialize canonical repo
-            self.init_canonical_git_repo(&workspace_root, &repo_path, &session.id).await?;
-            
-            // Install scripts
-            self.install_steadystate_commands(&workspace_root)?;
-            
-            // Create logs
-            std::fs::File::create(workspace_root.join("sync-log"))?;
-            std::fs::File::create(workspace_root.join("activity-log"))?;
-            
-            // Start event daemon
+        if request.mode.as_deref() == Some("collab") {
+             self.init_canonical_git_repo(&workspace_root, &repo_path, session_id).await?;
+             
+             let real_repo_name = request.repo_url.split('/').last()
+                .map(|s| s.trim_end_matches(".git"))
+                .unwrap_or("unknown");
+                
+             self.install_steadystate_commands(&workspace_root, real_repo_name)?;
+
+            let (pid, invite) = self.launch_sshd_for_collab(
+                &workspace_root,
+                github_login.as_deref(),
+                allowed_users_list.as_deref(),
+                session_id,
+                real_repo_name,
+                github_token.as_deref(),
+            ).await?;
+
             let event_daemon_pid = self.start_event_daemon(&workspace_root).await?;
-            
-            // Extract repo name from URL
-            let repo_name = request.repo_url.split('/').last().unwrap_or("unknown");
-            let owner = request.repo_url.split('/').nth_back(1).unwrap_or("unknown");
-            let full_repo_name = if owner != "unknown" && repo_name != "unknown" {
-                format!("{}/{}", owner, repo_name)
-            } else {
-                "unknown".to_string()
-            };
 
-            // 5. Launch SSHD for collaboration
-        let (pid, invite) = self.launch_sshd_for_collab(
-            &workspace_root,
-            github_login.as_deref(),
-            allowed_users_list.as_deref(),
-            &session.id,
-            &full_repo_name,
-            github_token.as_deref()
-        ).await?;
-            
-            eprintln!("DEBUG: start_session received invite: {}", invite);
-
-            // Store session info
-            let local_session = LocalSession {
+            // Store session info in local state
+            self.state.live_sessions.insert(session_id.to_string(), LocalSession {
                 pid,
                 event_daemon_pid,
                 workspace_root: workspace_root.clone(),
+            });
+
+            // 6. Generate Result
+            let endpoint = if invite.starts_with("ssh://") {
+                invite.clone()
+            } else {
+                format!("ssh://{}", invite)
             };
-            self.state.live_sessions.insert(session.id.clone(), local_session);
             
-            session.state = SessionState::Running;
-            session.endpoint = Some(invite.clone());
-            
-            // Generate Magic Link for Collab
-            let magic_link = format!("steadystate://collab/{}?ssh={}", session.id, urlencoding::encode(&invite));
-            eprintln!("DEBUG: start_session generated magic_link: {}", magic_link);
-            session.magic_link = Some(magic_link);
-            
+            // Generate Magic Link
+            let magic_link = if let Some(mode) = &request.mode {
+                let mut url = url::Url::parse(&format!("steadystate://{}", mode)).unwrap();
+                
+                if mode == "pair" {
+                    url.query_pairs_mut().append_pair("upterm", &endpoint);
+                } else if mode == "collab" {
+                    url.query_pairs_mut().append_pair("ssh", &endpoint);
+                }
+                Some(url.to_string())
+            } else {
+                None
+            };
+
+            Ok(crate::models::SessionStartResult {
+                endpoint: Some(endpoint),
+                magic_link,
+            })
         } else {
             // Legacy/Pair mode (Upterm)
             
-
-
-            
-            // Launch Upterm
             // Launch Upterm
              let (pid, invite) = self.launch_upterm_in_noenv(
                 &self.flake_path,
@@ -876,7 +864,7 @@ impl ComputeProvider for LocalComputeProvider {
                 allowed_users_list.as_deref(),
                 request.public,
                 request.environment.as_deref(),
-                &session.id,
+                session_id,
                 github_token.as_deref(),
             ).await?;
 
@@ -885,17 +873,22 @@ impl ComputeProvider for LocalComputeProvider {
                 event_daemon_pid: None,
                 workspace_root: repo_path,
             };
-            self.state.live_sessions.insert(session.id.clone(), local_session);
+            self.state.live_sessions.insert(session_id.to_string(), local_session);
 
-            session.state = SessionState::Running;
-            session.endpoint = Some(invite.clone());
+            let endpoint = if invite.starts_with("ssh://") {
+                invite.clone()
+            } else {
+                format!("ssh://{}", invite)
+            };
             
             // Generate Magic Link for Pair
-            let magic_link = format!("steadystate://pair/{}?ssh={}", session.id, urlencoding::encode(&invite));
-            session.magic_link = Some(magic_link);
+            let magic_link = format!("steadystate://pair/{}?ssh={}", session_id, urlencoding::encode(&invite));
+            
+            Ok(crate::models::SessionStartResult {
+                endpoint: Some(endpoint),
+                magic_link: Some(magic_link),
+            })
         }
-
-        Ok(())
     }
 
     async fn terminate_session(&self, session: &Session) -> Result<()> {
@@ -920,8 +913,6 @@ impl ComputeProvider for LocalComputeProvider {
         }
         Ok(())
     }
-
-
 }
 
 impl LocalComputeProvider {
@@ -1178,11 +1169,8 @@ export CANONICAL_REPO="$REPO_ROOT/canonical"
 
 cd "$WORKTREE" || exit 1
 
-# Handle SSH_ORIGINAL_COMMAND
-if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-    exec bash -c "$SSH_ORIGINAL_COMMAND"
-else
-    # Default to shell
+# Define welcome message
+print_welcome() {{
     cat << WELCOME
 ╔════════════════════════════════════════════════════════════╗
 ║         Welcome to SteadyState Collaboration Mode          ║
@@ -1196,7 +1184,19 @@ Commands:
   steadystate status    - Check status
 
 WELCOME
-    
+}}
+
+# Handle SSH_ORIGINAL_COMMAND
+if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+    # If the command is just setting up the shell (interactive), print welcome
+    # We check for STEADYSTATE_USERNAME which is injected by the CLI for interactive sessions
+    if [[ "$SSH_ORIGINAL_COMMAND" == *"STEADYSTATE_USERNAME"* ]]; then
+        print_welcome
+    fi
+    exec bash -c "$SSH_ORIGINAL_COMMAND"
+else
+    # Default to shell
+    print_welcome
     exec bash -l
 fi
 "#, 

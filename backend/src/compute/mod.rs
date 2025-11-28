@@ -13,9 +13,9 @@ pub trait ComputeProvider: Send + Sync + std::fmt::Debug {
 
     async fn start_session(
         &self,
-        session: &mut Session,
+        session_id: &str,
         request: &SessionRequest,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<crate::models::SessionStartResult>;
 
     async fn terminate_session(
         &self,
