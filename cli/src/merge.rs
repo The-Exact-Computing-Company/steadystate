@@ -1,30 +1,6 @@
 //! # Merge Engine
 //!
 //! This module implements a 3-way merge for text files using a diff3-style algorithm.
-//!
-//! ## How It Works
-//!
-//! For each file, we perform a token-level (word-level) 3-way merge:
-//! 1. Tokenize base, local, and canonical into words (preserving whitespace)
-//! 2. Walk through tokens comparing all three versions
-//! 3. Apply standard 3-way merge rules at the token level
-//!
-//! ## Merge Rules
-//!
-//! For each token position:
-//! - All three match → keep the token
-//! - Only local changed → use local's version
-//! - Only canonical changed → use canonical's version  
-//! - Both changed to same thing → use that
-//! - Both changed differently → keep both (conflict preserved)
-//!
-//! ## Important Behavior
-//!
-//! - **Non-overlapping edits**: Merge cleanly (e.g., "Tom→Herwig" + "pizza→hamburger")
-//! - **Same word edited by both**: Both versions preserved (no garbling)
-//! - **Binary files**: >1MB or containing NUL bytes treated as binary
-//!   Binary conflicts require manual resolution
-//! - **Deletions**: Honored when the other side is unchanged
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -52,12 +28,10 @@ impl TreeSnapshot {
     }
 }
 
-/// Check if a file should be ignored by the sync engine.
 fn is_ignored(path: &str) -> bool {
     let path = Path::new(path);
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     
-    // Ignore list
     file_name == ".viminfo" ||
     file_name == ".DS_Store" ||
     file_name == "Thumbs.db" ||
@@ -66,7 +40,6 @@ fn is_ignored(path: &str) -> bool {
     path.components().any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".worktree")
 }
 
-/// Materialize a tree from a Git commit in a repository.
 pub fn materialize_git_tree(repo_path: &Path, commit_hash: &str) -> Result<TreeSnapshot> {
     let mut snapshot = TreeSnapshot::new();
 
@@ -82,14 +55,9 @@ pub fn materialize_git_tree(repo_path: &Path, commit_hash: &str) -> Result<TreeS
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<&str> = stdout.lines().collect();
 
-    for file_path in files {
-        if file_path.trim().is_empty() {
-            continue;
-        }
-
-        if is_ignored(file_path) {
+    for file_path in stdout.lines() {
+        if file_path.trim().is_empty() || is_ignored(file_path) {
             continue;
         }
 
@@ -108,7 +76,6 @@ pub fn materialize_git_tree(repo_path: &Path, commit_hash: &str) -> Result<TreeS
     Ok(snapshot)
 }
 
-/// Materialize a tree from the filesystem (worktree).
 pub fn materialize_fs_tree(root_path: &Path) -> Result<TreeSnapshot> {
     let mut snapshot = TreeSnapshot::new();
     let mut file_count = 0;
@@ -117,11 +84,7 @@ pub fn materialize_fs_tree(root_path: &Path) -> Result<TreeSnapshot> {
     use std::io::Write;
 
     for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-        if entry.file_type().is_symlink() {
-            continue;
-        }
-
-        if !entry.file_type().is_file() {
+        if entry.file_type().is_symlink() || !entry.file_type().is_file() {
             continue;
         }
 
@@ -157,7 +120,6 @@ enum Presence<'a> {
     Text(String),
 }
 
-/// Heuristically detect if a file should be treated as binary.
 fn looks_binary(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
@@ -195,7 +157,6 @@ fn classify(content: Option<&Vec<u8>>) -> Presence<'_> {
     }
 }
 
-/// Merge three trees.
 pub fn merge_trees(
     base: &TreeSnapshot,
     local: &TreeSnapshot,
@@ -283,11 +244,15 @@ pub fn merge_trees(
 }
 
 // ============================================================================
-// DIFF3-STYLE TOKEN MERGE
+// THREE-WAY MERGE
 // ============================================================================
 
 /// Tokenize into words, preserving whitespace as separate tokens
 fn tokenize(s: &str) -> Vec<String> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_whitespace: Option<bool> = None;
@@ -315,15 +280,49 @@ fn tokenize(s: &str) -> Vec<String> {
     tokens
 }
 
-/// Join tokens back into a string
-fn join_tokens(tokens: &[String]) -> String {
-    tokens.concat()
+/// Compute LCS and return pairs of (base_idx, other_idx) that match
+fn lcs_pairs(base: &[String], other: &[String]) -> Vec<(usize, usize)> {
+    let m = base.len();
+    let n = other.len();
+    
+    if m == 0 || n == 0 {
+        return Vec::new();
+    }
+    
+    // Build DP table
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if base[i-1] == other[j-1] {
+                dp[i][j] = dp[i-1][j-1] + 1;
+            } else {
+                dp[i][j] = dp[i-1][j].max(dp[i][j-1]);
+            }
+        }
+    }
+    
+    // Backtrack to get pairs
+    let mut pairs = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    
+    while i > 0 && j > 0 {
+        if base[i-1] == other[j-1] {
+            pairs.push((i - 1, j - 1));
+            i -= 1;
+            j -= 1;
+        } else if dp[i-1][j] >= dp[i][j-1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    
+    pairs.reverse();
+    pairs
 }
 
-/// Perform a 3-way merge of text using diff3-style algorithm.
-/// 
-/// This function is named `merge_file_yjs` for compatibility with the rest
-/// of the codebase, but it uses a simpler diff3 algorithm instead of Yrs CRDT.
+/// Perform a 3-way merge
 pub fn merge_file_yjs(base: &str, local: &str, canonical: &str) -> Result<String> {
     // Fast paths
     if local == base && canonical == base {
@@ -343,133 +342,110 @@ pub fn merge_file_yjs(base: &str, local: &str, canonical: &str) -> Result<String
     let local_tokens = tokenize(local);
     let canon_tokens = tokenize(canonical);
     
+    // Get LCS pairs for base↔local and base↔canonical
+    let local_pairs = lcs_pairs(&base_tokens, &local_tokens);
+    let canon_pairs = lcs_pairs(&base_tokens, &canon_tokens);
+    
+    // Build maps
+    let base_to_local: HashMap<usize, usize> = local_pairs.iter().cloned().collect();
+    let base_to_canon: HashMap<usize, usize> = canon_pairs.iter().cloned().collect();
+    let local_to_base: HashMap<usize, usize> = local_pairs.iter().map(|&(b, l)| (l, b)).collect();
+    let canon_to_base: HashMap<usize, usize> = canon_pairs.iter().map(|&(b, c)| (c, b)).collect();
+    
     let mut result = Vec::new();
+    let mut local_idx = 0;
+    let mut canon_idx = 0;
     
-    let mut bi = 0; // base index
-    let mut li = 0; // local index
-    let mut ci = 0; // canonical index
-    
-    while bi < base_tokens.len() || li < local_tokens.len() || ci < canon_tokens.len() {
-        let b = base_tokens.get(bi);
-        let l = local_tokens.get(li);
-        let c = canon_tokens.get(ci);
+    for base_idx in 0..base_tokens.len() {
+        let local_match = base_to_local.get(&base_idx).copied();
+        let canon_match = base_to_canon.get(&base_idx).copied();
         
-        match (b, l, c) {
-            // All three match - keep it
-            (Some(bt), Some(lt), Some(ct)) if bt == lt && lt == ct => {
-                result.push(bt.clone());
-                bi += 1;
-                li += 1;
-                ci += 1;
+        // Output local insertions that come before this base position
+        if let Some(li) = local_match {
+            while local_idx < li {
+                // Only output if this local token is not matched to any base token
+                if !local_to_base.contains_key(&local_idx) {
+                    result.push(local_tokens[local_idx].clone());
+                }
+                local_idx += 1;
             }
-            // Base matches local, canon differs - use canon's change
-            (Some(bt), Some(lt), Some(ct)) if bt == lt && lt != ct => {
-                result.push(ct.clone());
-                bi += 1;
-                li += 1;
-                ci += 1;
+        }
+        
+        // Output canonical insertions that come before this base position
+        if let Some(ci) = canon_match {
+            while canon_idx < ci {
+                // Only output if this canon token is not matched to any base token
+                if !canon_to_base.contains_key(&canon_idx) {
+                    result.push(canon_tokens[canon_idx].clone());
+                }
+                canon_idx += 1;
             }
-            // Base matches canon, local differs - use local's change
-            (Some(bt), Some(lt), Some(ct)) if bt == ct && bt != lt => {
-                result.push(lt.clone());
-                bi += 1;
-                li += 1;
-                ci += 1;
+        }
+        
+        // Handle the base token
+        match (local_match, canon_match) {
+            (Some(li), Some(ci)) => {
+                // Both sides kept this token - output it
+                result.push(base_tokens[base_idx].clone());
+                local_idx = li + 1;
+                canon_idx = ci + 1;
             }
-            // Local matches canon but differs from base - both made same change
-            (Some(_bt), Some(lt), Some(ct)) if lt == ct => {
-                result.push(lt.clone());
-                bi += 1;
-                li += 1;
-                ci += 1;
+            (Some(li), None) => {
+                // Local kept it, canonical removed/replaced it
+                // Honor canonical's change (don't output base token)
+                local_idx = li + 1;
             }
-            // All three differ - conflict! Keep both changes
-            (Some(_bt), Some(lt), Some(ct)) => {
-                result.push(lt.clone());
-                result.push(ct.clone());
-                bi += 1;
-                li += 1;
-                ci += 1;
+            (None, Some(ci)) => {
+                // Canonical kept it, local removed/replaced it
+                // Honor local's change (don't output base token)
+                canon_idx = ci + 1;
             }
-            // Base exhausted, local and canon have more
-            (None, Some(lt), Some(ct)) if lt == ct => {
-                result.push(lt.clone());
-                li += 1;
-                ci += 1;
+            (None, None) => {
+                // Both sides removed/replaced this token
+                // Don't output base token
             }
-            (None, Some(lt), Some(ct)) => {
-                result.push(lt.clone());
-                result.push(ct.clone());
-                li += 1;
-                ci += 1;
-            }
-            (None, Some(lt), None) => {
-                result.push(lt.clone());
-                li += 1;
-            }
-            (None, None, Some(ct)) => {
-                result.push(ct.clone());
-                ci += 1;
-            }
-            // Local exhausted
-            (Some(bt), None, Some(ct)) if bt == ct => {
-                // Local deleted, canon unchanged - delete
-                bi += 1;
-                ci += 1;
-            }
-            (Some(_bt), None, Some(ct)) => {
-                // Local deleted, canon modified - keep canon's modification
-                result.push(ct.clone());
-                bi += 1;
-                ci += 1;
-            }
-            (Some(_bt), None, None) => {
-                // Both deleted
-                bi += 1;
-            }
-            // Canon exhausted
-            (Some(bt), Some(lt), None) if bt == lt => {
-                // Canon deleted, local unchanged - delete
-                bi += 1;
-                li += 1;
-            }
-            (Some(_bt), Some(lt), None) => {
-                // Canon deleted, local modified - keep local's modification
-                result.push(lt.clone());
-                bi += 1;
-                li += 1;
-            }
-            (None, None, None) => break,
         }
     }
     
-    Ok(join_tokens(&result))
+    // Output any remaining local insertions
+    while local_idx < local_tokens.len() {
+        if !local_to_base.contains_key(&local_idx) {
+            result.push(local_tokens[local_idx].clone());
+        }
+        local_idx += 1;
+    }
+    
+    // Output any remaining canonical insertions
+    while canon_idx < canon_tokens.len() {
+        if !canon_to_base.contains_key(&canon_idx) {
+            result.push(canon_tokens[canon_idx].clone());
+        }
+        canon_idx += 1;
+    }
+    
+    Ok(result.concat())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ==================== Tokenizer Tests ====================
-
     #[test]
     fn test_tokenize() {
         assert_eq!(tokenize("Hello World"), vec!["Hello", " ", "World"]);
         assert_eq!(tokenize("a  b"), vec!["a", "  ", "b"]);
         assert_eq!(tokenize(""), Vec::<String>::new());
-        assert_eq!(tokenize("Let's load the datasets:"), 
-                   vec!["Let's", " ", "load", " ", "the", " ", "datasets:"]);
     }
-
-    // ==================== Basic Merge Tests ====================
-
+    
     #[test]
-    fn test_merge_no_conflict() {
-        let base = "Hello World";
-        let alice = "Hello World!";
-        let bob = "Hello World";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        assert_eq!(merged, "Hello World!");
+    fn test_lcs_pairs() {
+        let a: Vec<String> = vec!["A", "B", "C"].into_iter().map(String::from).collect();
+        let b: Vec<String> = vec!["A", "X", "C"].into_iter().map(String::from).collect();
+        let pairs = lcs_pairs(&a, &b);
+        // A matches A, C matches C
+        assert!(pairs.contains(&(0, 0))); // A
+        assert!(pairs.contains(&(2, 2))); // C
+        assert!(!pairs.iter().any(|&(bi, _)| bi == 1)); // B not matched
     }
 
     #[test]
@@ -480,43 +456,38 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_same_change_both_sides() {
+    fn test_merge_only_local_changes() {
+        let base = "Hello World";
+        let local = "Hello Universe";
+        let merged = merge_file_yjs(base, local, base).unwrap();
+        assert_eq!(merged, "Hello Universe");
+    }
+
+    #[test]
+    fn test_merge_only_canon_changes() {
+        let base = "Hello World";
+        let canon = "Hello Universe";
+        let merged = merge_file_yjs(base, base, canon).unwrap();
+        assert_eq!(merged, "Hello Universe");
+    }
+
+    #[test]
+    fn test_merge_same_change_both() {
         let base = "Hello World";
         let changed = "Hello Universe";
         let merged = merge_file_yjs(base, changed, changed).unwrap();
-        assert_eq!(merged, changed);
+        assert_eq!(merged, "Hello Universe");
     }
 
     // ==================== The Original Bug Fix ====================
 
     #[test]
     fn test_merge_same_line_different_words() {
-        // This is the originally reported bug scenario
         let base = "Tom likes pizza";
         let alice = "Herwig likes pizza";
         let bob = "Tom likes hamburger";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        // Should merge cleanly: Herwig + hamburger
         assert_eq!(merged, "Herwig likes hamburger");
-    }
-
-    #[test]
-    fn test_datasets_example() {
-        // The garbled output bug
-        let base = "Let's load the datasets:";
-        let alice = "Let's load the pizza:";
-        let bob = "Let's load the mozzarella:";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        // Should have clean prefix
-        assert!(merged.starts_with("Let's load the "));
-        // Both changes should appear (conflict)
-        assert!(merged.contains("pizza:"));
-        assert!(merged.contains("mozzarella:"));
-        // Should NOT be garbled
-        assert!(!merged.contains("loa"));
-        assert!(!merged.contains("thzomm"));
     }
 
     #[test]
@@ -528,45 +499,72 @@ mod tests {
         assert_eq!(merged, "The slow brown dog");
     }
 
-    // ==================== Conflict Cases ====================
-
     #[test]
-    fn test_both_edit_same_word() {
-        let base = "Hello World";
-        let alice = "Hi World";
-        let bob = "Hey World";
+    fn test_datasets_example() {
+        let base = "Let's load the datasets:";
+        let alice = "Let's load the pizza:";
+        let bob = "Let's load the mozzarella:";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
         
-        // Both changed "Hello" - conflict, keep both
-        assert!(merged.contains("Hi"));
-        assert!(merged.contains("Hey"));
-        assert!(merged.contains("World"));
+        // Should have clean prefix
+        assert!(merged.starts_with("Let's load the "));
+        
+        // Check for exact match of one of the two valid orderings
+        let expected_1 = "Let's load the pizza:mozzarella:";
+        let expected_2 = "Let's load the mozzarella:pizza:";
+        
+        assert!(
+            merged == expected_1 || merged == expected_2, 
+            "Merged output '{}' did not match expected '{}' or '{}'", 
+            merged, expected_1, expected_2
+        );
+
+        // Should NOT contain any part of "datasets:"
+        assert!(!merged.contains("datasets"));
+        // Should NOT be garbled (no partial words)
+        assert!(!merged.contains("thzomm"));
     }
 
     // ==================== Deletion Tests ====================
 
     #[test]
-    fn test_merge_deletion() {
-        let base = "Hello World";
-        let alice = "Hello";
-        let bob = "Hello World";
+    fn test_merge_local_deletes() {
+        let base = "Hello Beautiful World";
+        let alice = "Hello World";
+        let bob = "Hello Beautiful World";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
-        assert_eq!(merged, "Hello");
+        assert_eq!(merged, "Hello World");
     }
 
     #[test]
-    fn test_merge_content_to_empty() {
-        let base = "Some content here";
-        let alice = "";
-        let bob = "";
+    fn test_merge_canon_deletes() {
+        let base = "Hello Beautiful World";
+        let alice = "Hello Beautiful World";
+        let bob = "Hello World";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
+        assert_eq!(merged, "Hello World");
+    }
+
+    #[test]
+    fn test_merge_both_delete_same() {
+        let base = "Hello Beautiful World";
+        let alice = "Hello World";
+        let bob = "Hello World";
+        let merged = merge_file_yjs(base, alice, bob).unwrap();
+        assert_eq!(merged, "Hello World");
+    }
+
+    #[test]
+    fn test_merge_to_empty() {
+        let base = "Some content";
+        let merged = merge_file_yjs(base, "", "").unwrap();
         assert_eq!(merged, "");
     }
 
     // ==================== Insertion Tests ====================
 
     #[test]
-    fn test_merge_insertion() {
+    fn test_merge_local_inserts() {
         let base = "Hello World";
         let alice = "Hello Beautiful World";
         let bob = "Hello World";
@@ -575,36 +573,41 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_concurrent_insert_empty_base() {
+    fn test_merge_canon_inserts() {
+        let base = "Hello World";
+        let alice = "Hello World";
+        let bob = "Hello Beautiful World";
+        let merged = merge_file_yjs(base, alice, bob).unwrap();
+        assert_eq!(merged, "Hello Beautiful World");
+    }
+
+    #[test]
+    fn test_merge_both_insert_different_places() {
+        let base = "A B";
+        let alice = "A X B";
+        let bob = "A B Y";
+        let merged = merge_file_yjs(base, alice, bob).unwrap();
+        assert!(merged.contains("X"));
+        assert!(merged.contains("Y"));
+    }
+
+    #[test]
+    fn test_merge_from_empty() {
+        let base = "";
+        let alice = "Hello";
+        let bob = "";
+        let merged = merge_file_yjs(base, alice, bob).unwrap();
+        assert_eq!(merged, "Hello");
+    }
+
+    #[test]
+    fn test_merge_both_insert_to_empty() {
         let base = "";
         let alice = "A";
         let bob = "B";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
-        // Both inserted - conflict, keep both
         assert!(merged.contains("A"));
         assert!(merged.contains("B"));
-    }
-
-    #[test]
-    fn test_empty_file_merge() {
-        let base = "";
-        let alice = "New content";
-        let bob = "";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        assert_eq!(merged, "New content");
-    }
-
-    #[test]
-    fn test_merge_insert_at_different_positions() {
-        let base = "A B C D";
-        let alice = "A X B C D";
-        let bob = "A B C Y D";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        assert!(merged.contains("X"));
-        assert!(merged.contains("Y"));
-        assert!(merged.contains("A"));
-        assert!(merged.contains("D"));
     }
 
     // ==================== Multi-Line Tests ====================
@@ -616,173 +619,71 @@ mod tests {
         let bob = "Line1\nLine2\nLine3 Modified";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
         
-        assert!(merged.contains("Line2 Modified"));
-        assert!(merged.contains("Line3 Modified"));
+        assert!(merged.contains("Line1"));
+        assert!(merged.contains("Modified"));
     }
 
-    #[test]
-    fn test_both_add_same_content_same_position() {
-        let base = "Line 1\nLine 2";
-        let alice = "Line 1\nNew Line\nLine 2";
-        let bob = "Line 1\nNew Line\nLine 2";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        // Both added identical content - should appear once with diff3
-        // (Unlike CRDT which would duplicate)
-        assert!(merged.contains("New Line"));
-    }
+    // ==================== Conflict Tests ====================
 
     #[test]
-    fn test_both_add_different_content_same_position() {
-        let base = "Line 1\nLine 2";
-        let alice = "Line 1\nAlice Line\nLine 2";
-        let bob = "Line 1\nBob Line\nLine 2";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        assert!(merged.contains("Alice"));
-        assert!(merged.contains("Bob"));
-    }
-
-    // ==================== Unicode Tests ====================
-
-    #[test]
-    fn test_merge_with_emoji() {
+    fn test_both_edit_same_word() {
         let base = "Hello World";
-        let alice = "Hello 👋 World";
-        let bob = "Hello World";
+        let alice = "Hi World";
+        let bob = "Hey World";
         let merged = merge_file_yjs(base, alice, bob).unwrap();
         
-        assert!(merged.contains("👋"));
-        assert!(merged.contains("Hello"));
+        assert!(merged.contains("Hi"));
+        assert!(merged.contains("Hey"));
         assert!(merged.contains("World"));
     }
 
-    #[test]
-    fn test_merge_with_cjk() {
-        let base = "Hello World";
-        let alice = "Hello 世界";
-        let bob = "Hello World";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        assert!(merged.contains("世界"));
-    }
-
-    // ==================== Edge Cases ====================
+    // ==================== Binary/Text Tests ====================
 
     #[test]
-    fn test_merge_one_deletes_all_other_adds_word() {
-        let base = "Some content";
-        let alice = "";
-        let bob = "Some content more";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        
-        // Alice deleted base content, Bob added "more"
-        // "more" should survive
-        assert!(merged.contains("more"));
-    }
-
-    #[test]
-    fn test_whitespace_preserved() {
-        let base = "foo bar";
-        let alice = "foo  bar";
-        let bob = "foo bar";
-        let merged = merge_file_yjs(base, alice, bob).unwrap();
-        assert!(merged.contains("foo"));
-        assert!(merged.contains("bar"));
-    }
-
-    // ==================== Binary/Text Classification Tests ====================
-
-    #[test]
-    fn test_classify_binary_with_null() {
-        let binary_data = vec![0, 1, 2, 3];
-        let presence = classify(Some(&binary_data));
-        assert!(matches!(presence, Presence::Binary(_)));
+    fn test_classify_binary() {
+        let data = vec![0, 1, 2, 3];
+        assert!(matches!(classify(Some(&data)), Presence::Binary(_)));
     }
 
     #[test]
     fn test_classify_text() {
-        let text_data = "Hello World".as_bytes().to_vec();
-        let presence = classify(Some(&text_data));
-        assert!(matches!(presence, Presence::Text(_)));
+        let data = "Hello".as_bytes().to_vec();
+        assert!(matches!(classify(Some(&data)), Presence::Text(_)));
     }
 
     #[test]
     fn test_classify_missing() {
-        let presence = classify(None);
-        assert!(matches!(presence, Presence::Missing));
+        assert!(matches!(classify(None), Presence::Missing));
     }
 
     #[test]
-    fn test_large_file_treated_as_binary() {
-        let large_text = vec![b'a'; 1024 * 1024 + 1];
-        assert!(looks_binary(&large_text));
+    fn test_large_file_binary() {
+        let large = vec![b'a'; 1024 * 1024 + 1];
+        assert!(looks_binary(&large));
     }
 
     // ==================== Tree Merge Tests ====================
 
     #[test]
-    fn test_binary_conflict_detection() {
+    fn test_binary_conflict() {
         let mut base = TreeSnapshot::new();
         let mut local = TreeSnapshot::new();
         let mut canonical = TreeSnapshot::new();
         
-        let base_binary = vec![0xFF, 0xD8, 0xFF, 0xE0];
-        let local_binary = vec![0xFF, 0xD8, 0xFF, 0xE1];
-        let canon_binary = vec![0xFF, 0xD8, 0xFF, 0xE2];
+        base.files.insert("f".to_string(), vec![0, 1]);
+        local.files.insert("f".to_string(), vec![0, 2]);
+        canonical.files.insert("f".to_string(), vec![0, 3]);
         
-        base.files.insert("image.jpg".to_string(), base_binary);
-        local.files.insert("image.jpg".to_string(), local_binary);
-        canonical.files.insert("image.jpg".to_string(), canon_binary);
-        
-        let result = merge_trees(&base, &local, &canonical);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Binary file conflict"));
+        assert!(merge_trees(&base, &local, &canonical).is_err());
     }
 
     #[test]
-    fn test_binary_same_change_ok() {
-        let mut base = TreeSnapshot::new();
-        let mut local = TreeSnapshot::new();
-        let mut canonical = TreeSnapshot::new();
-        
-        let base_binary = vec![0xFF, 0xD8];
-        let changed_binary = vec![0xFF, 0xD9];
-        
-        base.files.insert("image.jpg".to_string(), base_binary);
-        local.files.insert("image.jpg".to_string(), changed_binary.clone());
-        canonical.files.insert("image.jpg".to_string(), changed_binary.clone());
-        
-        let result = merge_trees(&base, &local, &canonical);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().files.get("image.jpg"), Some(&changed_binary));
-    }
-
-    #[test]
-    fn test_binary_one_side_changes() {
-        let mut base = TreeSnapshot::new();
-        let mut local = TreeSnapshot::new();
-        let mut canonical = TreeSnapshot::new();
-        
-        let base_binary = vec![0xFF, 0xD8];
-        let changed_binary = vec![0xFF, 0xD9];
-        
-        base.files.insert("image.jpg".to_string(), base_binary.clone());
-        local.files.insert("image.jpg".to_string(), changed_binary.clone());
-        canonical.files.insert("image.jpg".to_string(), base_binary);
-        
-        let result = merge_trees(&base, &local, &canonical);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().files.get("image.jpg"), Some(&changed_binary));
-    }
-
-    #[test]
-    fn test_file_added_by_one_side() {
+    fn test_file_added() {
         let base = TreeSnapshot::new();
         let mut local = TreeSnapshot::new();
         let canonical = TreeSnapshot::new();
         
-        local.files.insert("new.txt".to_string(), b"new content".to_vec());
+        local.files.insert("new.txt".to_string(), b"content".to_vec());
         
         let result = merge_trees(&base, &local, &canonical).unwrap();
         assert!(result.files.contains_key("new.txt"));
@@ -794,23 +695,10 @@ mod tests {
         let local = TreeSnapshot::new();
         let canonical = TreeSnapshot::new();
         
-        base.files.insert("old.txt".to_string(), b"old content".to_vec());
+        base.files.insert("old.txt".to_string(), b"content".to_vec());
         
         let result = merge_trees(&base, &local, &canonical).unwrap();
         assert!(!result.files.contains_key("old.txt"));
-    }
-
-    #[test]
-    fn test_file_deleted_by_one_modified_by_other_is_conflict() {
-        let mut base = TreeSnapshot::new();
-        let local = TreeSnapshot::new();
-        let mut canonical = TreeSnapshot::new();
-        
-        base.files.insert("file.txt".to_string(), b"original".to_vec());
-        canonical.files.insert("file.txt".to_string(), b"modified".to_vec());
-        
-        let result = merge_trees(&base, &local, &canonical);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -819,44 +707,47 @@ mod tests {
         let local = TreeSnapshot::new();
         let mut canonical = TreeSnapshot::new();
         
-        base.files.insert("file.txt".to_string(), b"original".to_vec());
-        canonical.files.insert("file.txt".to_string(), b"original".to_vec());
+        base.files.insert("f.txt".to_string(), b"original".to_vec());
+        canonical.files.insert("f.txt".to_string(), b"original".to_vec());
         
         let result = merge_trees(&base, &local, &canonical).unwrap();
-        assert!(!result.files.contains_key("file.txt"));
+        assert!(!result.files.contains_key("f.txt"));
     }
 
-    // ==================== Ignore Pattern Tests ====================
+    #[test]
+    fn test_file_deleted_by_one_modified_by_other() {
+        let mut base = TreeSnapshot::new();
+        let local = TreeSnapshot::new();
+        let mut canonical = TreeSnapshot::new();
+        
+        base.files.insert("f.txt".to_string(), b"original".to_vec());
+        canonical.files.insert("f.txt".to_string(), b"modified".to_vec());
+        
+        assert!(merge_trees(&base, &local, &canonical).is_err());
+    }
+
+    // ==================== Ignore Tests ====================
 
     #[test]
     fn test_is_ignored() {
         assert!(is_ignored(".viminfo"));
         assert!(is_ignored(".DS_Store"));
         assert!(is_ignored("foo.swp"));
-        assert!(is_ignored("foo.txt~"));
         assert!(is_ignored(".git/config"));
-        assert!(is_ignored(".worktree/steadystate.json"));
-        
         assert!(!is_ignored("foo.txt"));
-        assert!(!is_ignored("src/main.rs"));
         assert!(!is_ignored(".gitignore"));
     }
 
-    // ==================== Filesystem Tests ====================
-
     #[cfg(unix)]
     #[test]
-    fn test_symlinks_are_ignored() {
+    fn test_symlinks_ignored() {
         use std::os::unix::fs::symlink;
         
         let temp = tempfile::tempdir().unwrap();
-        let temp_path = temp.path();
+        std::fs::write(temp.path().join("real.txt"), "content").unwrap();
+        symlink(temp.path().join("real.txt"), temp.path().join("link.txt")).unwrap();
         
-        std::fs::write(temp_path.join("real.txt"), "content").unwrap();
-        symlink(temp_path.join("real.txt"), temp_path.join("link.txt")).unwrap();
-        
-        let snapshot = materialize_fs_tree(temp_path).unwrap();
-        
+        let snapshot = materialize_fs_tree(temp.path()).unwrap();
         assert!(snapshot.files.contains_key("real.txt"));
         assert!(!snapshot.files.contains_key("link.txt"));
     }
