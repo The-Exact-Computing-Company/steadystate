@@ -200,7 +200,7 @@ impl LocalComputeProvider {
         Ok(canonical_path)
     }
 
-    fn install_steadystate_commands(&self, session_root: &Path) -> Result<()> {
+    fn install_steadystate_commands(&self, session_root: &Path, repo_name: &str) -> Result<()> {
         let bin_dir = session_root.join("bin");
         std::fs::create_dir_all(&bin_dir).context("Failed to create bin directory")?;
         
@@ -213,7 +213,7 @@ impl LocalComputeProvider {
         let sync_script = r#"#!/bin/bash
 set -e
 
-USER_ID="${USER:-unknown}"
+USER_ID="${STEADYSTATE_USERNAME:-${USER:-unknown}}"
 # Default to PWD if USER_WORKSPACE not set (fallback)
 WORKSPACE="${USER_WORKSPACE:-$PWD}"
 # We need to find session root if not set
@@ -294,9 +294,10 @@ echo "✓ Sync complete!"
         }
         
         // 3. Create wrapper script (steadystate)
-        let wrapper_script = r#"#!/bin/bash
+        let wrapper_script = format!(r#"#!/bin/bash
 # Export REPO_ROOT so CLI knows where to look for sync-log
 export REPO_ROOT="$(dirname "$PWD")"
+export REPO_NAME="{}"
 
 case "$1" in
     sync)
@@ -323,7 +324,7 @@ case "$1" in
         fi
         ;;
 esac
-"#;
+"#, repo_name);
         let wrapper_path = bin_dir.join("steadystate");
         std::fs::write(&wrapper_path, wrapper_script)?;
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
@@ -802,15 +803,19 @@ impl ComputeProvider for LocalComputeProvider {
         // 4. Initialize Canonical Git Repo (if collab mode)
         if request.mode.as_deref() == Some("collab") {
              self.init_canonical_git_repo(&workspace_root, &repo_path, session_id).await?;
-             self.install_steadystate_commands(&workspace_root)?;
+             
+             let real_repo_name = request.repo_url.split('/').last()
+                .map(|s| s.trim_end_matches(".git"))
+                .unwrap_or("unknown");
+                
+             self.install_steadystate_commands(&workspace_root, real_repo_name)?;
 
-            let repo_name = repo_path.file_name().and_then(|s| s.to_str()).unwrap_or("repo");
             let (pid, invite) = self.launch_sshd_for_collab(
                 &workspace_root,
                 github_login.as_deref(),
                 allowed_users_list.as_deref(),
                 session_id,
-                repo_name,
+                real_repo_name,
                 github_token.as_deref(),
             ).await?;
 
@@ -1164,11 +1169,8 @@ export CANONICAL_REPO="$REPO_ROOT/canonical"
 
 cd "$WORKTREE" || exit 1
 
-# Handle SSH_ORIGINAL_COMMAND
-if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-    exec bash -c "$SSH_ORIGINAL_COMMAND"
-else
-    # Default to shell
+# Define welcome message
+print_welcome() {{
     cat << WELCOME
 ╔════════════════════════════════════════════════════════════╗
 ║         Welcome to SteadyState Collaboration Mode          ║
@@ -1182,7 +1184,18 @@ Commands:
   steadystate status    - Check status
 
 WELCOME
-    
+}}
+
+# Handle SSH_ORIGINAL_COMMAND
+if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+    # If the command is just setting up the shell (interactive), print welcome
+    if [[ "$SSH_ORIGINAL_COMMAND" == *"exec $SHELL"* ]] || [[ "$SSH_ORIGINAL_COMMAND" == *"exec bash"* ]]; then
+        print_welcome
+    fi
+    exec bash -c "$SSH_ORIGINAL_COMMAND"
+else
+    # Default to shell
+    print_welcome
     exec bash -l
 fi
 "#, 

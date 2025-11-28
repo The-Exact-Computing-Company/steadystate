@@ -448,6 +448,14 @@ async fn join(url_str: String) -> Result<()> {
                 } else {
                     args.push(host.to_string());
                 }
+
+                // Inject username if available
+                let shell_cmd = if let Ok(session) = crate::session::read_session(None).await {
+                    format!("export STEADYSTATE_USERNAME={}; exec $SHELL -l", session.login)
+                } else {
+                    "exec $SHELL -l".to_string()
+                };
+                args.push(shell_cmd);
                 
                 use std::os::unix::process::CommandExt;
                 let err = std::process::Command::new("ssh")

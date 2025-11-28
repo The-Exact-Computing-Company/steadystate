@@ -240,7 +240,9 @@ pub async fn sync() -> Result<()> {
     // Try to get username from session, fallback to env var
     let user = match crate::session::read_session(None).await {
         Ok(session) => session.login,
-        Err(_) => std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+        Err(_) => std::env::var("STEADYSTATE_USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "unknown".to_string()),
     };
 
     let timestamp = SystemTime::now()
