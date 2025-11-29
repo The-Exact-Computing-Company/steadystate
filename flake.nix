@@ -5,23 +5,15 @@
     flake-utils.url = "github:numtide/flake-utils";
     treemerge.url = "github:b-rodrigues/treemerge";
     upterm-pkgs.url = "github:b-rodrigues/nixpkgs/update_upterm";
-    antigravity-pkgs.url = "github:NixOS/nixpkgs/master";
   };
-  outputs = { self, nixpkgs, flake-utils, treemerge, antigravity-pkgs, upterm-pkgs }:
+  outputs = { self, nixpkgs, flake-utils, treemerge, upterm-pkgs }:
     flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs { inherit system; };
       isCI = builtins.getEnv "CI" == "true" || builtins.getEnv "CI" == "1";
       isDarwin = pkgs.stdenv.isDarwin;
       
-      # Only import antigravity packages when NOT in CI
-      agpkgs = if isCI then null else import antigravity-pkgs {
-        inherit system;
-        config.allowUnfree = true;
-      };
-      
       upkgs = import upterm-pkgs {inherit system;};
-      antigravity = if isCI then null else agpkgs.antigravity;
       upterm = upkgs.upterm;
       workspaceSrc = pkgs.lib.cleanSource ./.;
       # Build entire Cargo workspace once
@@ -80,7 +72,7 @@
           treemerge.packages.${system}.default
           upterm
         ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.iproute2 ]
-          ++ pkgs.lib.optionals (!isCI) [ antigravity pkgs.gemini-cli ];
+          ++ pkgs.lib.optionals (!isCI) [ pkgs.gemini-cli ];
         shellHook = ''
           echo "🔧 Entering SteadyState dev shell"
           if [ -f backend/.env ]; then

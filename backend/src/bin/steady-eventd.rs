@@ -66,8 +66,8 @@ impl EventDaemon {
         // Actually, users are created when they SSH in.
         // So we should watch the session_root for new directories too.
         
-        let root_tx = tx.clone();
-        let root_session = self.session_root.clone();
+        let _root_tx = tx.clone();
+        let _root_session = self.session_root.clone();
         let mut root_watcher = notify::recommended_watcher(move |res: notify::Result<NotifyEvent>| {
             if let Ok(event) = res {
                 if let notify::event::EventKind::Create(_) = event.kind {
