@@ -35,5 +35,5 @@ pub struct ResourceUsage {
 pub struct SessionStartResult {
     pub endpoint: Option<String>,
     pub magic_link: Option<String>,
-    pub host_key_fingerprint: Option<String>,
+    pub host_public_key: Option<String>,
 }

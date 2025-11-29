@@ -116,6 +116,20 @@ impl LocalComputeProvider {
         // Extract GitHub config
         let (creator_login, github_token) = self.extract_github_config(request);
 
+        // Configure auth if token is present
+        if let Some(token) = &github_token {
+            if request.repo_url.starts_with("https://") {
+                if let Ok(mut url) = url::Url::parse(&request.repo_url) {
+                    let _ = url.set_username("x-access-token");
+                    let _ = url.set_password(Some(token));
+                    
+                    if let Err(e) = git.set_remote_url(&workspace.repo_path, "origin", url.as_str()).await {
+                        tracing::warn!("Failed to configure git auth for repo: {}", e);
+                    }
+                }
+            }
+        }
+
         // Setup SSH
         let authorized_keys = self.ssh_key_manager
             .build_authorized_keys(
@@ -129,11 +143,12 @@ impl LocalComputeProvider {
         self.install_scripts(workspace, &branch_name).await?;
         
         // Launch SSHD
-        let (pid, invite, fingerprint) = self.launch_sshd(
+        let (pid, invite, host_key) = self.launch_sshd(
             workspace,
             &authorized_keys,
             session_id,
             &branch_name,
+            &request.repo_url,
         ).await?;
         
         // Store state
@@ -142,11 +157,22 @@ impl LocalComputeProvider {
             workspace_root: workspace.root.clone(),
         });
         
+        let magic_link = format!("steadystate://collab/{}?ssh={}&host_key={}", 
+                session_id, urlencoding::encode(&invite), urlencoding::encode(&host_key));
+
+        // Write session info for dashboard
+        let session_info = serde_json::json!({
+            "magic_link": magic_link,
+            "ssh_url": invite
+        });
+        let info_path = workspace.root.join("session-info.json");
+        let info_content = serde_json::to_string_pretty(&session_info)?;
+        self.executor.write_file(&info_path, info_content.as_bytes(), 0o644).await?;
+
         Ok(SessionStartResult {
-            endpoint: Some(format!("ssh://{}", invite)),
-            magic_link: Some(format!("steadystate://collab/{}?ssh={}&fingerprint={}", 
-                session_id, urlencoding::encode(&invite), urlencoding::encode(&fingerprint))),
-            host_key_fingerprint: Some(fingerprint),
+            endpoint: Some(invite.clone()),
+            magic_link: Some(magic_link),
+            host_public_key: Some(host_key),
         })
     }
 
@@ -189,9 +215,9 @@ impl LocalComputeProvider {
 
         Ok(SessionStartResult {
             endpoint: Some(invite.clone()),
-            magic_link: Some(format!("steadystate://pair/{}?ssh={}", 
+            magic_link: Some(format!("steadystate://pair/{}?upterm={}", 
                 session_id, urlencoding::encode(&invite))),
-            host_key_fingerprint: None, // Upterm manages its own keys
+            host_public_key: None, // Upterm manages its own keys
         })
     }
     
@@ -202,12 +228,52 @@ impl LocalComputeProvider {
     ) -> Result<()> {
         let bin_dir = workspace.root.join("bin");
         self.executor.mkdir_p(&bin_dir, 0o755).await?;
+
+        // Create log files
+        let sync_log = workspace.root.join("sync-log");
+        self.executor.write_file(&sync_log, &[], 0o666).await?;
+
+        let activity_log = workspace.root.join("activity-log");
+        self.executor.write_file(&activity_log, &[], 0o666).await?;
         
         // Sync script
         let sync_content = scripts::sync_script().render(&HashMap::new());
         self.executor
             .write_file(&bin_dir.join("steadystate-sync"), sync_content.as_bytes(), 0o755)
             .await?;
+
+        // Find the steadystate CLI binary
+        // First, try to find it in PATH using `which`
+        let cli_source = if let Ok(output) = self.executor.exec("which", &["steadystate"]).await {
+            if output.exit_status.success() {
+                Some(PathBuf::from(output.stdout.trim()))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Fallback: check relative to current exe (for production deployments)
+        let cli_source = cli_source.or_else(|| {
+            std::env::current_exe().ok().and_then(|exe| {
+                let bin_name = if cfg!(windows) { "steadystate.exe" } else { "steadystate" };
+                let cli_path = exe.parent()?.join(bin_name);
+                if cli_path.exists() { Some(cli_path) } else { None }
+            })
+        });
+
+        if let Some(src) = cli_source {
+            let dest = bin_dir.join("steadystate");
+            if let Ok(content) = tokio::fs::read(&src).await {
+                self.executor.write_file(&dest, &content, 0o755).await?;
+                tracing::info!("Copied steadystate CLI from {:?} to {:?}", src, dest);
+            } else {
+                tracing::warn!("Failed to read steadystate CLI from {:?}", src);
+            }
+        } else {
+            tracing::warn!("steadystate CLI binary not found in PATH or relative to backend");
+        }
             
         Ok(())
     }
@@ -218,6 +284,7 @@ impl LocalComputeProvider {
         authorized_keys: &[crate::compute::common::ssh_keys::AuthorizedKey],
         session_id: &str,
         branch_name: &str,
+        repo_url: &str,
     ) -> Result<(u32, String, String)> {
         let ssh_dir = workspace.root.join("ssh");
         self.executor.mkdir_p(&ssh_dir, 0o700).await?;
@@ -231,12 +298,18 @@ impl LocalComputeProvider {
         let auth_keys_content = self.ssh_key_manager.generate_authorized_keys_file(authorized_keys, Some(&wrapper_template));
         self.executor.write_file(&auth_keys_path, auth_keys_content.as_bytes(), 0o600).await?;
 
+        // Extract repo name from URL (e.g. https://github.com/user/repo -> repo)
+        let repo_name = repo_url.split('/').last()
+            .map(|s| s.trim_end_matches(".git"))
+            .unwrap_or("repo")
+            .to_string();
+
         // Create wrapper script
         let wrapper_content = scripts::collab_wrapper_script().render(&{
             let mut vars = HashMap::new();
             vars.insert("session_root", workspace.root.to_str().ok_or_else(|| anyhow!("Invalid workspace root"))?);
             vars.insert("session_id", session_id);
-            vars.insert("repo_name", "repo"); // TODO: get actual repo name
+            vars.insert("repo_name", &repo_name);
             vars.insert("branch_name", branch_name);
             vars
         });
@@ -261,39 +334,75 @@ impl LocalComputeProvider {
         self.executor.write_file(&config_path, config.generate().as_bytes(), 0o600).await?;
 
         let sshd_binary = sshd::find_sshd_binary(self.executor.as_ref()).await?;
+        tracing::info!("Using sshd binary: {}", sshd_binary);
         
         let config_path_str = config_path.to_str().ok_or_else(|| anyhow!("Invalid config path"))?;
+        let log_path = ssh_dir.join("sshd.log");
+        let log_path_str = log_path.to_str().ok_or_else(|| anyhow!("Invalid log path"))?;
+
         let (pid, _, _) = self.executor.exec_streaming(
             &sshd_binary,
-            &["-f", config_path_str, "-D"], // -D to run in foreground so we can manage it
+            &["-f", config_path_str, "-D", "-E", log_path_str], // -D to run in foreground, -E to log to file
         ).await?;
 
-        // TODO: Wait for port to be open?
+        // Wait for port to be open
+        let mut attempts = 0;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            
+            // Check if process is still alive
+            let status_check = self.executor.exec_shell(&format!("kill -0 {}", pid)).await;
+            if let Ok(output) = status_check {
+                if !output.exit_status.success() {
+                    // Process died
+                    let log_content = self.executor.exec_shell(&format!("cat {}", log_path_str)).await
+                        .map(|o| o.stdout)
+                        .unwrap_or_else(|_| "Could not read log".to_string());
+                    return Err(anyhow!("sshd process died early. Log: {}", log_content));
+                }
+            }
+
+            // Try to connect to the port to see if it's open
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            attempts += 1;
+            if attempts > 50 { // 10 seconds timeout
+                // Kill the process if it didn't start properly
+                let _ = self.executor.exec_shell(&format!("kill {}", pid)).await;
+                let log_content = self.executor.exec_shell(&format!("cat {}", log_path_str)).await
+                    .map(|o| o.stdout)
+                    .unwrap_or_else(|_| "Could not read log".to_string());
+                return Err(anyhow!("sshd failed to start on port {}. Log: {}", port, log_content));
+            }
+        }
 
         // Determine public IP/Hostname
         let hostname = "localhost"; // TODO: Get actual hostname or IP
-        let invite = format!("{}@{} -p {}", "user", hostname, port);
+        // Construct a valid SSH URL: ssh://user@hostname:port
+        let user = crate::compute::ssh_session_user();
+        tracing::info!("Using SSH user: '{}' for session invite", user);
+        let invite = format!("ssh://{}@{}:{}", user, hostname, port);
 
-        // Get fingerprint
+        // Get host key content for known_hosts
         let host_key_path_str = host_key_path.to_str().ok_or_else(|| anyhow!("Invalid host key path"))?;
-        let fingerprint_output = self.executor.exec("ssh-keygen", &["-lf", host_key_path_str]).await?;
-        let fingerprint = if fingerprint_output.exit_status.success() {
-            // Output format: "256 SHA256:xxxxxxxx... root@host (ED25519)"
-            // We want the "SHA256:..." part
-            let stdout = fingerprint_output.stdout;
-            let parts: Vec<&str> = stdout.split_whitespace().collect();
-            if parts.len() >= 2 {
-                parts[1].to_string()
-            } else {
-                tracing::warn!("Failed to parse fingerprint from: {}", stdout);
-                String::new()
-            }
-        } else {
-            tracing::warn!("Failed to get host key fingerprint: {}", fingerprint_output.stderr);
-            String::new()
-        };
+        let pub_key_path = format!("{}.pub", host_key_path_str);
+        
+        let pub_key_content = self.executor.read_file(Path::new(&pub_key_path)).await?;
+        let pub_key_str = String::from_utf8(pub_key_content)
+            .context("Host public key is not valid UTF-8")?
+            .trim()
+            .to_string();
 
-        Ok((pid, invite, fingerprint))
+        // The public key format is: "ssh-ed25519 AAAAC3... comment"
+        // We need to include the key type and the base64 key (first two parts)
+        let host_key = pub_key_str
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        Ok((pid, invite, host_key))
     }
 
     async fn launch_upterm(

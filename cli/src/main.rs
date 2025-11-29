@@ -259,7 +259,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     .await?;
 
     let mut final_endpoint = resp.endpoint.clone();
-    let mut final_fingerprint = resp.host_key_fingerprint.clone();
+    let mut final_host_key = resp.host_public_key.clone();
 
 
     if json {
@@ -291,7 +291,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
                 match status.state {
                     SessionState::Running => {
                         final_endpoint = status.endpoint;
-                        final_fingerprint = status.host_key_fingerprint;
+                        final_host_key = status.host_public_key;
                         let final_magic_link = status.magic_link; // Update magic link from status
                         
                         if let Some(endpoint) = &final_endpoint {
@@ -352,8 +352,8 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
                         "-t".to_string(), // Force PTY for TUI
                     ];
                     
-                    if let Some(fingerprint) = final_fingerprint {
-                        let known_hosts = format!("[{}]:{} {}", host, port, fingerprint);
+                    if let Some(host_key) = final_host_key {
+                        let known_hosts = format!("[{}]:{} {}", host, port, host_key);
                         let known_hosts_path = format!("/tmp/steadystate-{}-known_hosts", resp.id);
                         std::fs::write(&known_hosts_path, known_hosts)?;
                         
@@ -447,8 +447,8 @@ async fn join(url_str: String) -> Result<()> {
                     .map(|(_, val)| val.to_string())
                     .ok_or_else(|| anyhow::anyhow!("Invalid collab link: missing 'ssh' parameter"))?;
                 
-                let fingerprint = pairs
-                    .find(|(key, _)| key == "fingerprint")
+                let host_key = pairs
+                    .find(|(key, _)| key == "host_key")
                     .map(|(_, val)| val.to_string());
                 
                 println!("Joining collaboration session...");
@@ -465,7 +465,7 @@ async fn join(url_str: String) -> Result<()> {
                     port.to_string(),
                 ];
 
-                if let Some(fp) = fingerprint {
+                if let Some(key) = host_key {
                     // We don't have session ID easily here, use random or hash of url
                     use std::collections::hash_map::DefaultHasher;
                     use std::hash::{Hash, Hasher};
@@ -473,7 +473,7 @@ async fn join(url_str: String) -> Result<()> {
                     url_str.hash(&mut hasher);
                     let session_id = format!("{:x}", hasher.finish());
 
-                    let known_hosts = format!("[{}]:{} {}", host, port, fp);
+                    let known_hosts = format!("[{}]:{} {}", host, port, key);
                     let known_hosts_path = format!("/tmp/steadystate-{}-known_hosts", session_id);
                     std::fs::write(&known_hosts_path, known_hosts)?;
                     

@@ -60,6 +60,11 @@ if [ ! -d "$WORKTREE" ]; then
     git remote rename origin canonical
     git config user.name "$USER_ID"
     git config user.email "$USER_ID@steadystate.local"
+
+    # Initialize metadata for sync
+    mkdir -p .worktree
+    HEAD_COMMIT=$(git rev-parse HEAD)
+    echo "{\"session_branch\": \"{{branch_name}}\", \"last_synced_commit\": \"$HEAD_COMMIT\"}" > .worktree/steadystate.json
 fi
 
 export HOME="$WORKTREE"

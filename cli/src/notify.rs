@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
 use std::thread;
+use chrono::{DateTime, Local, TimeZone};
 
 pub fn watch() -> Result<()> {
     // Clear screen
@@ -63,7 +64,20 @@ pub fn watch() -> Result<()> {
         let display_repo_name = std::env::var("REPO_NAME").unwrap_or(repo_name.clone());
 
         println!("SteadyState Session: {}", session_id);
-        if let Ok(link) = std::env::var("MAGIC_LINK") {
+        // Try to read session-info.json
+        let session_info_path = Path::new(&repo_root).join("session-info.json");
+        if session_info_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&session_info_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(link) = json.get("magic_link").and_then(|v| v.as_str()) {
+                        println!("Join: steadystate join \"{}\"", link);
+                    }
+                    if let Some(ssh_url) = json.get("ssh_url").and_then(|v| v.as_str()) {
+                        println!("SSH:  {}", ssh_url);
+                    }
+                }
+            }
+        } else if let Ok(link) = std::env::var("MAGIC_LINK") {
              println!("Magic Link: {}", link);
         }
         println!("Repo: {}", display_repo_name);
@@ -91,8 +105,12 @@ pub fn watch() -> Result<()> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 // Format: timestamp user
-                // We can format timestamp if we want, but raw is okay for now
-                println!("  [{}] {} synced", parts[0], parts[1]);
+                if let Ok(ts) = parts[0].parse::<i64>() {
+                    let dt: DateTime<Local> = Local.timestamp_opt(ts, 0).unwrap();
+                    println!("  [{}] {} synced", dt.format("%H:%M:%S"), parts[1]);
+                } else {
+                    println!("  [{}] {} synced", parts[0], parts[1]);
+                }
             } else {
                 println!("  {}", line);
             }

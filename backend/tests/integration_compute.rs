@@ -49,7 +49,7 @@ async fn test_integration_nix_check() {
         updated_at: std::time::SystemTime::now(),
         error_message: None,
         magic_link: None,
-        host_key_fingerprint: None,
+        host_public_key: None,
     };
 
     let request = SessionRequest {

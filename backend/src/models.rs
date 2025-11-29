@@ -127,7 +127,7 @@ pub struct Session {
     pub updated_at: std::time::SystemTime,
     pub error_message: Option<String>,
     pub magic_link: Option<String>,
-    pub host_key_fingerprint: Option<String>,
+    pub host_public_key: Option<String>,
 }
 
 /// The request from the CLI to create a new session.
@@ -164,7 +164,7 @@ impl From<&Session> for SessionInfo {
             compute_provider: Some(session.compute_provider.clone()),
             message: session.error_message.clone(),
             magic_link: session.magic_link.clone(),
-            host_key_fingerprint: session.host_key_fingerprint.clone(),
+            host_public_key: session.host_public_key.clone(),
         }
     }
 }
@@ -174,5 +174,5 @@ impl From<&Session> for SessionInfo {
 pub struct SessionStartResult {
     pub endpoint: Option<String>,
     pub magic_link: Option<String>,
-    pub host_key_fingerprint: Option<String>,
+    pub host_public_key: Option<String>,
 }

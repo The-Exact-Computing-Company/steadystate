@@ -137,4 +137,24 @@ impl<'a> GitOps<'a> {
         
         Ok(())
     }
+
+    /// Set remote URL
+    pub async fn set_remote_url(
+        &self,
+        repo_path: &Path,
+        name: &str,
+        url: &str,
+    ) -> Result<()> {
+        let path_str = repo_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+        
+        let output = self.executor
+            .exec("git", &["-C", path_str, "remote", "set-url", name, url])
+            .await?;
+            
+        if !output.exit_status.success() {
+            return Err(anyhow!("Failed to set remote url: {}", output.stderr));
+        }
+        
+        Ok(())
+    }
 }

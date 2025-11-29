@@ -58,7 +58,7 @@ async fn run_provisioning(
                 session.state = SessionState::Running;
                 session.endpoint = start_result.endpoint;
                 session.magic_link = start_result.magic_link;
-                session.host_key_fingerprint = start_result.host_key_fingerprint;
+                session.host_public_key = start_result.host_public_key;
                 session.updated_at = std::time::SystemTime::now();
                 tracing::info!("Session {} provisioned successfully", session_id);
             }
@@ -105,7 +105,7 @@ async fn create_session(
         updated_at: now,
         error_message: None,
         magic_link: None,
-        host_key_fingerprint: None,
+        host_public_key: None,
     };
 
     let session_info = SessionInfo::from(&session);

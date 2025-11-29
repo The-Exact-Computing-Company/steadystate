@@ -6,7 +6,7 @@ pub struct SessionInfo {
     pub endpoint: Option<String>,
     pub magic_link: Option<String>,
     pub state: SessionState,
-    pub host_key_fingerprint: Option<String>,
+    pub host_public_key: Option<String>,
     pub compute_provider: Option<String>,
     pub message: Option<String>,
 }

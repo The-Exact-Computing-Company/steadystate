@@ -53,6 +53,7 @@ crossterm = "0.29.0"
 yrs = "0.18"
 similar = "2.4"
 walkdir = "2"
+chrono = "0.4"
 
 
 [dev-dependencies]

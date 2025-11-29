@@ -42,6 +42,9 @@ pub trait RemoteExecutor: Send + Sync + std::fmt::Debug {
     
     /// Remove a file or directory recursively
     async fn remove_all(&self, path: &Path) -> Result<()>;
+
+    /// Set permissions on a file or directory
+    async fn set_permissions(&self, path: &Path, mode: u32) -> Result<()>;
 }
 
 pub type BoxedAsyncRead = Box<dyn tokio::io::AsyncRead + Unpin + Send>;

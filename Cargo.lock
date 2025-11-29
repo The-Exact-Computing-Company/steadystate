@@ -2712,6 +2712,7 @@ name = "steadystate"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "crossterm 0.29.0",
  "dirs 6.0.0",

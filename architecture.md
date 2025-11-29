@@ -60,98 +60,121 @@ Defines endpoints for managing development sessions.
 - **`terminate_session()`**: The handler for `DELETE /sessions/{id}`. It initiates the termination of a session and returns an `ACCEPTED` status.
 - **`run_provisioning()`**: A private background task that handles the logic for provisioning a new compute session using the appropriate `ComputeProvider`. It updates the session state based on the outcome (e.g., to `Running` or `Failed`).
 
-#### `auth/provider.rs`
-Defines the core traits for the modular authentication system.
+#### `compute/traits.rs`
+Defines the core abstractions for compute providers and remote execution.
 
-- **`AuthProvider` (trait)**: An async trait defining the interface for an authentication provider, including methods for starting and polling the device flow.
-- **`AuthProviderFactory` (trait)**: An async trait for factories that can build instances of `AuthProvider`.
+- **`RemoteExecutor` (trait)**: Abstraction for executing commands, managing files, and handling processes (local or remote).
+- **`ComputeProvider` (trait)**: Interface for managing session lifecycle (start, stop, health check).
 
-#### `auth/github.rs`
-An implementation of the `AuthProvider` trait for GitHub.
-
-- **`GitHubAuth::new()`**: Creates a new instance of the GitHub authentication provider.
-- **`GitHubAuth::start_device_flow()`**: Implements the device flow initiation logic by making a request to GitHub's device code endpoint.
-- **`GitHubAuth::poll_device_flow()`**: Implements the polling logic by exchanging the device code for an access token and then fetching the user's identity.
-- **`GitHubFactory::build()`**: Implements the factory pattern to build a `GitHubAuth` provider, reading the necessary client ID and secret from the application config.
-
-#### `compute/local_provider.rs`
+#### `compute/providers/local/provider.rs`
 An implementation of the `ComputeProvider` trait that runs development sessions locally.
 
 - **`LocalComputeProvider::new()`**: Creates a new instance of the local compute provider.
-- **`LocalComputeProvider::start_session()`**: Implements the session startup logic, which involves creating a workspace, cloning the user's repository, and launching an `upterm` session within a Nix environment.
-- **`LocalComputeProvider::terminate_session()`**: Implements the session termination logic by killing the `upterm` process and cleaning up the workspace directory.
-- **`create_workspace()`**: A private method to create a temporary directory for the session's workspace.
-- **`nix_shell_command()`**: A private helper to construct a `tokio::process::Command` that runs a given command inside a sourced Nix shell environment.
-- **`ensure_nix_installed()`**: A private helper that checks if Nix is installed and, if not, installs it.
-- **`clone_repo()`**: A private async function to clone a Git repository into a specified destination.
-- **`launch_upterm_in_noenv()`**: A private async function that launches the `upterm` host process inside a `nix develop` shell.
-- **`capture_upterm_invite()`**: A private async helper that reads the stdout of the `upterm` process to find and return the SSH invite link.
-- **`kill_pid()`**: A private async function to terminate a process by its process ID (PID).
+- **`LocalComputeProvider::start_session()`**: Orchestrates session startup, delegating to `setup_collab_mode` or `setup_pair_mode`.
+- **`LocalComputeProvider::setup_collab_mode()`**: Initializes a shared workspace for asynchronous collaboration.
+- **`LocalComputeProvider::setup_pair_mode()`**: Initializes a pair programming session using `upterm`.
+- **`LocalComputeProvider::install_scripts()`**: Copies the `steadystate` binary and installs helper scripts (`steadystate-sync`, `steadystate-wrapper`) into the session.
+- **`LocalComputeProvider::launch_sshd()`**: Configures and starts a dedicated `sshd` instance for the session.
+    - **SSH User Handling**: Uses `STEADYSTATE_SSH_USER` env var, falls back to `USER` env var, or defaults to "steadystate".
+    - **Token Injection**: Injects the GitHub token into the repository's `origin` remote URL to enable passwordless `git push`.
+
+#### `compute/common/git_ops.rs`
+Helper struct for performing Git operations via the `RemoteExecutor`.
+
+- **`GitOps::clone()`**: Clones a repository.
+- **`GitOps::checkout_new_branch()`**: Creates and checks out a new branch.
+- **`GitOps::configure_user()`**: Sets `user.name` and `user.email`.
+- **`GitOps::add_remote()`**: Adds a new remote.
+- **`GitOps::set_remote_url()`**: Updates the URL of an existing remote (used for token injection).
+
+#### `compute/common/ssh_keys.rs`
+Manages SSH keys and `authorized_keys` files.
+
+- **`SshKeyManager::fetch_github_keys()`**: Fetches public keys for a GitHub user.
+- **`SshKeyManager::build_authorized_keys()`**: Aggregates keys for the session creator and allowed users.
+- **`SshKeyManager::generate_authorized_keys_file()`**: Generates the content for an `authorized_keys` file, optionally with a forced command.
+
+#### `compute/common/sshd.rs`
+Manages `sshd` configuration and execution.
+
+- **`SshdConfig::generate()`**: Generates a secure `sshd_config` file.
+- **`find_sshd_binary()`**: Locates the `sshd` binary on the system.
+- **`generate_host_keys()`**: Generates ephemeral host keys for the session.
 
 ## Collaboration Architecture
- 
- SteadyState introduces a "Shared Workspace" model (`--mode=collab`) to enable seamless asynchronous collaboration on the same compute instance.
- 
- ### Shared Workspace Structure
- 
- When a session is started in `collab` mode, the backend provisions a secure directory structure:
- 
- ```
- ~/.steadystate/sessions/<session_id>/
- ├── canonical/          # Bare Git repository (synchronization point)
- ├── worktrees/          # Directory containing per-user worktrees
- │   ├── user1/
- │   └── user2/
- ├── sshd/               # Dedicated SSH daemon configuration and keys
- ├── bin/                # Session-specific binaries (steadystate-cli, sync scripts)
- ├── activity-log        # Log of user actions (syncs, commits)
- └── active-users        # List of currently connected users
- ```
- 
- ### Session Initialization
- 
- 1.  **Canonical Repo**: The backend initializes a bare clone of the target repository in `canonical/`.
- 2.  **Session Branch**: A dedicated branch `steadystate/collab/<session_id>` is created to isolate session work.
- 3.  **SSHD Launch**: A custom `sshd` instance is launched on a random high port, configured to:
-     *   Use a generated host key.
-     *   Authenticate users via their GitHub public keys (fetched by the backend).
-     *   Force all connections to execute a `wrapper.sh` script.
- 
- ### Magic Links
- 
- The backend generates a **Magic Link** (`steadystate://<mode>/<session_id>?ssh=...`) for every session. This link encodes:
- 
- *   **Mode**: `pair` or `collab`.
- *   **Session ID**: The unique identifier for the session.
- *   **Connection Details**: The full SSH connection string (user, host, port) needed to join.
- 
- The CLI's `steadystate join <url>` command parses this link to automatically configure the SSH connection.
- 
- ### Connection & Isolation
- 
- When a user connects via SSH (`ssh steady@host -p <port>`):
- 
- 1.  **Authentication**: `sshd` authenticates the user using their public key.
- 2.  **Wrapper Script**: The `wrapper.sh` script is executed:
-     *   Identifies the user based on the key used.
-     *   Creates a private **Git Worktree** for the user in `worktrees/<user>/` if it doesn't exist.
-     *   Configures Git identity (user.name, user.email) for that worktree.
-     *   Sets `HOME` and `USER_WORKSPACE` environment variables to the worktree path.
-     *   Drops the user into a shell (or executes the requested command) *inside* their worktree.
- 
- This ensures that while users share the same compute resources (CPU, RAM, Nix store), their file system changes are isolated until they choose to sync.
- 
- ### Synchronization Workflow
- 
- Users synchronize their work using the `steadystate sync` command (injected into the session path):
- 
- 1.  **Commit**: Local changes in the user's worktree are automatically committed.
- 2.  **Pull (Rebase)**: The user's branch is rebased on top of the `canonical` repository's HEAD. This pulls in changes from other collaborators.
- 3.  **Push**: The user's updated branch is pushed back to the `canonical` repository.
- 
- This "Commit-Rebase-Push" loop ensures a linear history and allows users to resolve conflicts locally if they arise during the rebase step.
- 
- ## CLI Architecture
+
+SteadyState uses a "Shared Workspace" model (`--mode=collab`) to enable seamless asynchronous collaboration on the same compute instance.
+
+### Shared Workspace Structure
+
+When a session is started in `collab` mode, the backend provisions a secure directory structure:
+
+```
+~/.steadystate/sessions/<session_id>/
+├── canonical/          # Bare Git repository (synchronization point)
+├── repo/               # The actual bare repo cloned from GitHub
+├── ssh/                # Dedicated SSH daemon configuration and keys
+├── bin/                # Session-specific binaries (steadystate, steadystate-sync, wrapper)
+├── sync-log            # Log of sync operations
+├── activity-log        # Log of user activity
+└── session-info.json   # JSON file containing magic link and SSH connection info
+```
+
+### Session Initialization
+
+1.  **Canonical Repo**: The backend initializes a bare clone of the target repository in `canonical/`.
+2.  **Session Branch**: A dedicated branch `steadystate/collab/<session_id>` is created to isolate session work.
+3.  **Environment Setup**:
+    *   The `steadystate` CLI binary is copied (or symlinked) into `bin/`.
+    *   `sync-log` and `activity-log` files are created to prevent dashboard hangs.
+    *   `session-info.json` is written with connection details.
+4.  **SSHD Launch**: A custom `sshd` instance is launched on a random high port, configured to:
+    *   Use a generated host key.
+    *   Authenticate users via their GitHub public keys.
+    *   Force all connections to execute a `wrapper.sh` script.
+
+### Magic Links
+
+The backend generates a **Magic Link** (`steadystate://collab/<session_id>?ssh=...&host_key=...`) for every session. This link encodes:
+
+*   **Mode**: `collab`.
+*   **Session ID**: The unique identifier for the session.
+*   **Connection Details**: The full SSH connection string (user, host, port).
+*   **Host Key**: The public host key of the session's SSH server, allowing the CLI to automatically configure `known_hosts` securely.
+
+### Connection & Isolation
+
+When a user connects via SSH (`ssh <user>@host -p <port>`):
+
+1.  **Authentication**: `sshd` authenticates the user using their public key.
+2.  **Wrapper Script**: The `wrapper.sh` script is executed:
+    *   Identifies the user based on the key used.
+    *   Creates a private **Git Worktree** for the user in `.worktree/` (inside the user's home in the session).
+    *   Initializes `.worktree/steadystate.json` with metadata required for syncing.
+    *   Configures Git identity (user.name, user.email).
+    *   Drops the user into a shell inside their worktree.
+
+This ensures that while users share the same compute resources, their file system changes are isolated until they choose to sync.
+
+### Synchronization Workflow
+
+Users synchronize their work using the `steadystate sync` and `steadystate publish` commands.
+
+#### `steadystate sync` (Local Sync)
+Synchronizes the user's private worktree with the session's `canonical` repository using a Y-CRDT (Conflict-Free Replicated Data Type) approach:
+1.  **Materialize**: Converts both the worktree state and the canonical state into Y-CRDT models.
+2.  **Merge**: Merges the two models, resolving conflicts automatically where possible.
+3.  **Apply**: Updates the `canonical` repository with the merged state.
+4.  **Refresh**: Updates the user's worktree to match the new canonical state.
+
+#### `steadystate publish` (Remote Sync)
+Pushes the state of the `canonical` repository to the upstream GitHub repository:
+1.  **Sync**: Performs a local sync (canonical <-> worktree).
+2.  **Commit**: Creates a commit in the `canonical` repo with the changes.
+3.  **Push**: Pushes the session branch to the `origin` remote (GitHub).
+    *   **Authentication**: Uses the injected GitHub token in the remote URL to authenticate without user intervention.
+
+## CLI Architecture
 
 The `cli` is a command-line application built with `clap` that serves as the primary user interface for SteadyState. It communicates with the `backend` via a REST API.
 
@@ -187,6 +210,33 @@ Manages the local user session file.
 - **`write_session()`**: Serializes a `Session` struct to JSON and writes it to the session file with secure file permissions (0600 on Unix).
 - **`read_session()`**: Reads and deserializes the `Session` struct from the session file.
 - **`remove_session()`**: Deletes the session file from the disk.
+
+#### `notify.rs` (Dashboard)
+Implements the `steadystate watch` dashboard.
+
+- **`watch()`**: The main loop for the dashboard.
+    - Connects via SSH to the session.
+    - Tails `sync-log` and `activity-log` to display real-time updates.
+    - Reads `session-info.json` to display the magic link and join command.
+    - Displays connected users and recent activity with human-readable timestamps.
+
+#### `sync.rs`
+Implements the synchronization logic (`sync`, `publish`, `status`, `diff`).
+
+- **`sync()`**: Orchestrates the local synchronization process (Materialize -> Merge -> Apply -> Refresh).
+- **`publish_command()`**: Orchestrates the remote publish process (Sync -> Commit -> Push).
+- **`status_command()`**: Shows the status of the local worktree relative to the canonical repo.
+- **`diff_command()`**: Shows the diff between the local worktree and the canonical repo.
+- **`apply_tree_to_canonical()`**: Destructively updates the canonical repo with the merged state (with safety checks).
+- **`sync_worktree_from_canonical()`**: Updates the user's worktree to match the canonical repo.
+
+#### `merge.rs`
+Implements the Y-CRDT based merge engine.
+
+- **`materialize_git_tree()`**: Reads a Git tree into a `TreeSnapshot`.
+- **`materialize_fs_tree()`**: Reads a filesystem directory into a `TreeSnapshot`.
+- **`merge_trees()`**: Performs a 3-way merge of two `TreeSnapshot`s against a base.
+- **`merge_file_yjs()`**: Performs a 3-way text merge using the `yrs` crate (Yjs for Rust).
 
 ## Shared Code (`packages/common`)
 

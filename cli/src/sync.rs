@@ -412,11 +412,11 @@ pub async fn sync() -> Result<()> {
             .arg("-C")
             .arg(&canonical_path)
             .args(&["fetch", "origin", &session_branch])
-            .status()
+            .output() // Use output() to capture stderr
             .await
             .context("Failed to fetch from origin")?;
         
-        let canonical_tree = if !fetch_status.success() {
+        let canonical_tree = if !fetch_status.status.success() {
             // Check if it's because the branch doesn't exist
             // If so, we treat it as a new branch (first push)
             // Canonical state is effectively the base state (no remote changes yet)
@@ -506,7 +506,6 @@ pub async fn sync() -> Result<()> {
             .arg("-C")
             .arg(&canonical_path)
             .args(&["update-ref", &backup_ref, &current_head])
-            .args(&["update-ref", &backup_ref, &current_head])
             .status()
             .await
             .context("Failed to create backup ref")?;
@@ -572,7 +571,6 @@ pub async fn sync() -> Result<()> {
         if let Err(e) = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
-            .args(&["update-ref", "-d", &backup_ref])
             .args(&["update-ref", "-d", &backup_ref])
             .status()
             .await 

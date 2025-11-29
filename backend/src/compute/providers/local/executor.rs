@@ -95,4 +95,13 @@ impl RemoteExecutor for LocalExecutor {
         }
         Ok(())
     }
+
+    async fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
+        }
+        Ok(())
+    }
 }

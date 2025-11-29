@@ -51,4 +51,8 @@ impl RemoteExecutor for HetznerExecutor {
     async fn remove_all(&self, _path: &Path) -> Result<()> {
         Err(anyhow!("Hetzner executor not implemented yet"))
     }
+
+    async fn set_permissions(&self, _path: &Path, _mode: u32) -> Result<()> {
+        Err(anyhow!("Hetzner executor not implemented yet"))
+    }
 }

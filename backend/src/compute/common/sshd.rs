@@ -115,7 +115,7 @@ pub async fn generate_host_keys(
     }
     
     // Set correct permissions
-    executor.write_file(key_path, &[], 0o600).await?;
+    executor.set_permissions(key_path, 0o600).await?;
     
     Ok(())
 }
