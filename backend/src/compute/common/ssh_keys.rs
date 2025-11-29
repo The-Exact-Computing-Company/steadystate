@@ -73,42 +73,56 @@ impl SshKeyManager {
             usernames.extend(users.iter().cloned());
         }
         
-        // 3. Fetch repository collaborators
+        // 3. Fetch repository collaborators (including upstream if fork)
         if let (Some(url), Some(token)) = (repo_url, github_token) {
             match RepoInfo::from_url(url) {
                 Ok(repo_info) => {
                     tracing::info!(
-                        "Fetching collaborators for {}/{}",
+                        "Fetching repo details for {}/{}",
                         repo_info.owner,
                         repo_info.repo
                     );
                     
-                    match github::fetch_collaborators(
+                    // First fetch repo details to check for fork
+                    match github::fetch_repo_details(
                         &self.http_client,
                         &repo_info.owner,
                         &repo_info.repo,
                         Some(token),
                     ).await {
-                        Ok(collaborators) => {
-                            tracing::info!(
-                                "Found {} collaborators for {}/{}",
-                                collaborators.len(),
-                                repo_info.owner,
-                                repo_info.repo
-                            );
-                            for collab in collaborators {
-                                if !usernames.contains(&collab.login) {
-                                    usernames.push(collab.login);
-                                }
+                        Ok(repo_details) => {
+                            // Fetch collaborators for this repo
+                            self.fetch_and_add_collaborators(
+                                &repo_info.owner,
+                                &repo_info.repo,
+                                token,
+                                &mut usernames
+                            ).await;
+                            
+                            // If it's a fork, fetch from parent
+                            if let Some(parent) = repo_details.parent {
+                                tracing::info!(
+                                    "Repository is a fork of {}/{}. Fetching upstream collaborators.",
+                                    parent.owner.login,
+                                    parent.name
+                                );
+                                self.fetch_and_add_collaborators(
+                                    &parent.owner.login,
+                                    &parent.name,
+                                    token,
+                                    &mut usernames
+                                ).await;
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "Failed to fetch collaborators for {}/{}: {}",
-                                repo_info.owner,
-                                repo_info.repo,
-                                e
-                            );
+                            tracing::warn!("Failed to fetch repo details: {}", e);
+                            // Fallback to just fetching for this repo
+                             self.fetch_and_add_collaborators(
+                                &repo_info.owner,
+                                &repo_info.repo,
+                                token,
+                                &mut usernames
+                            ).await;
                         }
                     }
                 }
@@ -157,6 +171,43 @@ impl SshKeyManager {
         github_token: Option<&str>,
     ) -> Vec<AuthorizedKey> {
         self.build_authorized_keys_for_repo(creator, allowed_users, None, github_token).await
+    }
+
+    async fn fetch_and_add_collaborators(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: &str,
+        usernames: &mut Vec<String>,
+    ) {
+        match github::fetch_collaborators(
+            &self.http_client,
+            owner,
+            repo,
+            Some(token),
+        ).await {
+            Ok(collaborators) => {
+                tracing::info!(
+                    "Found {} collaborators for {}/{}",
+                    collaborators.len(),
+                    owner,
+                    repo
+                );
+                for collab in collaborators {
+                    if !usernames.contains(&collab.login) {
+                        usernames.push(collab.login);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch collaborators for {}/{}: {}",
+                    owner,
+                    repo,
+                    e
+                );
+            }
+        }
     }
     
     /// Generate authorized_keys file content

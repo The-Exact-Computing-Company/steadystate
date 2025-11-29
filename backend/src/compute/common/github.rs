@@ -65,6 +65,18 @@ pub struct GitHubCollaborator {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GitHubRepo {
+    pub parent: Option<Box<GitHubRepo>>,
+    pub owner: GitHubUser,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubUser {
+    pub login: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CollaboratorPermissions {
     #[serde(default)]
     pub admin: bool,
@@ -72,6 +84,43 @@ pub struct CollaboratorPermissions {
     pub push: bool,
     #[serde(default)]
     pub pull: bool,
+}
+
+/// Fetch repository details to check for forks
+pub async fn fetch_repo_details(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+) -> Result<GitHubRepo> {
+    let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    
+    let mut request = client
+        .get(&url)
+        .header("User-Agent", "steadystate")
+        .header("Accept", "application/vnd.github.v3+json");
+    
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    
+    let response = request
+        .send()
+        .await
+        .context("Failed to fetch repo details from GitHub")?;
+        
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("GitHub API error {}: {}", status, body));
+    }
+    
+    let repo: GitHubRepo = response
+        .json()
+        .await
+        .context("Failed to parse repo details")?;
+        
+    Ok(repo)
 }
 
 /// Fetch collaborators for a GitHub repository
