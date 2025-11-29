@@ -40,7 +40,7 @@ impl AuthProvider for GitHubAuth {
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse> {
         let params = [
             ("client_id", self.client_id.as_str()),
-            ("scope", "read:user repo"),
+            ("scope", "read:user repo read:org"),
         ];
 
         let resp = self.http

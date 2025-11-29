@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use anyhow::{Result, anyhow, Context};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 
 use crate::compute::{
     traits::{ComputeProvider, ProviderCapabilities, SessionHealth, RemoteExecutor},
@@ -132,9 +132,10 @@ impl LocalComputeProvider {
 
         // Setup SSH
         let authorized_keys = self.ssh_key_manager
-            .build_authorized_keys(
+            .build_authorized_keys_for_repo(
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
+                Some(&request.repo_url),
                 github_token.as_deref(),
             )
             .await;
@@ -187,11 +188,12 @@ impl LocalComputeProvider {
         git.clone(&request.repo_url, &workspace.repo_path, Some(1), None).await?;
 
         let (creator_login, github_token) = self.extract_github_config(request);
-
+        // Setup SSH
         let authorized_keys = self.ssh_key_manager
-            .build_authorized_keys(
+            .build_authorized_keys_for_repo(
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
+                Some(&request.repo_url),
                 github_token.as_deref(),
             )
             .await;
@@ -378,7 +380,8 @@ impl LocalComputeProvider {
         }
 
         // Determine public IP/Hostname
-        let hostname = "localhost"; // TODO: Get actual hostname or IP
+        // Determine public IP/Hostname
+        let hostname = Self::get_external_hostname().await;
         // Construct a valid SSH URL: ssh://user@hostname:port
         let user = crate::compute::ssh_session_user();
         tracing::info!("Using SSH user: '{}' for session invite", user);
@@ -407,7 +410,7 @@ impl LocalComputeProvider {
 
     async fn launch_upterm(
         &self,
-        workspace: &WorkspaceInfo,
+        _workspace: &WorkspaceInfo,
         auth_keys_path: &Path,
         session_id: &str,
     ) -> Result<(u32, String)> {
@@ -426,7 +429,7 @@ impl LocalComputeProvider {
         // This is tricky with the generic RemoteExecutor if we don't have specialized support.
         // But exec_streaming returns stdout stream.
         
-        let (pid, stdout, _) = self.executor.exec_streaming(cmd, &args.iter().map(|s| *s).collect::<Vec<_>>()).await?;
+        let (pid, _stdout, _) = self.executor.exec_streaming(cmd, &args.iter().map(|s| *s).collect::<Vec<_>>()).await?;
         
         // We need to parse stdout for the invite
         // This logic is similar to capture_upterm_invite in local_provider.rs
@@ -446,6 +449,44 @@ impl LocalComputeProvider {
         
         Ok((pid, invite))
     }
+
+    /// Get a hostname/IP that external machines can use to connect
+    async fn get_external_hostname() -> String {
+        // 1. Check for explicit environment variable override
+        if let Ok(host) = std::env::var("STEADYSTATE_EXTERNAL_HOST") {
+            return host;
+        }
+        
+        // 2. Try to get the local IP address (Prioritize IP over hostname for reliability)
+        if let Ok(ip) = Self::get_local_ip() {
+            return ip;
+        }
+
+        // 3. Try to get the machine's hostname
+        if let Ok(hostname) = hostname::get() {
+            if let Some(hostname_str) = hostname.to_str() {
+                // Don't use "localhost" as that won't work for remote clients
+                if hostname_str != "localhost" && !hostname_str.is_empty() {
+                    return hostname_str.to_string();
+                }
+            }
+        }
+        
+        // 4. Fallback to localhost (only works for same-machine connections)
+        tracing::warn!("Could not determine external hostname, falling back to localhost");
+        "localhost".to_string()
+    }
+    
+    /// Get the local network IP address
+    fn get_local_ip() -> Result<String, ()> {
+        // Use a UDP socket to determine which interface would be used
+        // to reach an external address (doesn't actually send data)
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|_| ())?;
+        socket.connect("8.8.8.8:80").map_err(|_| ())?;
+        let addr = socket.local_addr().map_err(|_| ())?;
+        Ok(addr.ip().to_string())
+    }
+
     fn extract_github_config(&self, request: &SessionRequest) -> (Option<String>, Option<String>) {
         if let Some(cfg) = &request.provider_config {
              if let Some(gh_val) = cfg.get("github") {

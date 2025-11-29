@@ -588,8 +588,22 @@ pub async fn sync() -> Result<()> {
         fs::write(&meta_path, serde_json::to_string_pretty(&new_meta)?)?;
     } // Lock released here
 
-    // 9. Push (REMOVED: Push is now handled by `steadystate publish`)
-    // println!("Pushing to remote...");
+    // 9. Push to session repo so other collaborators can see changes
+    println!("Pushing to session repo...");
+    let push_status = Command::new("git")
+        .arg("-C")
+        .arg(&canonical_path)
+        .args(&["push", "origin", &session_branch])
+        .status()
+        .await?;
+    
+    if !push_status.success() {
+        // This likely means someone else pushed while we were syncing
+        // The user should sync again to get their changes
+        eprintln!("⚠️  Push failed - another collaborator may have synced.");
+        eprintln!("💡 Run 'steadystate sync' again to integrate their changes.");
+        return Err(anyhow::anyhow!("Push failed - please sync again"));
+    }
     
     // 10. Reset local worktree
     println!("Refreshing worktree...");
