@@ -1,32 +1,41 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{TITLE}} - SteadyState Manual</title>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-<div class="container">
-    <header>
-        <div class="header-left">STEADYSTATE(1)</div>
-        <div class="header-center">SteadyState Manual</div>
-        <div class="header-right">STEADYSTATE(1)</div>
-    </header>
-    
-    <nav>
-        {{NAV}}
-    </nav>
-    
-    <main>
-{{BODY}}
-    </main>
-    
-    <footer>
-        <div class="footer-left">SteadyState</div>
-        <div class="footer-center">{{DATE}}</div>
-        <div class="footer-right">{{TITLE}}</div>
-    </footer>
-</div>
-</body>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{TITLE}} - SteadyState Manual</title>
+        <link rel="stylesheet" href="style.css">
+    </head>
+
+    <body>
+
+        <!-- THEME TOGGLE (must be here, not in <head>) -->
+        <label class="theme-toggle">
+            <input type="checkbox" id="toggle-theme">
+            <span>Light mode</span>
+        </label>
+
+        <div class="container">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">STEADYSTATE(1)</div>
+            </header>
+            
+            <nav>
+                {{NAV}}
+            </nav>
+            
+            <main>
+                {{BODY}}
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">{{DATE}}</div>
+                <div class="footer-right">{{TITLE}}</div>
+            </footer>
+        </div>
+
+    </body>
 </html>

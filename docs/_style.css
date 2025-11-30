@@ -1,52 +1,92 @@
-/* SteadyState Documentation - Man Page Style with Sidebar */
+/* SteadyState Documentation
+ * 
+ * THEME SELECTION:
+ * Dark theme is now the default.
+ */
 
-:root {
-    --bg: #fff;
-    --bg-sidebar: #f5f5f5;
-    --fg: #000;
-    --fg-dim: #555;
-    --fg-bold: #000;
-    --link: #000;
-    --link-hover: #333;
-    --link-current: #000;
-    --border: #ddd;
-    --code-bg: #f0f0f0;
-    --sidebar-width: 220px;
-    --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Mono", "Droid Sans Mono", "Source Code Pro", ui-monospace, monospace;
+
+/* ============================================================================
+ * THEME TOGGLE (CSS only)
+ * Dark = default
+ * Light = when #toggle-theme:checked
+ * ============================================================================ */
+
+/* Hide checkbox but keep it focusable */
+#toggle-theme {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
 }
 
-/* Dark theme - uncomment to enable */
+/* Style the toggle label */
+.theme-toggle {
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.8rem;
+    color: var(--fg);
+}
+
+/* ------------------------------
+   Light Theme Variables Override
+   (only active when checkbox is checked)
+   ------------------------------ */
+#toggle-theme:checked ~ * {
+    --bg: #ffffff;
+    --bg-sidebar: #fafafa;
+    --fg: #000000;
+    --fg-dim: #666666;
+    --link: #000000;
+    --link-hover: #444444;
+    --border: #e0e0e0;
+    --code-bg: #f5f5f5;
+}
+
+
+/* ============================================================================
+ * LIGHT THEME (disabled)
+ * White background, black text
+ * ============================================================================ */
 /*
 :root {
-    --bg: #1a1a1a;
-    --bg-sidebar: #141414;
-    --fg: #c0c0c0;
-    --fg-dim: #808080;
-    --fg-bold: #fff;
-    --link: #c0c0c0;
-    --link-hover: #fff;
-    --link-current: #fff;
-    --border: #333;
-    --code-bg: #252525;
+    --bg: #ffffff;
+    --bg-sidebar: #fafafa;
+    --fg: #000000;
+    --fg-dim: #666666;
+    --link: #000000;
+    --link-hover: #444444;
+    --border: #e0e0e0;
+    --code-bg: #f5f5f5;
 }
 */
 
-/* Amber terminal theme - uncomment to enable */
-/*
+/* ============================================================================
+ * DARK THEME (active by default)
+ * Black background, white text
+ * ============================================================================ */
 :root {
-    --bg: #1a1200;
-    --bg-sidebar: #120c00;
-    --fg: #ffb000;
-    --fg-dim: #a07000;
-    --fg-bold: #ffc030;
-    --link: #ffb000;
-    --link-hover: #ffd060;
-    --link-current: #ffd060;
-    --border: #503000;
-    --code-bg: #251a00;
+    --bg: #0a0a0a;
+    --bg-sidebar: #111111;
+    --fg: #e0e0e0;
+    --fg-dim: #888888;
+    --link: #e0e0e0;
+    --link-hover: #ffffff;
+    --border: #333333;
+    --code-bg: #1a1a1a;
 }
-*/
 
+/* ============================================================================
+ * LAYOUT VARIABLES
+ * ============================================================================ */
+:root {
+    --sidebar-width: 200px;
+    --content-width: 120ch;
+    --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Mono", 
+                 "Droid Sans Mono", "Source Code Pro", ui-monospace, monospace;
+}
+
+/* ============================================================================
+ * BASE STYLES
+ * ============================================================================ */
 *, *::before, *::after {
     box-sizing: border-box;
 }
@@ -65,37 +105,41 @@ body {
     line-height: 1.6;
 }
 
-/* Layout */
+/* ============================================================================
+ * LAYOUT: SIDEBAR + CONTENT
+ * ============================================================================ */
 .layout {
     display: flex;
     min-height: 100vh;
 }
 
-/* Sidebar */
+/* ============================================================================
+ * LEFT SIDEBAR (FIXED)
+ * ============================================================================ */
 .sidebar {
-    width: var(--sidebar-width);
-    min-width: var(--sidebar-width);
-    background: var(--bg-sidebar);
-    border-right: 1px solid var(--border);
-    padding: 1rem 0;
     position: fixed;
     top: 0;
     left: 0;
     bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    padding: 1.5rem 0;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .sidebar-header {
     padding: 0 1rem 1rem 1rem;
-    border-bottom: 1px solid var(--border);
     margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
 }
 
 .sidebar-header a {
-    color: var(--fg-bold);
+    color: var(--fg);
     text-decoration: none;
     font-weight: bold;
-    font-size: 1rem;
+    font-size: 0.9rem;
 }
 
 .sidebar-header a:hover {
@@ -108,9 +152,9 @@ body {
 
 .sidebar-title {
     color: var(--fg-dim);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.1em;
     padding: 0 1rem;
     margin-bottom: 0.5rem;
 }
@@ -127,8 +171,8 @@ body {
 
 .sidebar a {
     display: block;
-    padding: 0.35rem 1rem;
-    color: var(--link);
+    padding: 0.3rem 1rem;
+    color: var(--fg);
     text-decoration: none;
     font-size: 0.85rem;
 }
@@ -139,40 +183,47 @@ body {
 }
 
 .sidebar a.current {
-    color: var(--link-current);
     font-weight: bold;
-    border-left: 2px solid var(--fg-bold);
-    padding-left: calc(1rem - 2px);
     background: var(--bg);
+    border-left: 2px solid var(--fg);
+    padding-left: calc(1rem - 2px);
 }
 
-/* Main content */
+/* ============================================================================
+ * MAIN CONTENT AREA
+ * ============================================================================ */
 .content {
-    flex: 1;
     margin-left: var(--sidebar-width);
-    max-width: 80ch;
-    padding: 1rem 2rem;
+    width: calc(100% - var(--sidebar-width));
+    max-width: var(--content-width);
+    padding: 1.5rem 2rem;
 }
 
-/* Header */
+/* ============================================================================
+ * HEADER
+ * ============================================================================ */
 header {
     display: flex;
     justify-content: space-between;
+    color: var(--fg-dim);
+    font-size: 0.8rem;
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.5rem;
     margin-bottom: 2rem;
-    font-size: 0.85rem;
-    color: var(--fg-dim);
 }
 
-/* Article / main content */
+/* ============================================================================
+ * ARTICLE (MAIN CONTENT)
+ * ============================================================================ */
 article {
-    min-height: calc(100vh - 10rem);
+    min-height: calc(100vh - 12rem);
 }
 
-/* Typography */
+/* ============================================================================
+ * TYPOGRAPHY
+ * ============================================================================ */
 h1, h2, h3, h4, h5, h6 {
-    color: var(--fg-bold);
+    color: var(--fg);
     font-weight: bold;
     margin-top: 2rem;
     margin-bottom: 0.5rem;
@@ -192,53 +243,48 @@ h2 {
 }
 
 h3 {
-    font-size: 0.9rem;
-    margin-left: 2ch;
+    font-size: 0.95rem;
 }
 
 h4 {
-    font-size: 0.85rem;
-    margin-left: 4ch;
+    font-size: 0.9rem;
     font-style: italic;
 }
 
 p {
     margin: 1rem 0;
-    margin-left: 5ch;
 }
 
-h1 + p, h2 + p {
-    margin-left: 5ch;
-}
-
-/* Lists */
+/* ============================================================================
+ * LISTS
+ * ============================================================================ */
 ul, ol {
     margin: 1rem 0;
-    margin-left: 5ch;
-    padding-left: 2ch;
+    padding-left: 2rem;
 }
 
 li {
     margin: 0.25rem 0;
 }
 
-/* Inline code */
+/* ============================================================================
+ * CODE
+ * ============================================================================ */
 code {
     background: var(--code-bg);
     padding: 0.15em 0.4em;
     font-size: 0.9em;
+    font-family: var(--font-mono);
 }
 
-/* Code blocks */
 pre {
     background: var(--code-bg);
     border: 1px solid var(--border);
     padding: 1rem;
     margin: 1rem 0;
-    margin-left: 5ch;
     overflow-x: auto;
     font-size: 0.85rem;
-    line-height: 1.4;
+    line-height: 1.5;
 }
 
 pre code {
@@ -246,12 +292,14 @@ pre code {
     padding: 0;
 }
 
-/* Tables */
+/* ============================================================================
+ * TABLES
+ * ============================================================================ */
 table {
     margin: 1rem 0;
-    margin-left: 5ch;
     border-collapse: collapse;
     font-size: 0.85rem;
+    width: auto;
 }
 
 th, td {
@@ -265,39 +313,39 @@ th {
     background: var(--code-bg);
 }
 
-/* Blockquotes */
+/* ============================================================================
+ * BLOCKQUOTES
+ * ============================================================================ */
 blockquote {
     margin: 1rem 0;
-    margin-left: 5ch;
-    padding-left: 1.5ch;
+    padding-left: 1rem;
     border-left: 3px solid var(--border);
     color: var(--fg-dim);
 }
 
 blockquote p {
-    margin-left: 0;
+    margin: 0.5rem 0;
 }
 
-/* Horizontal rules */
+/* ============================================================================
+ * OTHER ELEMENTS
+ * ============================================================================ */
 hr {
     border: none;
     border-top: 1px solid var(--border);
     margin: 2rem 0;
 }
 
-/* Links in content */
-article a {
+a {
     color: var(--link);
 }
 
-article a:hover {
+a:hover {
     color: var(--link-hover);
 }
 
-/* Definition lists */
 dl {
     margin: 1rem 0;
-    margin-left: 5ch;
 }
 
 dt {
@@ -306,92 +354,100 @@ dt {
 }
 
 dd {
-    margin-left: 2ch;
+    margin-left: 2rem;
     margin-bottom: 0.5rem;
 }
 
-/* Footer */
+/* ============================================================================
+ * FOOTER
+ * ============================================================================ */
 footer {
     display: flex;
     justify-content: space-between;
+    color: var(--fg-dim);
+    font-size: 0.8rem;
     border-top: 1px solid var(--border);
     padding-top: 0.5rem;
     margin-top: 3rem;
-    font-size: 0.8rem;
-    color: var(--fg-dim);
 }
 
-/* Mobile: hide sidebar, show hamburger-less simple layout */
-@media (max-width: 768px) {
-    .sidebar {
-        position: static;
-        width: 100%;
-        min-width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--border);
-        padding: 0.5rem 0;
+/* ============================================================================
+ * RESPONSIVE: TABLETS (< 900px)
+ * Sidebar becomes narrower
+ * ============================================================================ */
+@media (max-width: 900px) {
+    :root {
+        --sidebar-width: 180px;
     }
     
-    .sidebar-header {
-        padding: 0.5rem 1rem;
-        border-bottom: none;
-        margin-bottom: 0;
+    .content {
+        padding: 1rem 1.5rem;
     }
-    
-    .sidebar-section {
-        display: none;
-    }
-    
-    /* Show nav as horizontal on mobile */
-    .sidebar-section:first-of-type {
-        display: block;
-        margin-bottom: 0;
-    }
-    
-    .sidebar-section:first-of-type .sidebar-title {
-        display: none;
-    }
-    
-    .sidebar-section:first-of-type ul {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.25rem 1rem;
-        padding: 0 1rem;
-    }
-    
-    .sidebar-section:first-of-type a {
-        padding: 0.25rem 0;
-    }
-    
-    .sidebar a.current {
-        border-left: none;
-        padding-left: 0;
-        text-decoration: underline;
-    }
-    
+}
+
+/* ============================================================================
+ * RESPONSIVE: MOBILE (< 700px)
+ * Sidebar moves to top, becomes horizontal nav
+ * ============================================================================ */
+@media (max-width: 700px) {
     .layout {
         flex-direction: column;
     }
     
-    .content {
-        margin-left: 0;
+    .sidebar {
+        position: static;
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
         padding: 1rem;
     }
     
-    p, ul, ol, pre, table, blockquote, dl {
-        margin-left: 0;
+    .sidebar-header {
+        display: inline;
+        padding: 0;
+        margin: 0;
+        border: none;
     }
     
-    h3 {
-        margin-left: 0;
+    .sidebar-section {
+        display: inline;
+        margin: 0;
     }
     
-    h4 {
-        margin-left: 2ch;
+    .sidebar-title {
+        display: none;
+    }
+    
+    .sidebar ul {
+        display: inline;
+    }
+    
+    .sidebar li {
+        display: inline;
+    }
+    
+    .sidebar a {
+        display: inline;
+        padding: 0.25rem 0.5rem;
+    }
+    
+    .sidebar a.current {
+        border-left: none;
+        padding-left: 0.5rem;
+        text-decoration: underline;
+    }
+    
+    .content {
+        margin-left: 0;
+        width: 100%;
+        max-width: 100%;
+        padding: 1rem;
     }
 }
 
-/* Print styles */
+/* ============================================================================
+ * PRINT STYLES
+ * ============================================================================ */
 @media print {
     .sidebar {
         display: none;
@@ -400,19 +456,26 @@ footer {
     .content {
         margin-left: 0;
         max-width: none;
+        width: 100%;
     }
     
     body {
-        font-size: 10pt;
+        font-size: 11pt;
+        color: #000;
+        background: #fff;
     }
     
     a {
-        text-decoration: none;
         color: inherit;
+        text-decoration: none;
+    }
+    
+    pre, code {
+        background: #f0f0f0;
     }
     
     pre {
-        border: 1px solid #000;
+        border: 1px solid #ccc;
         page-break-inside: avoid;
     }
 }
