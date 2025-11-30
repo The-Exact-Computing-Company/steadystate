@@ -8,9 +8,10 @@
 # 3. Push to main branch
 
 SECTION: User Guide
-getting_started|Getting Started
+hosting-pair-programming|Pair Programming
+hosting-collaborative-session|Collaborative Session
+self-hosting|Self-Hosting
 quickstart|Quick Start
-
 SECTION: Reference
 commands|Commands
 configuration|Configuration

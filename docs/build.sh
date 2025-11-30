@@ -107,6 +107,14 @@ for f in "$DOCS_DIR"/*.md; do
     [[ ! -f "$f" ]] && continue
     
     basename=$(basename "$f" .md)
+    
+    # Special case: Copy README.md raw, don't convert
+    if [[ "$basename" == "README" ]]; then
+        echo "  Copying raw: $basename.md"
+        cp "$f" "$OUTPUT_DIR/"
+        continue
+    fi
+
     title=$(echo "$basename" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
     
     # Special case for index
