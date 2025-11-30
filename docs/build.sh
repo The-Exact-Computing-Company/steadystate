@@ -42,18 +42,19 @@ build_nav() {
     local current="$1"
     local nav="<a href=\"index.html\""
     [[ "$current" == "index" ]] && nav="$nav class=\"current\""
+    [[ "$basename" == "README" ]] && continue
     nav="$nav>STEADYSTATE(1)</a>"
-    
+
     # Add each doc file
     for f in "$DOCS_DIR"/*.md; do
         [[ ! -f "$f" ]] && continue
         local basename=$(basename "$f" .md)
         [[ "$basename" == "index" ]] && continue
-        
+
         # Convert filename to title: getting_started -> GETTING_STARTED
         local title=$(echo "$basename" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
         local section="7"  # Default section for guides
-        
+
         # Assign sections based on content type
         case "$basename" in
             getting_started|quickstart) section="1" ;;
