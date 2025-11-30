@@ -200,7 +200,9 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>, ov
     .context("auth/refresh request failed")?;
 
     if resp.status().as_u16() == 401 {
-        let _ = delete_refresh_token(&username, override_dir).await;
+        if let Err(e) = delete_refresh_token(&username, override_dir).await {
+            eprintln!("Warning: Failed to delete refresh token: {}", e);
+        }
         let _ = remove_session(override_dir).await;
         anyhow::bail!(
             "Refresh token has expired or been revoked. Run 'steadystate login' to authenticate again."

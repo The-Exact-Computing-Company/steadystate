@@ -22,11 +22,11 @@ impl AuthProvider for OrchidAuth {
     }
 
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse> {
-        Err(anyhow!("Orchid device flow is not implemented yet"))
+        Err(anyhow!("Orchid authentication is planned for a future release. Please use GitHub for now."))
     }
 
     async fn poll_device_flow(&self, _device_code: &str) -> anyhow::Result<DevicePollOutcome> {
-        Err(anyhow!("Orchid device flow is not implemented yet"))
+        Err(anyhow!("Orchid authentication is planned for a future release. Please use GitHub for now."))
     }
 }
 

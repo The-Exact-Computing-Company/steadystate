@@ -37,6 +37,7 @@ export SYNC_LOG
 export SESSION_ROOT="$REPO_ROOT"
 export SESSION_ID="{{session_id}}"
 export REPO_NAME="{{repo_name}}"
+export STEADYSTATE_USERNAME="$USER_ID"
 
 # Add user to active-users
 echo "$USER_ID" >> "$ACTIVE_USERS_FILE"

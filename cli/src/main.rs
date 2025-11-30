@@ -85,6 +85,17 @@ enum Commands {
         /// Magic link (steadystate://...) or SSH URL
         url: String,
     },
+    /// Open a dashboard to monitor a session
+    #[command(alias = "dash")]
+    Dashboard {
+        /// The magic link to the session
+        magic_link: String,
+    },
+    /// Show who last modified lines in a file (git blame)
+    Credit {
+        /// The file to check
+        file: String,
+    },
     /// Synchronize changes with other users (Collaboration Mode)
     Sync,
     /// Watch for sync events (Collaboration Mode)
@@ -178,7 +189,9 @@ async fn logout(client: &Client) -> Result<()> {
         }
     }
 
-    let _ = delete_refresh_token(&username, None).await;
+    if let Err(e) = delete_refresh_token(&username, None).await {
+        eprintln!("Warning: Failed to delete refresh token: {}", e);
+    }
     let _ = remove_session(None).await;
     println!("Logged out (local tokens removed).");
     Ok(())
@@ -553,6 +566,114 @@ async fn join(url_str: String) -> Result<()> {
     }
 }
 
+async fn open_dashboard(link: &str) -> Result<()> {
+    // Parse the magic link
+    let url = Url::parse(link).context("Invalid magic link format")?;
+    
+    // Extract session info from the link
+    // Format: steadystate://collab/{session_id}?ssh={ssh_url}&host_key={key}
+    
+    if url.scheme() != "steadystate" {
+        return Err(anyhow::anyhow!("Invalid magic link: expected steadystate:// scheme"));
+    }
+    
+    let path_segments: Vec<&str> = url.path_segments()
+        .map(|c| c.collect())
+        .unwrap_or_default();
+    
+    if path_segments.is_empty() {
+        return Err(anyhow::anyhow!("Invalid magic link: missing session ID"));
+    }
+    
+    let _session_id = path_segments[0];
+    let mode = url.host_str().unwrap_or("collab");
+    
+    if mode != "collab" {
+        return Err(anyhow::anyhow!("Dashboard is only available for collab mode sessions"));
+    }
+    
+    // Parse query parameters
+    let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+    
+    let ssh_url = params.get("ssh")
+        .ok_or_else(|| anyhow::anyhow!("Magic link missing SSH URL"))?;
+    
+    let host_key = params.get("host_key").map(|s| s.to_string());
+    
+    // Parse SSH URL
+    let ssh_parsed = Url::parse(ssh_url)
+        .context("Invalid SSH URL in magic link")?;
+    
+    let host = ssh_parsed.host_str()
+        .ok_or_else(|| anyhow::anyhow!("SSH URL missing host"))?;
+    let port = ssh_parsed.port().unwrap_or(22);
+    let user = ssh_parsed.username();
+    
+    println!("Opening dashboard...");
+    println!("Connecting to: {}:{}", host, port);
+    
+    // Build SSH command
+    let mut args = vec![
+        "-p".to_string(),
+        port.to_string(),
+        "-t".to_string(), // Force PTY for TUI
+    ];
+    
+    // Handle host key verification
+    if let Some(key) = host_key {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        link.hash(&mut hasher);
+        let hash = format!("{:x}", hasher.finish());
+        
+        let known_hosts = format!("[{}]:{} {}", host, port, key);
+        let known_hosts_path = format!("/tmp/steadystate-dash-{}-known_hosts", hash);
+        std::fs::write(&known_hosts_path, &known_hosts)
+            .context("Failed to write known_hosts file")?;
+        
+        args.extend([
+            "-o".to_string(), format!("UserKnownHostsFile={}", known_hosts_path),
+            "-o".to_string(), "StrictHostKeyChecking=yes".to_string(),
+        ]);
+    } else {
+        // No host key provided - warn but allow connection
+        eprintln!("⚠️  Warning: No host key in magic link, skipping verification");
+        args.extend([
+            "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
+            "-o".to_string(), "UserKnownHostsFile=/dev/null".to_string(),
+        ]);
+    }
+    
+    // Add target
+    let target = if !user.is_empty() {
+        format!("{}@{}", user, host)
+    } else {
+        host.to_string()
+    };
+    args.push(target);
+    
+    // Run watch command on remote
+    // Use -- to separate SSH args from remote command
+    args.push("--".to_string());
+    
+    // Inject username if available so the dashboard knows who we are
+    if let Ok(session) = crate::session::read_session(None).await {
+        args.push(format!("export STEADYSTATE_USERNAME={}; steadystate watch", session.login));
+    } else {
+        args.push("steadystate watch".to_string());
+    }
+    
+    // Execute SSH (replaces current process)
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new("ssh")
+        .args(&args)
+        .exec();
+    
+    Err(anyhow::anyhow!("Failed to execute ssh: {}", err))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -646,6 +767,18 @@ async fn main() -> Result<()> {
         Commands::Join { url } => {
              if let Err(e) = join(url).await {
                 eprintln!("join failed: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Dashboard { magic_link } => {
+            if let Err(e) = open_dashboard(&magic_link).await {
+                eprintln!("Failed to open dashboard: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Credit { file } => {
+            if let Err(e) = sync::credit_command(&file).await {
+                eprintln!("credit failed: {:#}", e);
                 std::process::exit(1);
             }
         }

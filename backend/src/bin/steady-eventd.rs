@@ -104,7 +104,7 @@ impl EventDaemon {
             
             if !path.is_dir() { continue; }
             
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
             
             // Skip system dirs
             if name.starts_with('.') || name == "git-repo" || name == "canonical" || name == "bin" {
