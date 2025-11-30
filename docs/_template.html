@@ -1,31 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{{TITLE}} - SteadyState Manual</title>
-        <link rel="stylesheet" href="style.css">
-    </head>
 
-    <body>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{TITLE}} - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
 
-        <!-- THEME TOGGLE (must be here, not in <head>) -->
-        <input type="checkbox" id="toggle-theme">
-        <label class="theme-toggle" for="toggle-theme">
-            <span>Light mode</span>
-        </label>
+<body>
 
-        <div class="layout">
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            {{NAV}}
+        </aside>
+
+        <div class="content">
             <header>
                 <div class="header-left">STEADYSTATE(1)</div>
                 <div class="header-center">SteadyState Manual</div>
-                <div class="header-right">STEADYSTATE(1)</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
             </header>
-            
-            <nav>
-                {{NAV}}
-            </nav>
-            
+
             <main>
                 {{BODY}}
             </main>
@@ -36,6 +39,8 @@
                 <div class="footer-right">{{TITLE}}</div>
             </footer>
         </div>
+    </div>
 
-    </body>
+</body>
+
 </html>

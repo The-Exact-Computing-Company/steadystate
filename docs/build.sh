@@ -37,40 +37,66 @@ convert_md() {
     sed -e '/{{BODY}}/{r /tmp/body.html' -e 'd}' > "$output"
 }
 
-# Build navigation from docs structure
+# Build navigation from _nav.txt
 build_nav() {
     local current="$1"
-    local nav="<a href=\"index.html\""
-    [[ "$current" == "index" ]] && nav="$nav class=\"current\""
-    [[ "$basename" == "README" ]] && continue
-    nav="$nav>STEADYSTATE(1)</a>"
-
-    # Add each doc file
-    for f in "$DOCS_DIR"/*.md; do
-        [[ ! -f "$f" ]] && continue
-        local basename=$(basename "$f" .md)
-        [[ "$basename" == "index" ]] && continue
-
-        # Convert filename to title: getting_started -> GETTING_STARTED
-        local title=$(echo "$basename" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-        local section="7"  # Default section for guides
-
-        # Assign sections based on content type
-        case "$basename" in
-            getting_started|quickstart) section="1" ;;
-            configuration|config) section="5" ;;
-            api|protocol) section="3" ;;
-            troubleshooting|faq) section="7" ;;
-            architecture|internals) section="8" ;;
-            *) section="7" ;;
-        esac
-        
-        nav="$nav <a href=\"${basename}.html\""
-        [[ "$current" == "$basename" ]] && nav="$nav class=\"current\""
-        nav="$nav>${title}($section)</a>"
-    done
+    local nav_file="$DOCS_DIR/_nav.txt"
+    local nav_html=""
     
-    echo "$nav"
+    # Add Home link
+    local class=""
+    [[ "$current" == "index" ]] && class="class=\"current\""
+    
+    nav_html+="<div class=\"sidebar-header\">"
+    nav_html+="<a href=\"index.html\" $class>STEADYSTATE</a>"
+    nav_html+="</div>"
+
+    if [[ ! -f "$nav_file" ]]; then
+        echo "Error: _nav.txt not found" >&2
+        return 1
+    fi
+
+    local in_list=false
+    
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^#.*$ ]] && continue
+        [[ -z "${line// }" ]] && continue
+        
+        if [[ "$line" =~ ^SECTION:(.*)$ ]]; then
+            # Close previous list if open
+            if [[ "$in_list" == "true" ]]; then
+                nav_html+="</ul></div>"
+            fi
+            
+            local title="${BASH_REMATCH[1]}"
+            # Trim whitespace
+            title="$(echo -e "${title}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            
+            nav_html+="<div class=\"sidebar-section\">"
+            nav_html+="<div class=\"sidebar-title\">$title</div>"
+            nav_html+="<ul>"
+            in_list=true
+            
+        elif [[ "$line" =~ ^([^|]+)\|(.*)$ ]]; then
+            local file="${BASH_REMATCH[1]}"
+            local label="${BASH_REMATCH[2]}"
+            # Trim whitespace
+            file="$(echo -e "${file}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            label="$(echo -e "${label}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            
+            local class=""
+            [[ "$current" == "$file" ]] && class="class=\"current\""
+            
+            nav_html+="<li><a href=\"${file}.html\" $class>$label</a></li>"
+        fi
+    done < "$nav_file"
+    
+    if [[ "$in_list" == "true" ]]; then
+        nav_html+="</ul></div>"
+    fi
+    
+    echo "$nav_html"
 }
 
 echo "Building SteadyState documentation..."

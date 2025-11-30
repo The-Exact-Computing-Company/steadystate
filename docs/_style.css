@@ -34,7 +34,7 @@
    Light Theme Variables Override
    (only active when checkbox is checked)
    ------------------------------ */
-#toggle-theme:checked ~ .layout {
+#toggle-theme:checked~.layout {
     --bg: #ffffff;
     --bg-sidebar: #fafafa;
     --fg: #000000;
@@ -84,18 +84,21 @@
 :root {
     --sidebar-width: 200px;
     --content-width: 120ch;
-    --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Mono", 
-                 "Droid Sans Mono", "Source Code Pro", ui-monospace, monospace;
+    --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Mono",
+        "Droid Sans Mono", "Source Code Pro", ui-monospace, monospace;
 }
 
 /* ============================================================================
  * BASE STYLES
  * ============================================================================ */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
     box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
     margin: 0;
     padding: 0;
     height: 100%;
@@ -207,14 +210,20 @@ body {
 /* ============================================================================
  * HEADER
  * ============================================================================ */
+/* ============================================================================
+ * HEADER
+ * ============================================================================ */
 header {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     color: var(--fg-dim);
     font-size: 0.8rem;
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.5rem;
     margin-bottom: 2rem;
+    background: transparent;
+    /* Ensure it picks up theme background */
 }
 
 /* ============================================================================
@@ -227,7 +236,12 @@ article {
 /* ============================================================================
  * TYPOGRAPHY
  * ============================================================================ */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
     color: var(--fg);
     font-weight: bold;
     margin-top: 2rem;
@@ -263,7 +277,8 @@ p {
 /* ============================================================================
  * LISTS
  * ============================================================================ */
-ul, ol {
+ul,
+ol {
     margin: 1rem 0;
     padding-left: 2rem;
 }
@@ -307,7 +322,8 @@ table {
     width: auto;
 }
 
-th, td {
+th,
+td {
     border: 1px solid var(--border);
     padding: 0.4rem 0.8rem;
     text-align: left;
@@ -384,7 +400,7 @@ footer {
     :root {
         --sidebar-width: 180px;
     }
-    
+
     .content {
         padding: 1rem 1.5rem;
     }
@@ -398,7 +414,7 @@ footer {
     .layout {
         flex-direction: column;
     }
-    
+
     .sidebar {
         position: static;
         width: 100%;
@@ -406,42 +422,42 @@ footer {
         border-bottom: 1px solid var(--border);
         padding: 1rem;
     }
-    
+
     .sidebar-header {
         display: inline;
         padding: 0;
         margin: 0;
         border: none;
     }
-    
+
     .sidebar-section {
         display: inline;
         margin: 0;
     }
-    
+
     .sidebar-title {
         display: none;
     }
-    
+
     .sidebar ul {
         display: inline;
     }
-    
+
     .sidebar li {
         display: inline;
     }
-    
+
     .sidebar a {
         display: inline;
         padding: 0.25rem 0.5rem;
     }
-    
+
     .sidebar a.current {
         border-left: none;
         padding-left: 0.5rem;
         text-decoration: underline;
     }
-    
+
     .content {
         margin-left: 0;
         width: 100%;
@@ -457,28 +473,29 @@ footer {
     .sidebar {
         display: none;
     }
-    
+
     .content {
         margin-left: 0;
         max-width: none;
         width: 100%;
     }
-    
+
     body {
         font-size: 11pt;
         color: #000;
         background: #fff;
     }
-    
+
     a {
         color: inherit;
         text-decoration: none;
     }
-    
-    pre, code {
+
+    pre,
+    code {
         background: #f0f0f0;
     }
-    
+
     pre {
         border: 1px solid #ccc;
         page-break-inside: avoid;
