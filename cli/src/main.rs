@@ -85,11 +85,16 @@ enum Commands {
         /// Magic link (steadystate://...) or SSH URL
         url: String,
     },
-    /// Open the dashboard for a collaboration session
+    /// Open a dashboard to monitor a session
     #[command(alias = "dash")]
     Dashboard {
-        /// Magic link or session URL
-        link: String,
+        /// The magic link to the session
+        magic_link: String,
+    },
+    /// Show who last modified lines in a file (git blame)
+    Credit {
+        /// The file to check
+        file: String,
     },
     /// Synchronize changes with other users (Collaboration Mode)
     Sync,
@@ -652,8 +657,13 @@ async fn open_dashboard(link: &str) -> Result<()> {
     // Run watch command on remote
     // Use -- to separate SSH args from remote command
     args.push("--".to_string());
-    args.push("steadystate".to_string());
-    args.push("watch".to_string());
+    
+    // Inject username if available so the dashboard knows who we are
+    if let Ok(session) = crate::session::read_session(None).await {
+        args.push(format!("export STEADYSTATE_USERNAME={}; steadystate watch", session.login));
+    } else {
+        args.push("steadystate watch".to_string());
+    }
     
     // Execute SSH (replaces current process)
     use std::os::unix::process::CommandExt;
@@ -760,9 +770,15 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Dashboard { link } => {
-            if let Err(e) = open_dashboard(&link).await {
+        Commands::Dashboard { magic_link } => {
+            if let Err(e) = open_dashboard(&magic_link).await {
                 eprintln!("Failed to open dashboard: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Credit { file } => {
+            if let Err(e) = sync::credit_command(&file).await {
+                eprintln!("credit failed: {:#}", e);
                 std::process::exit(1);
             }
         }
