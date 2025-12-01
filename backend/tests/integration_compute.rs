@@ -20,7 +20,7 @@ async fn test_integration_nix_check() {
         flake_path,
     };
     
-    let provider = LocalComputeProvider::new(config);
+    let provider = LocalComputeProvider::new(config, reqwest::Client::new());
 
     // We can't easily call private methods like ensure_nix_installed directly unless we expose them or use start_session.
     // Using start_session involves cloning and upterm, which is heavy.

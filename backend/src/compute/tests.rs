@@ -110,7 +110,8 @@ async fn test_start_session_success() {
 
     let provider = LocalComputeProvider::new_with_executor(
         PathBuf::from("/tmp/flake"),
-        executor.clone()
+        executor.clone(),
+        reqwest::Client::new(),
     );
 
     let mut session = Session {
@@ -176,7 +177,8 @@ async fn test_terminate_session() {
     let executor = Box::new(MockCommandExecutor::new());
     let provider = LocalComputeProvider::new_with_executor(
         PathBuf::from("/tmp/flake"),
-        executor.clone()
+        executor.clone(),
+        reqwest::Client::new(),
     );
 
     // Manually inject a session into state (this is tricky because state is private/internal)
@@ -273,7 +275,8 @@ async fn test_start_session_git_failure() {
 
     let provider = LocalComputeProvider::new_with_executor(
         PathBuf::from("/tmp/flake"),
-        executor.clone()
+        executor.clone(),
+        reqwest::Client::new(),
     );
 
     let session = Session {
@@ -315,7 +318,8 @@ async fn test_start_session_upterm_failure() {
 
     let provider = LocalComputeProvider::new_with_executor(
         PathBuf::from("/tmp/flake"),
-        executor.clone()
+        executor.clone(),
+        reqwest::Client::new(),
     );
 
     let session = Session {
@@ -358,7 +362,8 @@ async fn test_start_session_nix_failure() {
 
     let provider = LocalComputeProvider::new_with_executor(
         PathBuf::from("/tmp/flake"),
-        executor.clone()
+        executor.clone(),
+        reqwest::Client::new(),
     );
 
     let session = Session {

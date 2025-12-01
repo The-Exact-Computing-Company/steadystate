@@ -87,11 +87,66 @@ Commands:
 
 WELCOME
 
-if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-    exec bash -c "$SSH_ORIGINAL_COMMAND"
-else
-    exec bash -l
-fi
+# ============================================================================
+# ENVIRONMENT ACTIVATION
+# Values baked in at session creation:
+#   --env = "{{environment}}"
+#   flake = "{{flake_path}}"
+# ============================================================================
+
+run_command() {
+    if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+        bash -c "$SSH_ORIGINAL_COMMAND"
+    else
+        bash -l
+    fi
+}
+
+case "{{environment}}" in
+    noenv|python)
+        echo "Activating SteadyState environment..."
+        if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+            exec nix develop "{{flake_path}}" --command bash -c "$SSH_ORIGINAL_COMMAND"
+        else
+            exec nix develop "{{flake_path}}" --command bash -l
+        fi
+        ;;
+    flake)
+        if [ -f "$WORKTREE/flake.nix" ]; then
+            echo "Activating repository flake..."
+            if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+                exec nix develop "$WORKTREE" --command bash -c "$SSH_ORIGINAL_COMMAND"
+            else
+                exec nix develop "$WORKTREE" --command bash -l
+            fi
+        else
+            echo "Warning: --env=flake but no flake.nix found in repository"
+            exec run_command
+        fi
+        ;;
+    legacy-nix)
+        if [ -f "$WORKTREE/shell.nix" ]; then
+            NIX_FILE="$WORKTREE/shell.nix"
+        elif [ -f "$WORKTREE/default.nix" ]; then
+            NIX_FILE="$WORKTREE/default.nix"
+        else
+            echo "Warning: --env=legacy-nix but no shell.nix or default.nix found"
+            exec run_command
+        fi
+        echo "Activating nix-shell environment..."
+        if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+            exec nix-shell "$NIX_FILE" --command "bash -c '$SSH_ORIGINAL_COMMAND'"
+        else
+            exec nix-shell "$NIX_FILE" --command "bash -l"
+        fi
+        ;;
+    *)
+        # Unknown or missing environment - this shouldn't happen if CLI validates
+        echo "Error: Unknown environment '{{environment}}'"
+        echo "This session was created with an invalid --env value."
+        exit 1
+        ;;
+esac
 "#)
 }
 

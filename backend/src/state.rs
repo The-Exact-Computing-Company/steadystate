@@ -126,7 +126,7 @@ impl AppState {
                 .unwrap_or_else(|_| dirs::home_dir().expect("HOME not set").join(".steadystate").join("sessions")),
             flake_path: config.noenv_flake_path.clone().into(),
         };
-        let local_provider = Arc::new(LocalComputeProvider::new(provider_config));
+        let local_provider = Arc::new(LocalComputeProvider::new(provider_config, http.clone()));
         compute_providers.insert(local_provider.id().to_string(), local_provider);
 
         // 3. Build State

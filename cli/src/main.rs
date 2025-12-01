@@ -208,7 +208,8 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         None => {
             eprintln!("Error: --env flag is required.");
             eprintln!("Valid options:");
-            eprintln!("  --env=noenv                 Use minimal curated environment");
+            eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
+            eprintln!("  --env=python                Python + uv (auto-detects version)");
             eprintln!("  --env=flake                 Use repository's flake.nix");
             eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
             eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
@@ -218,6 +219,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
 
     // Check if env is valid
     let is_valid = env_val == "noenv" ||
+                   env_val == "python" ||
                    env_val == "flake" ||
                    env_val == "legacy-nix" ||
                    (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
@@ -225,7 +227,8 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     if !is_valid {
         eprintln!("Error: Invalid --env option: {}", env_val);
         eprintln!("Valid options:");
-        eprintln!("  --env=noenv                 Use minimal curated environment");
+        eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
+        eprintln!("  --env=python                Python + uv (auto-detects version)");
         eprintln!("  --env=flake                 Use repository's flake.nix");
         eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
         eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
