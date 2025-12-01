@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MERGE_ENGINE - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" class="current">Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="name">NAME</h1>
+<p><strong>steadystate merge engine</strong> - conflict-free 3-way merge
+algorithm</p>
+<h1 id="synopsis">SYNOPSIS</h1>
+<pre><code>merge_trees(base, local, canonical) → merged
+merge_file_yjs(base_text, local_text, canonical_text) → merged_text</code></pre>
+<h1 id="description">DESCRIPTION</h1>
+<p>SteadyState uses a custom 3-way merge algorithm based on Longest
+Common Subsequence (LCS) to automatically merge concurrent edits from
+multiple collaborators without conflicts.</p>
+<p>The merge engine operates at two levels:</p>
+<ol type="1">
+<li><strong>Tree-level</strong> - Determines which files changed and how
+to handle them</li>
+<li><strong>File-level</strong> - Merges text content using token-based
+LCS</li>
+</ol>
+<h1 id="the-three-trees">THE THREE TREES</h1>
+<p>Every sync operation works with three trees:</p>
+<pre><code>            Base Tree
+           (last sync)
+              /   \
+             /     \
+      Local Tree   Canonical Tree
+      (worktree)   (remote HEAD)
+             \     /
+              \   /
+           Merged Tree</code></pre>
+<h2 id="base-tree">Base Tree</h2>
+<p>The state of the repository at the user’s last sync point. Stored
+in:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">.worktree/steadystate.json</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;session_branch&quot;</span><span class="fu">:</span> <span class="st">&quot;steadystate/abc123&quot;</span><span class="fu">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;last_synced_commit&quot;</span><span class="fu">:</span> <span class="st">&quot;a1b2c3d...&quot;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Materialized using:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> show <span class="op">&lt;</span>last_synced_commit<span class="op">&gt;</span>:<span class="op">&lt;</span>file<span class="op">&gt;</span></span></code></pre></div>
+<h2 id="local-tree">Local Tree</h2>
+<p>The current state of the user’s worktree on disk. Read directly from
+the filesystem, excluding <code>.git/</code> and <code>.worktree/</code>
+directories.</p>
+<h2 id="canonical-tree">Canonical Tree</h2>
+<p>The current HEAD of the session branch on the remote. Fetched and
+materialized using:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> fetch origin <span class="op">&lt;</span>session_branch<span class="op">&gt;</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> show origin/<span class="op">&lt;</span>session_branch<span class="op">&gt;</span>:<span class="op">&lt;</span>file<span class="op">&gt;</span></span></code></pre></div>
+<h1 id="tree-level-merge">TREE-LEVEL MERGE</h1>
+<p>The <code>merge_trees()</code> function handles the full
+repository:</p>
+<pre><code>files = base.files ∪ local.files ∪ canonical.files</code></pre>
+<p>For each file, classify content as: - <strong>Text</strong> - Valid
+UTF-8, can be merged - <strong>Binary</strong> - Non-UTF-8, cannot be
+auto-merged<br />
+- <strong>Missing</strong> - File doesn’t exist in this tree</p>
+<h2 id="decision-matrix">Decision Matrix</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Base</th>
+<th>Local</th>
+<th>Canonical</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Text</td>
+<td>Text</td>
+<td>Text</td>
+<td>3-way text merge</td>
+</tr>
+<tr class="even">
+<td>Any</td>
+<td>Changed</td>
+<td>Unchanged</td>
+<td>Take local</td>
+</tr>
+<tr class="odd">
+<td>Any</td>
+<td>Unchanged</td>
+<td>Changed</td>
+<td>Take canonical</td>
+</tr>
+<tr class="even">
+<td>Any</td>
+<td>Same change</td>
+<td>Same change</td>
+<td>Take either</td>
+</tr>
+<tr class="odd">
+<td>Binary</td>
+<td>Changed</td>
+<td>Changed</td>
+<td><strong>Error</strong> (conflict)</td>
+</tr>
+<tr class="even">
+<td>Missing</td>
+<td>Present</td>
+<td>Missing</td>
+<td>Take local (new file)</td>
+</tr>
+<tr class="odd">
+<td>Missing</td>
+<td>Missing</td>
+<td>Present</td>
+<td>Take canonical (new file)</td>
+</tr>
+<tr class="even">
+<td>Present</td>
+<td>Missing</td>
+<td>Missing</td>
+<td>Delete (both removed)</td>
+</tr>
+</tbody>
+</table>
+<p>Binary files that both sides modified differently cannot be
+auto-merged and require manual resolution.</p>
+<h1 id="text-merge-algorithm">TEXT MERGE ALGORITHM</h1>
+<p>The <code>merge_file_yjs()</code> function implements a token-based
+3-way merge using LCS.</p>
+<h2 id="fast-paths">Fast Paths</h2>
+<p>Before running the full algorithm, check for trivial cases:</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> local <span class="op">==</span> base <span class="op">&amp;&amp;</span> canonical <span class="op">==</span> base <span class="op">{</span> <span class="cf">return</span> base<span class="op">;</span> <span class="op">}</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> local <span class="op">==</span> base <span class="op">{</span> <span class="cf">return</span> canonical<span class="op">;</span> <span class="op">}</span>  <span class="co">// Only remote changed</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> canonical <span class="op">==</span> base <span class="op">{</span> <span class="cf">return</span> local<span class="op">;</span> <span class="op">}</span>  <span class="co">// Only local changed</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> local <span class="op">==</span> canonical <span class="op">{</span> <span class="cf">return</span> local<span class="op">;</span> <span class="op">}</span> <span class="co">// Same change</span></span></code></pre></div>
+<h2 id="tokenization">Tokenization</h2>
+<p>Text is split into alternating word and whitespace tokens:</p>
+<pre><code>&quot;Hello  World&quot; → [&quot;Hello&quot;, &quot;  &quot;, &quot;World&quot;]
+&quot;a b\nc&quot;       → [&quot;a&quot;, &quot; &quot;, &quot;b&quot;, &quot;\n&quot;, &quot;c&quot;]</code></pre>
+<p>This preserves: - Word boundaries for semantic merging - Whitespace
+patterns including indentation - Newlines as separate tokens</p>
+<h2 id="lcs-computation">LCS Computation</h2>
+<p>For each pair (base↔︎local and base↔︎canonical), compute the Longest
+Common Subsequence using dynamic programming:</p>
+<pre><code>Base:   [&quot;The&quot;, &quot; &quot;, &quot;quick&quot;, &quot; &quot;, &quot;fox&quot;]
+Local:  [&quot;The&quot;, &quot; &quot;, &quot;slow&quot;, &quot; &quot;, &quot;fox&quot;]
+
+LCS pairs: [(0,0), (1,1), (3,3), (4,4)]
+           &quot;The&quot;   &quot; &quot;    &quot; &quot;   &quot;fox&quot;</code></pre>
+<p>The LCS identifies which tokens are <strong>anchors</strong>
+(unchanged) vs <strong>modifications</strong>.</p>
+<h2 id="merge-walk">Merge Walk</h2>
+<p>Walk through base tokens, using LCS pairs as a map:</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> base_idx <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span>base_tokens<span class="op">.</span>len() <span class="op">{</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Output canonical insertions before this position</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. Output local insertions before this position  </span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 3. Handle the base token based on what each side did</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="co">// 4. Output remaining insertions from both sides</span></span></code></pre></div>
+<h3 id="handling-base-tokens">Handling Base Tokens</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Local kept?</th>
+<th>Canonical kept?</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Yes</td>
+<td>Yes</td>
+<td>Output base token</td>
+</tr>
+<tr class="even">
+<td>Yes</td>
+<td>No</td>
+<td>Don’t output (canonical deleted/replaced)</td>
+</tr>
+<tr class="odd">
+<td>No</td>
+<td>Yes</td>
+<td>Don’t output (local deleted/replaced)</td>
+</tr>
+<tr class="even">
+<td>No</td>
+<td>No</td>
+<td>Don’t output (both modified)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="insertion-order">Insertion Order</h3>
+<p>When both sides insert at the same position: 1. Canonical insertions
+come first 2. Local insertions come second</p>
+<p>This ensures deterministic output regardless of merge order.</p>
+<h1 id="examples">EXAMPLES</h1>
+<h2 id="example-1-non-overlapping-edits">Example 1: Non-overlapping
+edits</h2>
+<pre><code>Base:      &quot;The quick brown fox&quot;
+Local:     &quot;The slow brown fox&quot;     (changed &quot;quick&quot; → &quot;slow&quot;)
+Canonical: &quot;The quick brown dog&quot;    (changed &quot;fox&quot; → &quot;dog&quot;)
+Result:    &quot;The slow brown dog&quot;     (both changes applied)</code></pre>
+<h2 id="example-2-same-position-different-changes">Example 2: Same
+position, different changes</h2>
+<pre><code>Base:      &quot;Hello World&quot;
+Local:     &quot;Hi World&quot;               (changed &quot;Hello&quot; → &quot;Hi&quot;)  
+Canonical: &quot;Hey World&quot;              (changed &quot;Hello&quot; → &quot;Hey&quot;)
+Result:    &quot;HeyHi World&quot;            (both replacements kept)</code></pre>
+<p>This is the <strong>additive merge</strong> behavior - no data is
+lost.</p>
+<h2 id="example-3-deletions">Example 3: Deletions</h2>
+<pre><code>Base:      &quot;A B C D&quot;
+Local:     &quot;A C D&quot;                  (deleted &quot;B&quot;)
+Canonical: &quot;A B D&quot;                  (deleted &quot;C&quot;)
+Result:    &quot;A D&quot;                    (both deletions applied)</code></pre>
+<h2 id="example-4-insertions-at-same-point">Example 4: Insertions at
+same point</h2>
+<pre><code>Base:      &quot;A B&quot;
+Local:     &quot;A X B&quot;                  (inserted &quot;X&quot; after &quot;A&quot;)
+Canonical: &quot;A Y B&quot;                  (inserted &quot;Y&quot; after &quot;A&quot;)
+Result:    &quot;A Y X B&quot;                (canonical first, then local)</code></pre>
+<h1 id="algorithm-properties">ALGORITHM PROPERTIES</h1>
+<h2 id="guarantees">Guarantees</h2>
+<ul>
+<li><strong>Deterministic</strong> - Same inputs always produce same
+output</li>
+<li><strong>No conflicts</strong> - Always produces a result for text
+files</li>
+<li><strong>No data loss</strong> - All changes from both sides are
+preserved</li>
+<li><strong>Associative</strong> -
+<code>merge(merge(a,b), c) = merge(a, merge(b,c))</code></li>
+</ul>
+<h2 id="trade-offs">Trade-offs</h2>
+<ul>
+<li><strong>Additive semantics</strong> - When both sides change the
+same text, both versions appear in output</li>
+<li><strong>No semantic understanding</strong> - Merges at token level,
+not code structure</li>
+<li><strong>Binary conflicts</strong> - Cannot auto-merge binary files
+with concurrent changes</li>
+</ul>
+<h2 id="complexity">Complexity</h2>
+<ul>
+<li><strong>Time</strong>: O(n²) for LCS computation where n = token
+count</li>
+<li><strong>Space</strong>: O(n²) for DP table</li>
+</ul>
+<p>For typical source files (&lt; 10,000 tokens), this is fast
+enough.</p>
+<h1 id="sync-flow">SYNC FLOW</h1>
+<p>The complete sync operation:</p>
+<pre><code>1. Lock canonical repository
+2. Fetch latest from origin
+3. Materialize base_tree (from last_synced_commit)
+4. Materialize local_tree (from worktree filesystem)
+5. Materialize canonical_tree (from origin/branch)
+6. Detect if changes exist on either side
+7. merge_trees(base, local, canonical) → merged
+8. Apply merged tree to canonical repo
+9. Commit changes
+10. Update metadata (new last_synced_commit)
+11. Release lock
+12. Push to origin
+13. Refresh worktree from canonical
+14. Log sync activity</code></pre>
+<h1 id="debugging">DEBUGGING</h1>
+<p>Enable merge debugging:</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_DEBUG_MERGE</span><span class="op">=</span>1</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span></code></pre></div>
+<p>This logs: - File-by-file merge decisions - Tree sizes - Which files
+have changes</p>
+<h1 id="limitations">LIMITATIONS</h1>
+<h2 id="binary-files">Binary Files</h2>
+<p>Binary files (images, PDFs, compiled assets) cannot be text-merged.
+If both local and canonical modify the same binary file:</p>
+<pre><code>Error: Binary file conflict in &#39;image.png&#39;
+Manual resolution required.</code></pre>
+<p><strong>Workaround</strong>: Coordinate with collaborators, or one
+person reverts their change.</p>
+<h2 id="very-large-files">Very Large Files</h2>
+<p>The O(n²) LCS algorithm may be slow for files with millions of
+tokens. For typical code and data files, this is not an issue.</p>
+<h2 id="semantic-conflicts">Semantic Conflicts</h2>
+<p>The merge is purely textual. It cannot detect: - Duplicate function
+definitions - Incompatible API changes - Logical contradictions</p>
+<p>These must be caught by testing or code review after merge.</p>
+<h1 id="see-also">SEE ALSO</h1>
+<p><strong>steadystate-sync</strong>(1),
+<strong>steadystate-architecture</strong>(8)</p>
+<h1 id="references">REFERENCES</h1>
+<ul>
+<li>Longest Common Subsequence:
+https://en.wikipedia.org/wiki/Longest_common_subsequence</li>
+<li>Three-way merge:
+https://en.wikipedia.org/wiki/Merge_(version_control)#Three-way_merge</li>
+</ul>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">MERGE_ENGINE</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

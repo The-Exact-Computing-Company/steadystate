@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CONFIGURATION - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" class="current">Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="name">NAME</h1>
+<p><strong>steadystate configuration</strong> - environment variables
+and settings</p>
+<h1 id="description">DESCRIPTION</h1>
+<p>SteadyState is configured primarily through environment variables.
+This page documents all available configuration options for both the CLI
+and backend server.</p>
+<h1 id="cli-configuration">CLI CONFIGURATION</h1>
+<h2 id="steadystate_backend_url">STEADYSTATE_BACKEND_URL</h2>
+<p>URL of the SteadyState backend server.</p>
+<pre><code>export STEADYSTATE_BACKEND_URL=&quot;http://localhost:3000&quot;</code></pre>
+<p><strong>Default:</strong> <code>http://localhost:3000</code></p>
+<h2 id="steadystate_username">STEADYSTATE_USERNAME</h2>
+<p>Override the username for sync operations. Primarily used internally
+by the session wrapper.</p>
+<pre><code>export STEADYSTATE_USERNAME=&quot;brodrigues&quot;</code></pre>
+<p><strong>Default:</strong> Derived from authenticated session or
+system <code>$USER</code></p>
+<h2 id="steadystate_debug_merge">STEADYSTATE_DEBUG_MERGE</h2>
+<p>Enable verbose merge debugging output.</p>
+<pre><code>export STEADYSTATE_DEBUG_MERGE=1</code></pre>
+<p>When set, the merge engine will log detailed information about each
+file being merged, including tree sizes and merge decisions.</p>
+<p><strong>Default:</strong> Unset (disabled)</p>
+<h2 id="steadystate_config_dir">STEADYSTATE_CONFIG_DIR</h2>
+<p>Override the directory where SteadyState stores configuration and
+session files.</p>
+<pre><code>export STEADYSTATE_CONFIG_DIR=&quot;/path/to/config&quot;</code></pre>
+<p><strong>Default:</strong> <code>~/.config/steadystate</code> (Linux),
+<code>~/Library/Application Support/steadystate</code> (macOS)</p>
+<h1 id="backend-configuration">BACKEND CONFIGURATION</h1>
+<h2 id="required-variables">Required Variables</h2>
+<h3 id="github_client_id">GITHUB_CLIENT_ID</h3>
+<p>GitHub OAuth application client ID.</p>
+<pre><code>export GITHUB_CLIENT_ID=&quot;Iv1.abc123...&quot;</code></pre>
+<p>Obtain this from your GitHub OAuth App settings.</p>
+<h3 id="github_client_secret">GITHUB_CLIENT_SECRET</h3>
+<p>GitHub OAuth application client secret.</p>
+<pre><code>export GITHUB_CLIENT_SECRET=&quot;secret123...&quot;</code></pre>
+<p><strong>Security:</strong> Keep this value secret. Do not commit to
+version control.</p>
+<h3 id="jwt_secret">JWT_SECRET</h3>
+<p>Secret key for signing JWT tokens.</p>
+<pre><code>export JWT_SECRET=&quot;$(openssl rand -base64 32)&quot;</code></pre>
+<p>Generate a random 32+ byte string. All backend instances must share
+the same secret.</p>
+<p><strong>Security:</strong> Keep this value secret. Rotate
+periodically.</p>
+<h2 id="optional-variables">Optional Variables</h2>
+<h3 id="steadystate_port">STEADYSTATE_PORT</h3>
+<p>Port for the backend HTTP server.</p>
+<pre><code>export STEADYSTATE_PORT=3000</code></pre>
+<p><strong>Default:</strong> <code>3000</code></p>
+<h3 id="steadystate_external_host">STEADYSTATE_EXTERNAL_HOST</h3>
+<p>Public hostname or IP address for SSH connections.</p>
+<pre><code>export STEADYSTATE_EXTERNAL_HOST=&quot;192.168.1.100&quot;
+export STEADYSTATE_EXTERNAL_HOST=&quot;steadystate.example.com&quot;</code></pre>
+<p><strong>Default:</strong> Auto-detected local IP address</p>
+<p>This is included in magic links and must be reachable by
+collaborators.</p>
+<h3 id="steadystate_ssh_user">STEADYSTATE_SSH_USER</h3>
+<p>System user for SSH session connections.</p>
+<pre><code>export STEADYSTATE_SSH_USER=&quot;steadystate&quot;</code></pre>
+<p><strong>Default:</strong> <code>steadystate</code></p>
+<p>This user must exist on the system and have appropriate
+permissions.</p>
+<h3 id="rust_log">RUST_LOG</h3>
+<p>Control logging verbosity.</p>
+<pre><code>export RUST_LOG=info
+export RUST_LOG=steadystate=debug
+export RUST_LOG=steadystate::compute=trace</code></pre>
+<p><strong>Default:</strong> <code>info</code></p>
+<h1 id="session-environment">SESSION ENVIRONMENT</h1>
+<p>Inside a collaboration session, the following variables are set
+automatically:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>REPO_ROOT</code></td>
+<td>Path to session root directory</td>
+</tr>
+<tr class="even">
+<td><code>SESSION_ID</code></td>
+<td>Unique session identifier</td>
+</tr>
+<tr class="odd">
+<td><code>STEADYSTATE_USERNAME</code></td>
+<td>GitHub username of connected user</td>
+</tr>
+<tr class="even">
+<td><code>USER_WORKSPACE</code></td>
+<td>Path to user’s worktree</td>
+</tr>
+<tr class="odd">
+<td><code>CANONICAL_REPO</code></td>
+<td>Path to canonical repository</td>
+</tr>
+<tr class="even">
+<td><code>REPO_NAME</code></td>
+<td>Name of the repository (used by dashboard)</td>
+</tr>
+</tbody>
+</table>
+<h1 id="files">FILES</h1>
+<h2
+id="configsteadystatesession.json">~/.config/steadystate/session.json</h2>
+<p>Stores the current authentication session:</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;login&quot;</span><span class="fu">:</span> <span class="st">&quot;username&quot;</span><span class="fu">,</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jwt&quot;</span><span class="fu">:</span> <span class="st">&quot;eyJ...&quot;</span><span class="fu">,</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jwt_exp&quot;</span><span class="fu">:</span> <span class="dv">1699999999</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Permissions:</strong> <code>0600</code> (user read/write
+only)</p>
+<h2
+id="configsteadystaterefresh_token">~/.config/steadystate/refresh_token</h2>
+<p>Stores the refresh token for automatic re-authentication.</p>
+<p><strong>Permissions:</strong> <code>0600</code></p>
+<h2 id="tmpsteadystate--known_hosts">/tmp/steadystate-*-known_hosts</h2>
+<p>Temporary SSH known_hosts files created for session connections.
+Automatically cleaned up.</p>
+<h1 id="systemd-configuration">SYSTEMD CONFIGURATION</h1>
+<p>Example systemd service file for the backend:</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode ini"><code class="sourceCode ini"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[Unit]</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="dt">Description</span><span class="ot">=</span><span class="st">SteadyState Backend</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="dt">After</span><span class="ot">=</span><span class="st">network.target</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a><span class="kw">[Service]</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a><span class="dt">Type</span><span class="ot">=</span><span class="st">simple</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a><span class="dt">User</span><span class="ot">=</span><span class="st">steadystate</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a><span class="dt">Group</span><span class="ot">=</span><span class="st">steadystate</span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a><span class="dt">WorkingDirectory</span><span class="ot">=</span><span class="st">/opt/steadystate</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a><span class="dt">ExecStart</span><span class="ot">=</span><span class="st">/opt/steadystate/steadystate-backend</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a><span class="dt">Restart</span><span class="ot">=</span><span class="st">always</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a><span class="dt">RestartSec</span><span class="ot">=</span><span class="dv">5</span></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a><span class="dt">Environment</span><span class="ot">=</span><span class="st">GITHUB_CLIENT_ID=Iv1.abc123</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a><span class="dt">Environment</span><span class="ot">=</span><span class="st">GITHUB_CLIENT_SECRET=secret123</span></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a><span class="dt">Environment</span><span class="ot">=</span><span class="st">JWT_SECRET=your-secret-here</span></span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a><span class="dt">Environment</span><span class="ot">=</span><span class="st">STEADYSTATE_PORT=3000</span></span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a><span class="dt">Environment</span><span class="ot">=</span><span class="st">STEADYSTATE_EXTERNAL_HOST=your-server.com</span></span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a><span class="dt">Environment</span><span class="ot">=</span><span class="st">RUST_LOG=info</span></span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a><span class="kw">[Install]</span></span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a><span class="dt">WantedBy</span><span class="ot">=</span><span class="st">multi-user.target</span></span></code></pre></div>
+<h1 id="nixos-configuration">NIXOS CONFIGURATION</h1>
+<p>Example NixOS module:</p>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode nix"><code class="sourceCode nix"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="op">{</span> <span class="va">config</span><span class="op">,</span> <span class="va">pkgs</span><span class="op">,</span> <span class="op">...</span> <span class="op">}</span>:</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="op">{</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>  <span class="va">users</span>.<span class="va">users</span>.<span class="va">steadystate</span> <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="va">isNormalUser</span> <span class="op">=</span> <span class="cn">true</span><span class="op">;</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="va">home</span> <span class="op">=</span> <span class="st">&quot;/home/steadystate&quot;</span><span class="op">;</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>    <span class="va">shell</span> <span class="op">=</span> pkgs.bash<span class="op">;</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>  <span class="op">};</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>  <span class="va">systemd</span>.<span class="va">services</span>.<span class="va">steadystate</span> <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>    <span class="va">description</span> <span class="op">=</span> <span class="st">&quot;SteadyState Backend&quot;</span><span class="op">;</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>    <span class="va">after</span> <span class="op">=</span> <span class="op">[</span> <span class="st">&quot;network.target&quot;</span> <span class="op">];</span></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>    <span class="va">wantedBy</span> <span class="op">=</span> <span class="op">[</span> <span class="st">&quot;multi-user.target&quot;</span> <span class="op">];</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>    <span class="va">environment</span> <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>      <span class="va">GITHUB_CLIENT_ID</span> <span class="op">=</span> <span class="st">&quot;Iv1.abc123&quot;</span><span class="op">;</span></span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>      <span class="va">STEADYSTATE_PORT</span> <span class="op">=</span> <span class="st">&quot;3000&quot;</span><span class="op">;</span></span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>      <span class="va">STEADYSTATE_EXTERNAL_HOST</span> <span class="op">=</span> <span class="st">&quot;your-server.com&quot;</span><span class="op">;</span></span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>      <span class="va">RUST_LOG</span> <span class="op">=</span> <span class="st">&quot;info&quot;</span><span class="op">;</span></span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>    <span class="va">serviceConfig</span> <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>      <span class="va">Type</span> <span class="op">=</span> <span class="st">&quot;simple&quot;</span><span class="op">;</span></span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>      <span class="va">User</span> <span class="op">=</span> <span class="st">&quot;steadystate&quot;</span><span class="op">;</span></span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a>      <span class="va">ExecStart</span> <span class="op">=</span> <span class="st">&quot;</span><span class="sc">${</span>pkgs.steadystate<span class="sc">}</span><span class="st">/bin/steadystate-backend&quot;</span><span class="op">;</span></span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a>      <span class="va">Restart</span> <span class="op">=</span> <span class="st">&quot;always&quot;</span><span class="op">;</span></span>
+<span id="cb14-27"><a href="#cb14-27" aria-hidden="true" tabindex="-1"></a>      <span class="va">RestartSec</span> <span class="op">=</span> <span class="dv">5</span><span class="op">;</span></span>
+<span id="cb14-28"><a href="#cb14-28" aria-hidden="true" tabindex="-1"></a>      </span>
+<span id="cb14-29"><a href="#cb14-29" aria-hidden="true" tabindex="-1"></a>      <span class="co"># Load secrets from file</span></span>
+<span id="cb14-30"><a href="#cb14-30" aria-hidden="true" tabindex="-1"></a>      <span class="va">EnvironmentFile</span> <span class="op">=</span> <span class="st">&quot;/run/secrets/steadystate&quot;</span><span class="op">;</span></span>
+<span id="cb14-31"><a href="#cb14-31" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb14-32"><a href="#cb14-32" aria-hidden="true" tabindex="-1"></a>  <span class="op">};</span></span>
+<span id="cb14-33"><a href="#cb14-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-34"><a href="#cb14-34" aria-hidden="true" tabindex="-1"></a>  <span class="va">networking</span>.<span class="va">firewall</span>.<span class="va">allowedTCPPorts</span> <span class="op">=</span> <span class="op">[</span> <span class="dv">3000</span> <span class="op">];</span></span>
+<span id="cb14-35"><a href="#cb14-35" aria-hidden="true" tabindex="-1"></a>  <span class="va">networking</span>.<span class="va">firewall</span>.<span class="va">allowedTCPPortRanges</span> <span class="op">=</span> <span class="op">[</span></span>
+<span id="cb14-36"><a href="#cb14-36" aria-hidden="true" tabindex="-1"></a>    <span class="op">{</span> <span class="va">from</span> <span class="op">=</span> <span class="dv">2000</span><span class="op">;</span> <span class="va">to</span> <span class="op">=</span> <span class="dv">3000</span><span class="op">;</span> <span class="op">}</span>  <span class="co"># SSH sessions</span></span>
+<span id="cb14-37"><a href="#cb14-37" aria-hidden="true" tabindex="-1"></a>  <span class="op">];</span></span>
+<span id="cb14-38"><a href="#cb14-38" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h1 id="see-also">SEE ALSO</h1>
+<p><strong>steadystate</strong>(1),
+<strong>systemd.service</strong>(5)</p>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">CONFIGURATION</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

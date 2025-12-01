@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STEADYSTATE - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" class="current">STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="name">NAME</h1>
+<p><strong>steadystate</strong> - real-time collaboration for code
+repositories</p>
+<h1 id="synopsis">SYNOPSIS</h1>
+<pre><code>steadystate login
+steadystate up [--mode=collab] [--branch=NAME] &lt;repository&gt;
+steadystate join &quot;&lt;magic_link&gt;&quot;
+steadystate dashboard &quot;&lt;magic_link&gt;&quot;
+steadystate sync
+steadystate publish
+steadystate status
+steadystate diff
+steadystate whoami
+steadystate logout</code></pre>
+<h1 id="description">DESCRIPTION</h1>
+<p><strong>SteadyState</strong> enables multiple developers to
+collaborate on a code repository in real-time. It provides conflict-free
+merging of concurrent edits using a 3-way merge algorithm, allowing team
+members to work on the same files simultaneously without merge
+conflicts.</p>
+<p>The system consists of a backend server that manages sessions and a
+CLI tool that users interact with. Authentication is handled via GitHub
+OAuth.</p>
+<h1 id="documentation">DOCUMENTATION</h1>
+<p>This manual contains the following sections:</p>
+<dl>
+<dt><strong>GETTING_STARTED(1)</strong></dt>
+<dd>
+Installation, self-hosting setup, and first steps
+</dd>
+<dt><strong>COMMANDS(1)</strong></dt>
+<dd>
+Detailed reference for all CLI commands
+</dd>
+<dt><strong>CONFIGURATION(5)</strong></dt>
+<dd>
+Environment variables and configuration options
+</dd>
+<dt><strong>ARCHITECTURE(8)</strong></dt>
+<dd>
+System design and internals
+</dd>
+<dt><strong>TROUBLESHOOTING(7)</strong></dt>
+<dd>
+Common issues and solutions
+</dd>
+</dl>
+<h1 id="quick-start">QUICK START</h1>
+<ol type="1">
+<li>Login with GitHub:</li>
+</ol>
+<pre><code>steadystate login</code></pre>
+<ol start="2" type="1">
+<li>Create a collaboration session (host):</li>
+</ol>
+<pre><code>steadystate up --mode=collab https://github.com/user/repo</code></pre>
+<ol start="3" type="1">
+<li><p>Share the magic link with collaborators.</p></li>
+<li><p>Join a session (collaborator):</p></li>
+</ol>
+<pre><code>steadystate join &quot;steadystate://collab/...&quot;</code></pre>
+<ol start="5" type="1">
+<li>Make edits, then sync:</li>
+</ol>
+<pre><code>steadystate sync</code></pre>
+<h1 id="examples">EXAMPLES</h1>
+<p>Create a session for a feature branch:</p>
+<pre><code>steadystate up --mode=collab --branch=feature-x https://github.com/org/repo</code></pre>
+<p>Open the dashboard to monitor activity:</p>
+<pre><code>steadystate dash &quot;steadystate://collab/abc123?ssh=...&quot;</code></pre>
+<p>View local changes before syncing:</p>
+<pre><code>steadystate diff</code></pre>
+<h1 id="see-also">SEE ALSO</h1>
+<p><strong>git</strong>(1), <strong>ssh</strong>(1)</p>
+<h1 id="authors">AUTHORS</h1>
+<p>SteadyState is developed by Bruno Rodrigues and contributors.</p>
+<h1 id="bugs">BUGS</h1>
+<p>Report bugs at: https://github.com/b-rodrigues/steadystate/issues</p>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">STEADYSTATE</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARCHITECTURE - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" class="current">Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="architecture">Architecture</h1>
+<p>This document provides a high-level overview of the SteadyState
+monorepo architecture.</p>
+<h2 id="monorepo-structure">Monorepo Structure</h2>
+<p>The repository is organized as a monorepo containing three primary
+components:</p>
+<ul>
+<li><strong><code>backend/</code></strong>: A Rust-based backend service
+responsible for authentication, session management, and orchestration of
+development environments.</li>
+<li><strong><code>cli/</code></strong>: A command-line interface (CLI)
+application, also written in Rust, that provides a user-facing interface
+for interacting with the backend.</li>
+<li><strong><code>packages/</code></strong>: A directory containing
+shared crates and libraries used by other components in the monorepo.
+<ul>
+<li><strong><code>common/</code></strong>: A shared crate with common
+data structures and utilities used by both the <code>backend</code> and
+<code>cli</code>.</li>
+</ul></li>
+</ul>
+<h2 id="backend-architecture">Backend Architecture</h2>
+<p>The <code>backend</code> is an Axum-based REST API service written in
+Rust. It handles user authentication, session orchestration, and compute
+resource management.</p>
+<h3 id="key-modules-and-functions">Key Modules and Functions</h3>
+<h4 id="main.rs"><code>main.rs</code></h4>
+<p>The entry point of the application. It sets up the Axum router,
+initializes the application state, applies middleware (CORS, tracing),
+and starts the HTTP server.</p>
+<ul>
+<li><strong><code>main()</code></strong>: The asynchronous main function
+that initializes the <code>AppState</code> and starts the web
+server.</li>
+</ul>
+<h4 id="state.rs"><code>state.rs</code></h4>
+<p>Defines the <code>AppState</code>, which manages shared resources
+like the authentication provider registry and token storage. This state
+is shared across all request handlers.</p>
+<ul>
+<li><strong><code>Config::from_env()</code></strong>: Creates a
+<code>Config</code> struct by reading settings from environment
+variables.</li>
+<li><strong><code>AppState::try_new()</code></strong>: Asynchronously
+initializes the application state, including the HTTP client, JWT keys,
+compute providers, and auth provider factories.</li>
+<li><strong><code>AppState::register_provider_factory()</code></strong>:
+Registers a new authentication provider factory, making it available for
+use.</li>
+<li><strong><code>AppState::get_or_create_provider()</code></strong>:
+Retrieves a cached authentication provider or creates a new one using a
+registered factory. This allows for lazy initialization of
+providers.</li>
+<li><strong><code>AppState::issue_refresh_token()</code></strong>:
+Generates, stores, and returns a new refresh token for a user.</li>
+<li><strong><code>now()</code></strong>: A private helper function that
+returns the current Unix timestamp in seconds.</li>
+</ul>
+<h4 id="jwt.rs"><code>jwt.rs</code></h4>
+<p>Handles the creation (encoding) and validation of JSON Web Tokens
+(JWTs), which are used to secure the API endpoints.</p>
+<ul>
+<li><strong><code>JwtKeys::new()</code></strong>: Constructs a new
+<code>JwtKeys</code> instance with a signing key, issuer, and token
+time-to-live (TTL).</li>
+<li><strong><code>JwtKeys::sign()</code></strong>: Creates and signs a
+new JWT for a given user and provider.</li>
+<li><strong><code>JwtKeys::verify()</code></strong>: Validates a JWT’s
+signature and standard claims (like expiry and issuer).</li>
+<li><strong><code>CustomClaims::from_request_parts()</code></strong>: An
+Axum extractor that validates the <code>Authorization: Bearer</code>
+token from request headers and extracts the custom claims.</li>
+</ul>
+<h4 id="routesauth.rs"><code>routes/auth.rs</code></h4>
+<p>Defines the authentication-related API endpoints.</p>
+<ul>
+<li><strong><code>router()</code></strong>: Creates and returns the Axum
+<code>Router</code> for all authentication routes (<code>/device</code>,
+<code>/poll</code>, <code>/refresh</code>, <code>/revoke</code>,
+<code>/me</code>).</li>
+<li><strong><code>device_start()</code></strong>: The handler for
+<code>POST /auth/device</code>. It initiates the OAuth device flow for a
+specified provider.</li>
+<li><strong><code>poll()</code></strong>: The handler for
+<code>POST /auth/poll</code>. It polls the backend to check if the user
+has completed the device flow authorization.</li>
+<li><strong><code>refresh()</code></strong>: The handler for
+<code>POST /auth/refresh</code>. It exchanges a valid refresh token for
+a new JWT.</li>
+<li><strong><code>revoke()</code></strong>: The handler for
+<code>POST /auth/revoke</code>. It revokes a refresh token, invalidating
+it for future use.</li>
+<li><strong><code>me()</code></strong>: The handler for
+<code>GET /auth/me</code>. It returns the identity of the currently
+authenticated user based on their JWT.</li>
+<li><strong><code>internal()</code></strong>: A private helper function
+that converts a displayable error into a
+<code>(StatusCode, String)</code> tuple for an HTTP 500 Internal Server
+Error response.</li>
+</ul>
+<h4 id="routessessions.rs"><code>routes/sessions.rs</code></h4>
+<p>Defines endpoints for managing development sessions.</p>
+<ul>
+<li><strong><code>router()</code></strong>: Creates and returns the Axum
+<code>Router</code> for all session-related routes (<code>/</code>,
+<code>/{id}</code>).</li>
+<li><strong><code>create_session()</code></strong>: The handler for
+<code>POST /sessions</code>. It creates a new session record, returns an
+<code>ACCEPTED</code> status (including a <code>magic_link</code> for
+easy connection), and spawns a background task to provision the
+session.</li>
+<li><strong><code>get_session_status()</code></strong>: The handler for
+<code>GET /sessions/{id}</code>. It returns the current status of a
+specific session.</li>
+<li><strong><code>terminate_session()</code></strong>: The handler for
+<code>DELETE /sessions/{id}</code>. It initiates the termination of a
+session and returns an <code>ACCEPTED</code> status.</li>
+<li><strong><code>run_provisioning()</code></strong>: A private
+background task that handles the logic for provisioning a new compute
+session using the appropriate <code>ComputeProvider</code>. It updates
+the session state based on the outcome (e.g., to <code>Running</code> or
+<code>Failed</code>).</li>
+</ul>
+<h4 id="computetraits.rs"><code>compute/traits.rs</code></h4>
+<p>Defines the core abstractions for compute providers and remote
+execution.</p>
+<ul>
+<li><strong><code>RemoteExecutor</code> (trait)</strong>: Abstraction
+for executing commands, managing files, and handling processes (local or
+remote).</li>
+<li><strong><code>ComputeProvider</code> (trait)</strong>: Interface for
+managing session lifecycle (start, stop, health check).</li>
+</ul>
+<h4
+id="computeproviderslocalprovider.rs"><code>compute/providers/local/provider.rs</code></h4>
+<p>An implementation of the <code>ComputeProvider</code> trait that runs
+development sessions locally.</p>
+<ul>
+<li><strong><code>LocalComputeProvider::new()</code></strong>: Creates a
+new instance of the local compute provider.</li>
+<li><strong><code>LocalComputeProvider::start_session()</code></strong>:
+Orchestrates session startup, delegating to
+<code>setup_collab_mode</code> or <code>setup_pair_mode</code>.</li>
+<li><strong><code>LocalComputeProvider::setup_collab_mode()</code></strong>:
+Initializes a shared workspace for asynchronous collaboration.</li>
+<li><strong><code>LocalComputeProvider::setup_pair_mode()</code></strong>:
+Initializes a pair programming session using <code>tmux</code>.</li>
+<li><strong><code>LocalComputeProvider::install_scripts()</code></strong>:
+Copies the <code>steadystate</code> binary and installs helper scripts
+(<code>steadystate-sync</code>, <code>steadystate-wrapper</code>) into
+the session.</li>
+<li><strong><code>LocalComputeProvider::launch_sshd()</code></strong>:
+Configures and starts a dedicated <code>sshd</code> instance for the
+session.
+<ul>
+<li><strong>SSH User Handling</strong>: Uses
+<code>STEADYSTATE_SSH_USER</code> env var, falls back to
+<code>USER</code> env var, or defaults to “steadystate”.</li>
+<li><strong>Token Injection</strong>: Injects the GitHub token into the
+repository’s <code>origin</code> remote URL to enable passwordless
+<code>git push</code>.</li>
+</ul></li>
+</ul>
+<h4
+id="computecommongit_ops.rs"><code>compute/common/git_ops.rs</code></h4>
+<p>Helper struct for performing Git operations via the
+<code>RemoteExecutor</code>.</p>
+<ul>
+<li><strong><code>GitOps::clone()</code></strong>: Clones a
+repository.</li>
+<li><strong><code>GitOps::checkout_new_branch()</code></strong>: Creates
+and checks out a new branch.</li>
+<li><strong><code>GitOps::configure_user()</code></strong>: Sets
+<code>user.name</code> and <code>user.email</code>.</li>
+<li><strong><code>GitOps::add_remote()</code></strong>: Adds a new
+remote.</li>
+<li><strong><code>GitOps::set_remote_url()</code></strong>: Updates the
+URL of an existing remote (used for token injection).</li>
+</ul>
+<h4
+id="computecommonssh_keys.rs"><code>compute/common/ssh_keys.rs</code></h4>
+<p>Manages SSH keys and <code>authorized_keys</code> files.</p>
+<ul>
+<li><strong><code>SshKeyManager::fetch_github_keys()</code></strong>:
+Fetches public keys for a GitHub user.</li>
+<li><strong><code>SshKeyManager::build_authorized_keys()</code></strong>:
+Aggregates keys for the session creator and allowed users.</li>
+<li><strong><code>SshKeyManager::generate_authorized_keys_file()</code></strong>:
+Generates the content for an <code>authorized_keys</code> file,
+optionally with a forced command.</li>
+</ul>
+<h4 id="computecommonsshd.rs"><code>compute/common/sshd.rs</code></h4>
+<p>Manages <code>sshd</code> configuration and execution.</p>
+<ul>
+<li><strong><code>SshdConfig::generate()</code></strong>: Generates a
+secure <code>sshd_config</code> file.</li>
+<li><strong><code>find_sshd_binary()</code></strong>: Locates the
+<code>sshd</code> binary on the system.</li>
+<li><strong><code>generate_host_keys()</code></strong>: Generates
+ephemeral host keys for the session.</li>
+</ul>
+<h2 id="collaboration-architecture">Collaboration Architecture</h2>
+<p>SteadyState uses a “Shared Workspace” model
+(<code>--mode=collab</code>) to enable seamless asynchronous
+collaboration on the same compute instance.</p>
+<h3 id="shared-workspace-structure">Shared Workspace Structure</h3>
+<p>When a session is started in <code>collab</code> mode, the backend
+provisions a secure directory structure:</p>
+<pre><code>~/.steadystate/sessions/&lt;session_id&gt;/
+├── canonical/          # Bare Git repository (synchronization point)
+├── repo/               # The actual bare repo cloned from GitHub
+├── ssh/                # Dedicated SSH daemon configuration and keys
+├── bin/                # Session-specific binaries (steadystate, steadystate-sync, wrapper)
+├── sync-log            # Log of sync operations
+├── activity-log        # Log of user activity
+└── session-info.json   # JSON file containing magic link and SSH connection info</code></pre>
+<h3 id="session-initialization">Session Initialization</h3>
+<ol type="1">
+<li><strong>Canonical Repo</strong>: The backend initializes a bare
+clone of the target repository in <code>canonical/</code>.</li>
+<li><strong>Session Branch</strong>: A dedicated branch
+<code>steadystate/collab/&lt;session_id&gt;</code> is created to isolate
+session work.</li>
+<li><strong>Environment Setup</strong>:
+<ul>
+<li>The <code>steadystate</code> CLI binary is copied (or symlinked)
+into <code>bin/</code>.</li>
+<li><code>sync-log</code> and <code>activity-log</code> files are
+created to prevent dashboard hangs.</li>
+<li><code>session-info.json</code> is written with connection
+details.</li>
+</ul></li>
+<li><strong>SSHD Launch</strong>: A custom <code>sshd</code> instance is
+launched on a random high port, configured to:
+<ul>
+<li>Use a generated host key.</li>
+<li>Authenticate users via their GitHub public keys.</li>
+<li>Force all connections to execute a <code>wrapper.sh</code>
+script.</li>
+</ul></li>
+</ol>
+<h3 id="magic-links">Magic Links</h3>
+<p>The backend generates a <strong>Magic Link</strong>
+(<code>steadystate://collab/&lt;session_id&gt;?ssh=...&amp;host_key=...</code>)
+for every session. This link encodes:</p>
+<ul>
+<li><strong>Mode</strong>: <code>collab</code>.</li>
+<li><strong>Session ID</strong>: The unique identifier for the
+session.</li>
+<li><strong>Connection Details</strong>: The full SSH connection string
+(user, host, port).</li>
+<li><strong>Host Key</strong>: The public host key of the session’s SSH
+server, allowing the CLI to automatically configure
+<code>known_hosts</code> securely.</li>
+</ul>
+<h3 id="connection-isolation">Connection &amp; Isolation</h3>
+<p>When a user connects via SSH
+(<code>ssh &lt;user&gt;@host -p &lt;port&gt;</code>):</p>
+<ol type="1">
+<li><strong>Authentication</strong>: <code>sshd</code> authenticates the
+user using their public key.</li>
+<li><strong>Wrapper Script</strong>: The <code>wrapper.sh</code> script
+is executed:
+<ul>
+<li>Identifies the user based on the key used.</li>
+<li>Creates a private <strong>Git Worktree</strong> for the user in
+<code>.worktree/</code> (inside the user’s home in the session).</li>
+<li>Initializes <code>.worktree/steadystate.json</code> with metadata
+required for syncing.</li>
+<li>Configures Git identity (user.name, user.email).</li>
+<li>Drops the user into a shell inside their worktree.</li>
+</ul></li>
+</ol>
+<p>This ensures that while users share the same compute resources, their
+file system changes are isolated until they choose to sync.</p>
+<h3 id="synchronization-workflow">Synchronization Workflow</h3>
+<p>Users synchronize their work using the <code>steadystate sync</code>
+and <code>steadystate publish</code> commands.</p>
+<h4 id="steadystate-sync-local-sync"><code>steadystate sync</code>
+(Local Sync)</h4>
+<p>Synchronizes the user’s private worktree with the session’s
+<code>canonical</code> repository using a Y-CRDT (Conflict-Free
+Replicated Data Type) approach: 1. <strong>Materialize</strong>:
+Converts both the worktree state and the canonical state into Y-CRDT
+models. 2. <strong>Merge</strong>: Merges the two models, resolving
+conflicts automatically where possible. 3. <strong>Apply</strong>:
+Updates the <code>canonical</code> repository with the merged state. 4.
+<strong>Refresh</strong>: Updates the user’s worktree to match the new
+canonical state.</p>
+<h4
+id="steadystate-publish-remote-sync"><code>steadystate publish</code>
+(Remote Sync)</h4>
+<p>Pushes the state of the <code>canonical</code> repository to the
+upstream GitHub repository: 1. <strong>Sync</strong>: Performs a local
+sync (canonical &lt;-&gt; worktree). 2. <strong>Commit</strong>: Creates
+a commit in the <code>canonical</code> repo with the changes. 3.
+<strong>Push</strong>: Pushes the session branch to the
+<code>origin</code> remote (GitHub). * <strong>Authentication</strong>:
+Uses the injected GitHub token in the remote URL to authenticate without
+user intervention.</p>
+<h2 id="cli-architecture">CLI Architecture</h2>
+<p>The <code>cli</code> is a command-line application built with
+<code>clap</code> that serves as the primary user interface for
+SteadyState. It communicates with the <code>backend</code> via a REST
+API.</p>
+<h3 id="key-modules-and-functions-1">Key Modules and Functions</h3>
+<h4 id="main.rs-1"><code>main.rs</code></h4>
+<p>The entry point for the CLI. It defines the command structure, parses
+arguments, and dispatches to the appropriate handler.</p>
+<ul>
+<li><strong><code>main()</code></strong>: The asynchronous main function
+that sets up logging, parses CLI commands, creates an HTTP client, and
+executes the matched subcommand.</li>
+<li><strong><code>whoami()</code></strong>: The handler for the
+<code>steadystate whoami</code> command. It reads the local session and
+prints the current user’s login status.</li>
+<li><strong><code>logout()</code></strong>: The handler for the
+<code>steadystate logout</code> command. It revokes the refresh token
+via an API call and deletes local session data.</li>
+<li><strong><code>up()</code></strong>: The handler for the
+<code>steadystate up</code> command. It makes an authenticated request
+to the backend to create a new development session.</li>
+</ul>
+<h4 id="auth.rs"><code>auth.rs</code></h4>
+<p>Contains the logic for handling user authentication and making
+authenticated API calls.</p>
+<ul>
+<li><strong><code>device_login()</code></strong>: Orchestrates the
+entire OAuth device flow from the CLI side, including initiating the
+flow, polling for completion, and storing the resulting tokens.</li>
+<li><strong><code>perform_refresh()</code></strong>: Proactively
+refreshes the JWT using the stored refresh token. It is called
+automatically when the JWT is near expiry.</li>
+<li><strong><code>request_with_auth()</code></strong>: A generic helper
+function for making authenticated API requests. It handles reading the
+session, checking for JWT expiry, performing a refresh if needed, and
+then sending the request with the <code>Authorization: Bearer</code>
+header.</li>
+<li><strong><code>extract_exp_from_jwt()</code></strong>: A utility
+function to parse a JWT (without verifying its signature) to extract its
+expiry timestamp.</li>
+<li><strong><code>store_refresh_token()</code></strong>: Securely stores
+a refresh token in the operating system’s keychain/keyring.</li>
+<li><strong><code>get_refresh_token()</code></strong>: Retrieves a
+stored refresh token from the keychain.</li>
+<li><strong><code>delete_refresh_token()</code></strong>: Deletes a
+stored refresh token from the keychain.</li>
+<li><strong><code>send_with_retries()</code></strong>: A private helper
+function that wraps an HTTP request, providing a retry mechanism for
+transient network failures (like timeouts or connection errors).</li>
+</ul>
+<h4 id="session.rs"><code>session.rs</code></h4>
+<p>Manages the local user session file.</p>
+<ul>
+<li><strong><code>Session::new()</code></strong>: Creates a new
+<code>Session</code> struct, automatically extracting the expiry
+timestamp from the provided JWT.</li>
+<li><strong><code>Session::is_near_expiry()</code></strong>: Checks if
+the session’s JWT has expired or will expire within a specified time
+buffer.</li>
+<li><strong><code>get_cfg_dir()</code></strong>: Determines the
+appropriate configuration directory for storing session files,
+respecting the <code>STEADYSTATE_CONFIG_DIR</code> environment variable
+for overrides.</li>
+<li><strong><code>session_file()</code></strong>: Constructs the full
+path to the <code>session.json</code> file.</li>
+<li><strong><code>write_session()</code></strong>: Serializes a
+<code>Session</code> struct to JSON and writes it to the session file
+with secure file permissions (0600 on Unix).</li>
+<li><strong><code>read_session()</code></strong>: Reads and deserializes
+the <code>Session</code> struct from the session file.</li>
+<li><strong><code>remove_session()</code></strong>: Deletes the session
+file from the disk.</li>
+</ul>
+<h4 id="notify.rs-dashboard"><code>notify.rs</code> (Dashboard)</h4>
+<p>Implements the <code>steadystate watch</code> dashboard.</p>
+<ul>
+<li><strong><code>watch()</code></strong>: The main loop for the
+dashboard.
+<ul>
+<li>Connects via SSH to the session.</li>
+<li>Tails <code>sync-log</code> and <code>activity-log</code> to display
+real-time updates.</li>
+<li>Reads <code>session-info.json</code> to display the magic link and
+join command.</li>
+<li>Displays connected users and recent activity with human-readable
+timestamps.</li>
+</ul></li>
+</ul>
+<h4 id="sync.rs"><code>sync.rs</code></h4>
+<p>Implements the synchronization logic (<code>sync</code>,
+<code>publish</code>, <code>status</code>, <code>diff</code>).</p>
+<ul>
+<li><strong><code>sync()</code></strong>: Orchestrates the local
+synchronization process (Materialize -&gt; Merge -&gt; Apply -&gt;
+Refresh).</li>
+<li><strong><code>publish_command()</code></strong>: Orchestrates the
+remote publish process (Sync -&gt; Commit -&gt; Push).</li>
+<li><strong><code>status_command()</code></strong>: Shows the status of
+the local worktree relative to the canonical repo.</li>
+<li><strong><code>diff_command()</code></strong>: Shows the diff between
+the local worktree and the canonical repo.</li>
+<li><strong><code>apply_tree_to_canonical()</code></strong>:
+Destructively updates the canonical repo with the merged state (with
+safety checks).</li>
+<li><strong><code>sync_worktree_from_canonical()</code></strong>:
+Updates the user’s worktree to match the canonical repo.</li>
+</ul>
+<h4 id="merge.rs"><code>merge.rs</code></h4>
+<p>Implements the Y-CRDT based merge engine.</p>
+<ul>
+<li><strong><code>materialize_git_tree()</code></strong>: Reads a Git
+tree into a <code>TreeSnapshot</code>.</li>
+<li><strong><code>materialize_fs_tree()</code></strong>: Reads a
+filesystem directory into a <code>TreeSnapshot</code>.</li>
+<li><strong><code>merge_trees()</code></strong>: Performs a 3-way merge
+of two <code>TreeSnapshot</code>s against a base.</li>
+<li><strong><code>merge_file_yjs()</code></strong>: Performs a 3-way
+text merge using the <code>yrs</code> crate (Yjs for Rust).</li>
+</ul>
+<h2 id="shared-code-packagescommon">Shared Code
+(<code>packages/common</code>)</h2>
+<p>The <code>packages/common</code> crate is intended to hold shared
+data structures, utilities, and business logic that is common to both
+the <code>backend</code> and <code>cli</code> applications. This helps
+to reduce code duplication and ensure consistency between the two
+components.</p>
+<p>Currently, this crate is a placeholder and does not contain any
+shared code.</p>
+<h2 id="cli-backend-interaction">CLI-Backend Interaction</h2>
+<p>The <code>cli</code> and <code>backend</code> communicate over a REST
+API. The <code>cli</code> acts as the client, making HTTP requests to
+the <code>backend</code> service to perform actions.</p>
+<h3 id="authentication-flow-steadystate-login">Authentication Flow
+(<code>steadystate login</code>)</h3>
+<ol type="1">
+<li><strong>Device Flow Request</strong>: The <code>cli</code> sends a
+<code>POST</code> request to the <code>backend</code>’s
+<code>/auth/device</code> endpoint.</li>
+<li><strong>User Authorization</strong>: The <code>backend</code>
+responds with a <code>verification_uri</code> and
+<code>user_code</code>, which the <code>cli</code> displays to the user.
+The user authorizes the application in their browser.</li>
+<li><strong>Polling</strong>: The <code>cli</code> polls the
+<code>backend</code>’s <code>/auth/poll</code> endpoint until the user
+completes authorization.</li>
+<li><strong>Token Issuance</strong>: The <code>backend</code> returns a
+JWT and a refresh token.</li>
+<li><strong>Secure Storage</strong>: The <code>cli</code> stores the
+refresh token in the system keychain and saves the JWT in a local
+session file.</li>
+</ol>
+<h3 id="authenticated-api-calls-steadystate-up">Authenticated API Calls
+(<code>steadystate up</code>)</h3>
+<ol type="1">
+<li>The <code>cli</code> reads the JWT from the session file.</li>
+<li>If the JWT is expired, the <code>cli</code> uses the refresh token
+to request a new one from the <code>/auth/refresh</code> endpoint.</li>
+<li>The <code>cli</code> sends the API request (e.g., to
+<code>/sessions</code>) with the valid JWT in the
+<code>Authorization: Bearer &lt;token&gt;</code> header.</li>
+<li>The <code>backend</code> validates the JWT and processes the
+request.</li>
+</ol>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">ARCHITECTURE</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

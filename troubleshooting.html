@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TROUBLESHOOTING - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" class="current">Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="name">NAME</h1>
+<p><strong>steadystate troubleshooting</strong> - common issues and
+solutions</p>
+<h1 id="authentication-issues">AUTHENTICATION ISSUES</h1>
+<h2 id="refresh-token-has-expired-or-been-revoked">“Refresh token has
+expired or been revoked”</h2>
+<p><strong>Cause:</strong> Your authentication session has expired.</p>
+<p><strong>Solution:</strong></p>
+<pre><code>steadystate logout
+steadystate login</code></pre>
+<h2 id="device-code-expires-before-authorization">Device code expires
+before authorization</h2>
+<p><strong>Cause:</strong> The device code has a 15-minute timeout.</p>
+<p><strong>Solution:</strong> Run <code>steadystate login</code> again
+and complete authorization more quickly.</p>
+<h2 id="failed-to-get-user-info-from-github">“Failed to get user info
+from GitHub”</h2>
+<p><strong>Cause:</strong> Network issue or GitHub API problem.</p>
+<p><strong>Solution:</strong> 1. Check internet connection 2. Verify
+GitHub status at githubstatus.com 3. Try again in a few minutes</p>
+<h1 id="connection-issues">CONNECTION ISSUES</h1>
+<h2 id="permission-denied-publickey">“Permission denied
+(publickey)”</h2>
+<p><strong>Cause:</strong> Your SSH key isn’t authorized for the
+session.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>Ensure you’re logged in:</p>
+<pre><code>steadystate whoami</code></pre></li>
+<li><p>Verify your GitHub account has SSH keys:</p>
+<pre><code>curl https://github.com/&lt;username&gt;.keys</code></pre></li>
+<li><p>Ensure you’re a collaborator on the repository</p></li>
+<li><p>Ask the session host to re-create the session</p></li>
+</ol>
+<h2 id="connection-refused">“Connection refused”</h2>
+<p><strong>Cause:</strong> Cannot reach the session host.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>Verify you can reach the host:</p>
+<pre><code>ping &lt;host-ip&gt;</code></pre></li>
+<li><p>Check the port is correct:</p>
+<pre><code>nc -zv &lt;host-ip&gt; &lt;port&gt;</code></pre></li>
+<li><p>Ask the host to check firewall settings:</p>
+<pre><code>sudo ufw allow &lt;port&gt;/tcp</code></pre></li>
+<li><p>If on different networks, you may need VPN or port
+forwarding</p></li>
+</ol>
+<h2 id="host-key-verification-failed">“Host key verification
+failed”</h2>
+<p><strong>Cause:</strong> SSH host key mismatch.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>The magic link may be outdated - ask host for a new one</p></li>
+<li><p>Remove old known_hosts entry:</p>
+<pre><code>ssh-keygen -R &quot;[host]:port&quot;</code></pre></li>
+</ol>
+<h2 id="connection-hangs">Connection hangs</h2>
+<p><strong>Cause:</strong> Firewall blocking, network timeout, or sshd
+not running.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>Try with verbose SSH:</p>
+<pre><code>ssh -v -p &lt;port&gt; user@host</code></pre></li>
+<li><p>Check if sshd is running (host side):</p>
+<pre><code>ps aux | grep sshd</code></pre></li>
+<li><p>Check sshd logs (host side):</p>
+<pre><code>journalctl -u steadystate -f</code></pre></li>
+</ol>
+<h1 id="sync-issues">SYNC ISSUES</h1>
+<h2 id="push-failed---please-sync-again">“Push failed - please sync
+again”</h2>
+<p><strong>Cause:</strong> Another collaborator pushed changes while you
+were syncing.</p>
+<p><strong>Solution:</strong> This is normal in active collaboration.
+Just run:</p>
+<pre><code>steadystate sync</code></pre>
+<p>The second sync will fetch their changes, merge, and push.</p>
+<h2 id="binary-file-conflict">“Binary file conflict”</h2>
+<p><strong>Cause:</strong> Two users modified the same binary file
+(image, PDF, etc.).</p>
+<p><strong>Solution:</strong> Binary files cannot be auto-merged.
+Coordinate with your collaborator:</p>
+<ol type="1">
+<li>Decide whose version to keep</li>
+<li>One user reverts their change</li>
+<li>Both users sync</li>
+</ol>
+<h2 id="sync-completes-but-changes-dont-appear">Sync completes but
+changes don’t appear</h2>
+<p><strong>Cause:</strong> May be looking at wrong directory or stale
+worktree.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>Verify you’re in the worktree:</p>
+<pre><code>pwd
+ls -la .worktree/</code></pre></li>
+<li><p>Check the sync actually pushed:</p>
+<pre><code>cd ../canonical
+git log -1</code></pre></li>
+<li><p>Other user should sync:</p>
+<pre><code>steadystate sync</code></pre></li>
+</ol>
+<h2 id="metadata-file-not-found">“Metadata file not found”</h2>
+<p><strong>Cause:</strong> Not in a SteadyState worktree, or worktree
+corrupted.</p>
+<p><strong>Solution:</strong></p>
+<ol type="1">
+<li><p>Navigate to your worktree:</p>
+<pre><code>cd ~/worktrees/&lt;username&gt;</code></pre></li>
+<li><p>If corrupted, leave and rejoin the session</p></li>
+</ol>
+<h2 id="merge-produces-unexpected-results">Merge produces unexpected
+results</h2>
+<p><strong>Cause:</strong> Both users edited the exact same text.</p>
+<p><strong>Explanation:</strong> SteadyState uses an additive merge
+strategy. If two users replace the same word with different values, both
+replacements are kept (canonical first, then local).</p>
+<p><strong>Example:</strong></p>
+<pre><code>Base:   &quot;Hello World&quot;
+User A: &quot;Hi World&quot;
+User B: &quot;Hey World&quot;
+Result: &quot;HeyHi World&quot;</code></pre>
+<p><strong>Solution:</strong> Coordinate with collaborators to work on
+different sections. After sync, manually clean up if needed.</p>
+<h1 id="session-issues">SESSION ISSUES</h1>
+<h2 id="session-not-found">“Session not found”</h2>
+<p><strong>Cause:</strong> Session expired, terminated, or backend
+restarted.</p>
+<p><strong>Solution:</strong> Ask the host to create a new session.</p>
+<h2 id="dashboard-shows-observer---no-worktree">Dashboard shows
+“Observer - No worktree”</h2>
+<p><strong>Cause:</strong> Opened dashboard without joining first.</p>
+<p><strong>Solution:</strong> Use <code>steadystate join</code> to
+create your worktree, then use dashboard.</p>
+<h2 id="session-host-cannot-see-collaborators-changes">Session host
+cannot see collaborators’ changes</h2>
+<p><strong>Cause:</strong> Collaborators haven’t synced, or sync
+failed.</p>
+<p><strong>Solution:</strong></p>
+<ol type="1">
+<li>Ask collaborators to run <code>steadystate sync</code></li>
+<li>Host should also run <code>steadystate sync</code> to fetch their
+changes</li>
+</ol>
+<h2 id="magic-link-doesnt-work">Magic link doesn’t work</h2>
+<p><strong>Cause:</strong> URL encoding issues or incomplete copy.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>Ensure the entire link is quoted:</p>
+<pre><code>steadystate join &quot;steadystate://collab/...full-link...&quot;</code></pre></li>
+<li><p>Check for truncation - the link should include
+<code>host_key=</code></p></li>
+<li><p>Ask host to share via a method that preserves the full
+URL</p></li>
+</ol>
+<h1 id="backend-issues">BACKEND ISSUES</h1>
+<h2 id="backend-wont-start">Backend won’t start</h2>
+<p><strong>Cause:</strong> Missing configuration or port conflict.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li><p>Check required environment variables:</p>
+<pre><code>echo $GITHUB_CLIENT_ID
+echo $GITHUB_CLIENT_SECRET
+echo $JWT_SECRET</code></pre></li>
+<li><p>Check port availability:</p>
+<pre><code>lsof -i :3000</code></pre></li>
+<li><p>Check logs:</p>
+<pre><code>RUST_LOG=debug ./steadystate-backend</code></pre></li>
+</ol>
+<h2 id="address-already-in-use-for-ssh">“Address already in use” for
+SSH</h2>
+<p><strong>Cause:</strong> Port conflict with another sshd or
+service.</p>
+<p><strong>Solution:</strong> The backend now uses dynamic port
+allocation. If you see this error, ensure the port range (2000-3000) is
+available.</p>
+<h2 id="github-oauth-errors">GitHub OAuth errors</h2>
+<p><strong>Cause:</strong> Misconfigured OAuth app.</p>
+<p><strong>Solutions:</strong></p>
+<ol type="1">
+<li>Verify Client ID and Secret are correct</li>
+<li>Check OAuth app callback URL matches your backend URL</li>
+<li>Ensure OAuth app is not suspended</li>
+</ol>
+<h1 id="debugging">DEBUGGING</h1>
+<h2 id="enable-debug-logging">Enable debug logging</h2>
+<pre><code>export RUST_LOG=debug
+steadystate sync</code></pre>
+<h2 id="enable-merge-debugging">Enable merge debugging</h2>
+<pre><code>export STEADYSTATE_DEBUG_MERGE=1
+steadystate sync</code></pre>
+<h2 id="check-session-files">Check session files</h2>
+<p>Inside a session:</p>
+<pre><code># View session metadata
+cat .worktree/steadystate.json
+
+# View sync log
+cat ../sync-log
+
+# View active users
+cat ../active-users
+
+# Check canonical state
+cd ../canonical &amp;&amp; git log --oneline -5</code></pre>
+<h2 id="test-ssh-manually">Test SSH manually</h2>
+<pre><code>ssh -v -p &lt;port&gt; \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    steadystate@&lt;host&gt;</code></pre>
+<h1 id="getting-help">GETTING HELP</h1>
+<p>If your issue isn’t covered here:</p>
+<ol type="1">
+<li>Check existing issues:
+https://github.com/b-rodrigues/steadystate/issues</li>
+<li>Open a new issue with:
+<ul>
+<li>SteadyState version</li>
+<li>Operating system</li>
+<li>Steps to reproduce</li>
+<li>Error messages and logs</li>
+<li>Output of <code>steadystate whoami</code></li>
+</ul></li>
+</ol>
+<h1 id="see-also">SEE ALSO</h1>
+<p><strong>steadystate</strong>(1), <strong>ssh</strong>(1),
+<strong>git</strong>(1)</p>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">TROUBLESHOOTING</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

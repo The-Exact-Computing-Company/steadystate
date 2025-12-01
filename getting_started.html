@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GETTING_STARTED - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="getting-started-with-steadystate">Getting Started with
+SteadyState</h1>
+<p>SteadyState is a real-time collaboration tool for data science and
+development projects. It enables multiple users to work on the same
+codebase simultaneously with automatic conflict-free merging.</p>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li><a href="#self-hosting-setup">Self-Hosting Setup</a></li>
+<li><a href="#authentication">Authentication</a></li>
+<li><a href="#creating-a-session">Creating a Session</a></li>
+<li><a href="#joining-a-session">Joining a Session</a></li>
+<li><a href="#the-dashboard">The Dashboard</a></li>
+<li><a href="#working-with-changes">Working with Changes</a></li>
+<li><a href="#workflow-example">Workflow Example</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ol>
+<hr />
+<h2 id="self-hosting-setup">Self-Hosting Setup</h2>
+<h3 id="prerequisites">Prerequisites</h3>
+<ul>
+<li>Linux server (Ubuntu 22.04+ recommended) or NixOS</li>
+<li>Rust toolchain (1.75+)</li>
+<li>Git</li>
+<li>GitHub OAuth App credentials</li>
+</ul>
+<h3 id="create-a-github-oauth-app">1. Create a GitHub OAuth App</h3>
+<ol type="1">
+<li>Go to <strong>GitHub → Settings → Developer settings → OAuth Apps →
+New OAuth App</strong></li>
+<li>Fill in:
+<ul>
+<li><strong>Application name</strong>: <code>SteadyState</code> (or your
+preferred name)</li>
+<li><strong>Homepage URL</strong>:
+<code>http://your-server:3000</code></li>
+<li><strong>Authorization callback URL</strong>:
+<code>http://your-server:3000/auth/callback</code></li>
+</ul></li>
+<li>Note your <strong>Client ID</strong> and generate a <strong>Client
+Secret</strong></li>
+</ol>
+<h3 id="clone-and-build">2. Clone and Build</h3>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Clone the repository</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> clone https://github.com/your-org/steadystate.git</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> steadystate</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Build the backend and CLI</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> build <span class="at">--release</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="co"># The binaries will be in target/release/</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="co"># - steadystate-backend (the server)</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="co"># - steadystate (the CLI)</span></span></code></pre></div>
+<h3 id="configure-the-backend">3. Configure the Backend</h3>
+<p>Create a configuration file or set environment variables:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Required</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GITHUB_CLIENT_ID</span><span class="op">=</span><span class="st">&quot;your_github_client_id&quot;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GITHUB_CLIENT_SECRET</span><span class="op">=</span><span class="st">&quot;your_github_client_secret&quot;</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">JWT_SECRET</span><span class="op">=</span><span class="st">&quot;</span><span class="va">$(</span><span class="ex">openssl</span> rand <span class="at">-base64</span> 32<span class="va">)</span><span class="st">&quot;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Optional</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_PORT</span><span class="op">=</span>3000</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_EXTERNAL_HOST</span><span class="op">=</span><span class="st">&quot;your-server-ip-or-hostname&quot;</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_SSH_USER</span><span class="op">=</span><span class="st">&quot;steadystate&quot;</span>  <span class="co"># System user for SSH sessions</span></span></code></pre></div>
+<h3 id="create-the-steadystate-system-user">4. Create the SteadyState
+System User</h3>
+<p>For collaboration sessions, SteadyState needs a dedicated system
+user:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create the user</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> <span class="at">-s</span> /bin/bash steadystate</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Ensure the user can run the CLI</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> cp target/release/steadystate /usr/local/bin/</span></code></pre></div>
+<p>On <strong>NixOS</strong>, add to your configuration:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode nix"><code class="sourceCode nix"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>users.users.steadystate = <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="va">isNormalUser</span> <span class="op">=</span> <span class="cn">true</span><span class="op">;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="va">home</span> <span class="op">=</span> <span class="st">&quot;/home/steadystate&quot;</span><span class="op">;</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  <span class="va">shell</span> <span class="op">=</span> pkgs.bash<span class="op">;</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>;</span></code></pre></div>
+<h3 id="start-the-backend">5. Start the Backend</h3>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Run the backend</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./target/release/steadystate-backend</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Or with systemd (recommended for production)</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl start steadystate</span></code></pre></div>
+<p>The backend will start on port 3000 (or your configured port).</p>
+<h3 id="firewall-configuration">6. Firewall Configuration</h3>
+<p>Ensure these ports are accessible:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Port</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>3000</td>
+<td>Backend API</td>
+</tr>
+<tr class="even">
+<td>2000-3000</td>
+<td>SSH sessions (dynamic range)</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># UFW example</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ufw allow 3000/tcp</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ufw allow 2000:3000/tcp</span></code></pre></div>
+<hr />
+<h2 id="authentication">Authentication</h2>
+<h3 id="first-time-login">First-Time Login</h3>
+<p>SteadyState uses GitHub for authentication via the device flow (no
+browser redirect needed).</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Point CLI to your backend</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_BACKEND_URL</span><span class="op">=</span><span class="st">&quot;http://your-server:3000&quot;</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Login with GitHub</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> login</span></code></pre></div>
+<p>You’ll see:</p>
+<pre><code>🔐 Starting GitHub device authentication...
+
+Please visit: https://github.com/login/device
+And enter code: ABCD-1234
+
+Waiting for authorization...</code></pre>
+<ol type="1">
+<li>Open the URL in your browser</li>
+<li>Enter the code shown</li>
+<li>Authorize the SteadyState app</li>
+<li>The CLI will automatically detect authorization:</li>
+</ol>
+<pre><code>✅ Logged in as brodrigues</code></pre>
+<h3 id="verify-login">Verify Login</h3>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> whoami</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Output: brodrigues</span></span></code></pre></div>
+<h3 id="logout">Logout</h3>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> logout</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Output: Logged out (local tokens removed).</span></span></code></pre></div>
+<hr />
+<h2 id="creating-a-session">Creating a Session</h2>
+<p>The <strong>session host</strong> creates a collaboration session
+using <code>steadystate up</code>.</p>
+<h3 id="basic-usage">Basic Usage</h3>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create a collaboration session for a GitHub repository</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--mode</span><span class="op">=</span>collab https://github.com/username/repository</span></code></pre></div>
+<h3 id="options">Options</h3>
+<table>
+<colgroup>
+<col style="width: 38%" />
+<col style="width: 61%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>--mode=collab</code></td>
+<td>Enable collaboration mode (required for multi-user)</td>
+</tr>
+<tr class="even">
+<td><code>--branch=NAME</code></td>
+<td>Start from a specific branch (default: main)</td>
+</tr>
+<tr class="odd">
+<td><code>--allow=user1,user2</code></td>
+<td>Restrict access to specific GitHub users</td>
+</tr>
+</tbody>
+</table>
+<h3 id="example">Example</h3>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--mode</span><span class="op">=</span>collab <span class="at">--branch</span><span class="op">=</span>feature-analysis https://github.com/b-rodrigues/housing</span></code></pre></div>
+<p>Output:</p>
+<pre><code>Creating session...
+✅ Session ready!
+
+📋 Share this magic link with collaborators:
+   steadystate join &quot;steadystate://collab/a1b2c3d4?ssh=ssh%3A%2F%2Fsteadystate%40192.168.1.100%3A2847&amp;host_key=ssh-ed25519%20AAAAC3...&quot;
+
+Launching dashboard...</code></pre>
+<p>The host is automatically connected to the dashboard.</p>
+<hr />
+<h2 id="joining-a-session">Joining a Session</h2>
+<p>Collaborators join using the magic link shared by the host.</p>
+<h3 id="join-a-session">Join a Session</h3>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> join <span class="st">&quot;steadystate://collab/a1b2c3d4?ssh=ssh%3A%2F%2Fsteadystate%40192.168.1.100%3A2847&amp;host_key=ssh-ed25519%20AAAAC3...&quot;</span></span></code></pre></div>
+<blockquote>
+<p><strong>Important</strong>: Quote the entire URL to prevent shell
+interpretation of special characters.</p>
+</blockquote>
+<p>Output:</p>
+<pre><code>Connecting to session...
+Creating workspace for rap4all...
+
+╔════════════════════════════════════════════════════════════╗
+║         Welcome to SteadyState Collaboration Mode          ║
+╚════════════════════════════════════════════════════════════╝
+
+Commands:
+  steadystate sync      - Sync your changes
+  steadystate diff      - Show changes
+  steadystate status    - Check status
+
+rap4all@session:~/housing$</code></pre>
+<p>You now have your own worktree with the repository files. Edit files
+as normal using your preferred editor (vim, nano, VS Code remote,
+etc.).</p>
+<hr />
+<h2 id="the-dashboard">The Dashboard</h2>
+<p>The dashboard provides a real-time view of session activity.</p>
+<h3 id="opening-the-dashboard">Opening the Dashboard</h3>
+<p><strong>As host</strong> (automatically opened after
+<code>up</code>): The dashboard launches automatically.</p>
+<p><strong>As collaborator or observer</strong>:</p>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> dashboard <span class="st">&quot;steadystate://collab/a1b2c3d4?ssh=...&quot;</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Or use the alias</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> dash <span class="st">&quot;steadystate://collab/a1b2c3d4?ssh=...&quot;</span></span></code></pre></div>
+<h3 id="dashboard-interface">Dashboard Interface</h3>
+<pre><code>SteadyState Dashboard
+Session ID: a1b2c3d4
+Repository: housing
+Join with:       steadystate join &quot;steadystate://collab/a1b2c3d4?ssh=...&quot;
+To join with ssh: ssh steadystate@192.168.1.100 -p 2847
+--------------------------------------------------------------------------------
+User:       brodrigues (Connected)
+--------------------------------------------------------------------------------
+Connected Users:
+  • brodrigues
+  • rap4all
+
+Recent Activity:
+  [14:32:05] brodrigues synced
+      - analysis.R 10:12
+      - data/housing.csv 1:50
+  [14:35:22] rap4all synced
+      - analysis.R 25:30
+  [14:38:01] brodrigues synced
+      - analysis.R 45:52
+
+--------------------------------------------------------------------------------
+Status: Sync complete!
+
+Controls: [s] Sync  [p] Publish  [d] Diff  [c] Credit  [q] Quit</code></pre>
+<p>### Dashboard Controls</p>
+<table>
+<thead>
+<tr class="header">
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>s</code></td>
+<td>Run <code>steadystate sync</code> - sync your changes with
+collaborators</td>
+</tr>
+<tr class="even">
+<td><code>p</code></td>
+<td>Run <code>steadystate publish</code> - push changes to GitHub</td>
+</tr>
+<tr class="odd">
+<td><code>d</code></td>
+<td>Run <code>steadystate diff</code> - view your local changes</td>
+</tr>
+<tr class="even">
+<td><code>c</code></td>
+<td>Run <code>steadystate credit</code> - view git blame for a file</td>
+</tr>
+<tr class="odd">
+<td><code>q</code> or <code>Esc</code></td>
+<td>Exit dashboard</td>
+</tr>
+<tr class="even">
+<td><code>Ctrl+C</code></td>
+<td>Exit dashboard</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="working-with-changes">Working with Changes</h2>
+<h3 id="check-status">Check Status</h3>
+<p>See what files you’ve modified:</p>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> status</span></code></pre></div>
+<p>Output:</p>
+<pre><code>On branch steadystate/a1b2c3d4
+Changes not staged for commit:
+  (use &quot;steadystate publish&quot; to update the session)
+
+        modified:   analysis.R
+        modified:   README.md
+
+Untracked files:
+  (use &quot;steadystate publish&quot; to include in what will be committed)
+
+        new_script.R</code></pre>
+<h3 id="view-diff">View Diff</h3>
+<p>See exactly what changed:</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> diff</span></code></pre></div>
+<p>Output:</p>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode diff"><code class="sourceCode diff"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">--- analysis.R</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="dt">+++ analysis.R</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a><span class="dt">@@ -10,7 +10,7 @@</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a> # Load data</span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="st">-data &lt;- read.csv(&quot;data.csv&quot;)</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="va">+data &lt;- read.csv(&quot;housing.csv&quot;)</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a><span class="dt">@@ -25,6 +25,9 @@</span></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a> # Analysis</span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a><span class="va">+# Added by rap4all: filter outliers</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a><span class="va">+data &lt;- data[data$price &lt; 1000000, ]</span></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a><span class="va">+</span></span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a> model &lt;- lm(price ~ sqft + bedrooms, data = data)</span></code></pre></div>
+<h3 id="check-credit">Check Credit</h3>
+<p>See who last modified specific lines in a file (git blame):</p>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> credit analysis.R</span></code></pre></div>
+<p>The output is piped to <code>less</code> for easy scrolling. Press
+<code>q</code> to exit.</p>
+<p>Output:
+<code>^abc123 (brodrigues 2023-10-27 14:32:05 +0200 10) data &lt;- read.csv("housing.csv")  e4f5g6h (rap4all    2023-10-27 14:35:22 +0200 25) data &lt;- data[data$price &lt; 1000000, ]</code></p>
+<p><strong>Note:</strong> Commits from <code>steadystate sync</code> are
+authored by the user who ran the sync, so credit is accurately
+attributed.</p>
+<h3 id="sync-changes">Sync Changes</h3>
+<p><strong>This is the core collaboration command.</strong> Sync does
+three things:</p>
+<ol type="1">
+<li><strong>Fetches</strong> changes from other collaborators</li>
+<li><strong>Merges</strong> their changes with yours (conflict-free
+3-way merge)</li>
+<li><strong>Pushes</strong> your merged changes so others can see
+them</li>
+</ol>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span></code></pre></div>
+<p>Output:</p>
+<pre><code>Syncing changes (Y-CRDT)...
+Base commit: abc123
+Session branch: steadystate/a1b2c3d4
+Fetching latest changes...
+Updating local branch to match remote...
+Materializing trees...
+Detecting changes...
+Both local and remote changes detected. Merging...
+Merging...
+Creating safety backup...
+Applying to canonical...
+Committing...
+Pushing to session repo...
+Refreshing worktree...
+✅ Sync complete!</code></pre>
+<p><strong>When to sync:</strong> - Before starting work (get latest
+changes) - After making changes (share with collaborators) -
+Periodically during long editing sessions - When the dashboard shows
+others have synced</p>
+<h3 id="publish-to-github">Publish to GitHub</h3>
+<p>When you’re ready to push changes back to the original GitHub
+repository:</p>
+<div class="sourceCode" id="cb26"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> publish</span></code></pre></div>
+<p>Output:</p>
+<pre><code>Publishing changes to steadystate/a1b2c3d4...
+Staging changes...
+Committing...
+Pushing to session repo...
+Pushing to GitHub...
+✅ Publish complete!</code></pre>
+<p>This pushes the session branch to GitHub, where you can create a Pull
+Request.</p>
+<hr />
+<h2 id="workflow-example">Workflow Example</h2>
+<p>Here’s a typical collaboration workflow:</p>
+<h3 id="host-brodrigues">Host (brodrigues)</h3>
+<div class="sourceCode" id="cb28"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1. Create session</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--mode</span><span class="op">=</span>collab https://github.com/b-rodrigues/housing</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. Share the magic link with rap4all via Slack/email</span></span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a><span class="co"># 3. Work on analysis.R lines 1-50</span></span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a><span class="ex">vim</span> analysis.R</span>
+<span id="cb28-8"><a href="#cb28-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-9"><a href="#cb28-9" aria-hidden="true" tabindex="-1"></a><span class="co"># 4. Sync changes</span></span>
+<span id="cb28-10"><a href="#cb28-10" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span></code></pre></div>
+<h3 id="collaborator-rap4all">Collaborator (rap4all)</h3>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1. Join the session</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> join <span class="st">&quot;steadystate://collab/...&quot;</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. Sync to get brodrigues&#39; latest changes</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 3. Work on analysis.R lines 51-100 (different section)</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a><span class="ex">vim</span> analysis.R</span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a><span class="co"># 4. Sync changes</span></span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a><span class="co"># rap4all&#39;s changes are now merged with brodrigues&#39; changes</span></span></code></pre></div>
+<h3 id="both-users">Both Users</h3>
+<div class="sourceCode" id="cb30"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep syncing periodically</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a><span class="co"># When done, publish to GitHub</span></span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> publish</span></code></pre></div>
+<h3 id="after-the-session">After the Session</h3>
+<p>On GitHub: 1. Navigate to the repository 2. You’ll see a new branch:
+<code>steadystate/a1b2c3d4</code> 3. Create a Pull Request to merge into
+<code>main</code> 4. Review the combined changes from all collaborators
+5. Merge the PR</p>
+<hr />
+<h2 id="troubleshooting">Troubleshooting</h2>
+<h3 id="permission-denied-publickey">“Permission denied
+(publickey)”</h3>
+<p><strong>Cause</strong>: Your SSH key isn’t authorized for the
+session.</p>
+<p><strong>Solution</strong>: - Ensure you’re logged in:
+<code>steadystate whoami</code> - Ensure your GitHub account has SSH
+keys configured - Check that you’re a collaborator on the repository</p>
+<h3 id="push-failed---please-sync-again">“Push failed - please sync
+again”</h3>
+<p><strong>Cause</strong>: Another collaborator pushed while you were
+syncing.</p>
+<p><strong>Solution</strong>: Just run <code>steadystate sync</code>
+again. The system will fetch their changes, merge, and retry.</p>
+<h3 id="connection-refused">“Connection refused”</h3>
+<p><strong>Cause</strong>: The session host’s machine isn’t
+reachable.</p>
+<p><strong>Solutions</strong>: - Verify you’re on the same network (or
+have routing) - Check firewall allows the SSH port - Verify the host’s
+backend is running</p>
+<h3 id="magic-link-missing-ssh-url">“Magic link missing SSH URL”</h3>
+<p><strong>Cause</strong>: Malformed or incomplete magic link.</p>
+<p><strong>Solution</strong>: Ask the host to share the complete magic
+link again.</p>
+<h3 id="dashboard-shows-observer---no-worktree">Dashboard shows
+“Observer - No worktree”</h3>
+<p><strong>Cause</strong>: You opened the dashboard without joining the
+session first.</p>
+<p><strong>Solution</strong>: Use <code>steadystate join</code> to
+create your worktree, then use the dashboard.</p>
+<h3 id="merge-produces-unexpected-results">Merge produces unexpected
+results</h3>
+<p><strong>Cause</strong>: Both users edited the exact same text (same
+word/token).</p>
+<p><strong>Note</strong>: SteadyState uses an additive merge strategy.
+If two users replace the same word with different values, both
+replacements are kept. This is by design to avoid data loss.</p>
+<p><strong>Best practice</strong>: Coordinate with collaborators to work
+on different sections of files when possible.</p>
+<hr />
+<h2 id="command-reference">Command Reference</h2>
+<table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 59%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>steadystate login</code></td>
+<td>Authenticate with GitHub</td>
+</tr>
+<tr class="even">
+<td><code>steadystate logout</code></td>
+<td>Clear local credentials</td>
+</tr>
+<tr class="odd">
+<td><code>steadystate whoami</code></td>
+<td>Show current user</td>
+</tr>
+<tr class="even">
+<td><code>steadystate up --mode=collab &lt;repo&gt;</code></td>
+<td>Create a collaboration session</td>
+</tr>
+<tr class="odd">
+<td><code>steadystate join "&lt;magic_link&gt;"</code></td>
+<td>Join an existing session</td>
+</tr>
+<tr class="even">
+<td><code>steadystate dashboard "&lt;magic_link&gt;"</code></td>
+<td>Open session dashboard (alias: <code>dash</code>)</td>
+</tr>
+<tr class="odd">
+<td><code>steadystate sync</code></td>
+<td>Sync changes with collaborators</td>
+</tr>
+<tr class="even">
+<td><code>steadystate status</code></td>
+<td>Show local changes</td>
+</tr>
+<tr class="odd">
+<td><code>steadystate diff</code></td>
+<td>Show detailed diff</td>
+</tr>
+<tr class="even">
+<td><code>steadystate credit &lt;file&gt;</code></td>
+<td>Show line-by-line credit (git blame)</td>
+</tr>
+<tr class="odd">
+<td><code>steadystate publish</code></td>
+<td>Push changes to GitHub</td>
+</tr>
+<tr class="even">
+<td><code>steadystate watch</code></td>
+<td>Open dashboard (when inside session)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="environment-variables">Environment Variables</h2>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 40%" />
+<col style="width: 28%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Variable</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>STEADYSTATE_BACKEND_URL</code></td>
+<td>Backend server URL</td>
+<td><code>http://localhost:3000</code></td>
+</tr>
+<tr class="even">
+<td><code>STEADYSTATE_EXTERNAL_HOST</code></td>
+<td>Public hostname/IP for SSH</td>
+<td>Auto-detected</td>
+</tr>
+<tr class="odd">
+<td><code>STEADYSTATE_SSH_USER</code></td>
+<td>System user for sessions</td>
+<td><code>steadystate</code></td>
+</tr>
+<tr class="even">
+<td><code>STEADYSTATE_DEBUG_MERGE</code></td>
+<td>Enable merge debugging</td>
+<td>(unset)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="getting-help">Getting Help</h2>
+<ul>
+<li><strong>Issues</strong>: <a
+href="https://github.com/your-org/steadystate/issues">GitHub
+Issues</a></li>
+<li><strong>Documentation</strong>: <a
+href="https://docs.steadystate.dev">docs.steadystate.dev</a></li>
+</ul>
+<p>Happy collaborating! 🚀</p>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">GETTING_STARTED</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

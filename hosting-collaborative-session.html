@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HOSTING_COLLABORATIVE_SESSION - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" class="current">Collaborative Session</a></li><li><a href="self-hosting.html" >Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="hosting-a-collaborative-session">Hosting a Collaborative
+Session</h1>
+<p>SteadyState’s <strong>Collaboration Mode</strong> allows multiple
+developers to work on the same codebase simultaneously using a shared
+workspace and conflict-free merging.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>You must be logged in (<code>steadystate login</code>).</li>
+<li>You must have a running SteadyState backend (or access to one).</li>
+</ul>
+<h2 id="creating-a-session">Creating a Session</h2>
+<p>The <strong>session host</strong> creates a collaboration session
+using <code>steadystate up</code>.</p>
+<h3 id="basic-usage">Basic Usage</h3>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create a collaboration session for a GitHub repository</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--mode</span><span class="op">=</span>collab https://github.com/username/repository</span></code></pre></div>
+<h3 id="options">Options</h3>
+<table>
+<colgroup>
+<col style="width: 38%" />
+<col style="width: 61%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>--mode=collab</code></td>
+<td>Enable collaboration mode (required for multi-user)</td>
+</tr>
+<tr class="even">
+<td><code>--allow=user1,user2</code></td>
+<td>Restrict access to specific GitHub users</td>
+</tr>
+</tbody>
+</table>
+<h3 id="example">Example</h3>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--mode</span><span class="op">=</span>collab https://github.com/b-rodrigues/housing</span></code></pre></div>
+<h3 id="session-branch">Session Branch</h3>
+<p>When you create a collaboration session, SteadyState automatically
+creates a new branch on the remote repository:
+<code>steadystate/collab/&lt;session_id&gt;</code></p>
+<p>All work during the session happens on this branch. This ensures that
+your main branch remains clean until you decide to merge the changes
+(via a Pull Request).</p>
+<p>Output:</p>
+<pre><code>Creating session...
+✅ Session ready!
+
+📋 Share this magic link with collaborators:
+   steadystate join &quot;steadystate://collab/a1b2c3d4?ssh=ssh%3A%2F%2Fsteadystate%40192.168.1.100%3A2847&amp;host_key=ssh-ed25519%20AAAAC3...&quot;
+
+Launching dashboard...</code></pre>
+<p>The host is automatically connected to the dashboard.</p>
+<h2 id="joining-a-session">Joining a Session</h2>
+<p>Collaborators join using the magic link shared by the host.</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> join <span class="st">&quot;steadystate://collab/a1b2c3d4?ssh=ssh%3A%2F%2Fsteadystate%40192.168.1.100%3A2847&amp;host_key=ssh-ed25519%20AAAAC3...&quot;</span></span></code></pre></div>
+<blockquote>
+<p><strong>Important</strong>: Quote the entire URL to prevent shell
+interpretation of special characters.</p>
+</blockquote>
+<p>Output:</p>
+<pre><code>Connecting to session...
+Creating workspace for rap4all...
+
+╔════════════════════════════════════════════════════════════╗
+║         Welcome to SteadyState Collaboration Mode          ║
+╚════════════════════════════════════════════════════════════╝
+
+Commands:
+  steadystate sync      - Sync your changes
+  steadystate diff      - Show changes
+  steadystate status    - Check status
+
+rap4all@session:~/housing$</code></pre>
+<p>You now have your own worktree with the repository files. Edit files
+as normal using your preferred editor (vim, nano, VS Code remote,
+etc.).</p>
+<h2 id="the-dashboard">The Dashboard</h2>
+<p>The dashboard provides a real-time view of session activity.</p>
+<h3 id="opening-the-dashboard">Opening the Dashboard</h3>
+<p><strong>As host</strong> (automatically opened after
+<code>up</code>): The dashboard launches automatically.</p>
+<p><strong>As collaborator or observer</strong>:</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> dashboard <span class="st">&quot;steadystate://collab/a1b2c3d4?ssh=...&quot;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Or use the alias</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> dash <span class="st">&quot;steadystate://collab/a1b2c3d4?ssh=...&quot;</span></span></code></pre></div>
+<h3 id="dashboard-interface">Dashboard Interface</h3>
+<pre><code>SteadyState Dashboard
+Session ID: a1b2c3d4
+Repository: housing
+Join with:       steadystate join &quot;steadystate://collab/a1b2c3d4?ssh=...&quot;
+To join with ssh: ssh steadystate@192.168.1.100 -p 2847
+--------------------------------------------------------------------------------
+User:       brodrigues (Connected)
+--------------------------------------------------------------------------------
+Connected Users:
+  • brodrigues
+  • rap4all
+
+Recent Activity:
+  [14:32:05] brodrigues synced
+      - analysis.R 10:12
+      - data/housing.csv 1:50
+  [14:35:22] rap4all synced
+      - analysis.R 25:30
+  [14:38:01] brodrigues synced
+      - analysis.R 45:52
+
+--------------------------------------------------------------------------------
+Status: Sync complete!
+
+Controls: [s] Sync  [p] Publish  [d] Diff  [c] Credit  [q] Quit</code></pre>
+<h3 id="dashboard-controls">Dashboard Controls</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>s</code></td>
+<td>Run <code>steadystate sync</code> - sync your changes with
+collaborators</td>
+</tr>
+<tr class="even">
+<td><code>p</code></td>
+<td>Run <code>steadystate publish</code> - push changes to GitHub</td>
+</tr>
+<tr class="odd">
+<td><code>d</code></td>
+<td>Run <code>steadystate diff</code> - view your local changes</td>
+</tr>
+<tr class="even">
+<td><code>c</code></td>
+<td>Run <code>steadystate credit</code> - view git blame for a file</td>
+</tr>
+<tr class="odd">
+<td><code>q</code> or <code>Esc</code></td>
+<td>Exit dashboard</td>
+</tr>
+<tr class="even">
+<td><code>Ctrl+C</code></td>
+<td>Exit dashboard</td>
+</tr>
+</tbody>
+</table>
+<h2 id="working-with-changes">Working with Changes</h2>
+<h3 id="check-status">Check Status</h3>
+<p>See what files you’ve modified:</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> status</span></code></pre></div>
+<h3 id="view-diff">View Diff</h3>
+<p>See exactly what changed:</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> diff</span></code></pre></div>
+<h3 id="check-credit">Check Credit</h3>
+<p>See who last modified specific lines in a file (git blame):</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> credit analysis.R</span></code></pre></div>
+<p>The output is piped to <code>less</code> for easy scrolling. Press
+<code>q</code> to exit.</p>
+<p><strong>Note:</strong> Commits from <code>steadystate sync</code> are
+authored by the user who ran the sync, so credit is accurately
+attributed.</p>
+<h3 id="sync-changes">Sync Changes</h3>
+<p><strong>This is the core collaboration command.</strong> Sync does
+three things:</p>
+<ol type="1">
+<li><strong>Fetches</strong> changes from other collaborators</li>
+<li><strong>Merges</strong> their changes with yours (conflict-free
+3-way merge)</li>
+<li><strong>Pushes</strong> your merged changes so others can see
+them</li>
+</ol>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> sync</span></code></pre></div>
+<p><strong>When to sync:</strong> - Before starting work (get latest
+changes) - After making changes (share with collaborators) -
+Periodically during long editing sessions - When the dashboard shows
+others have synced</p>
+<h3 id="publish-to-github">Publish to GitHub</h3>
+<p>When you’re ready to push changes back to the original GitHub
+repository:</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> publish</span></code></pre></div>
+<p>This pushes the session branch to GitHub, where you can create a Pull
+Request.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<h3 id="permission-denied-publickey">“Permission denied
+(publickey)”</h3>
+<p><strong>Cause</strong>: Your SSH key isn’t authorized for the
+session.</p>
+<p><strong>Solution</strong>: - Ensure you’re logged in:
+<code>steadystate whoami</code> - Ensure your GitHub account has SSH
+keys configured - Check that you’re a collaborator on the repository</p>
+<h3 id="push-failed---please-sync-again">“Push failed - please sync
+again”</h3>
+<p><strong>Cause</strong>: Another collaborator pushed while you were
+syncing.</p>
+<p><strong>Solution</strong>: Just run <code>steadystate sync</code>
+again. The system will fetch their changes, merge, and retry.</p>
+<h3 id="connection-refused">“Connection refused”</h3>
+<p><strong>Cause</strong>: The session host’s machine isn’t
+reachable.</p>
+<p><strong>Solutions</strong>: - Verify you’re on the same network (or
+have routing) - Check firewall allows the SSH port - Verify the host’s
+backend is running</p>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2025-12-01</div>
+                <div class="footer-right">HOSTING_COLLABORATIVE_SESSION</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>
