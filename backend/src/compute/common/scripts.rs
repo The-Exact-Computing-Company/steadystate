@@ -32,6 +32,7 @@ export PATH="$REPO_ROOT/bin:$PATH"
 ACTIVE_USERS_FILE="$REPO_ROOT/active-users"
 ACTIVITY_LOG="$REPO_ROOT/activity-log"
 SYNC_LOG="$REPO_ROOT/sync-log"
+LOG_FILE="$REPO_ROOT/setup-$USER_ID.log"
 export ACTIVITY_LOG
 export SYNC_LOG
 export SESSION_ROOT="$REPO_ROOT"
@@ -51,14 +52,47 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create worktree if not exists
+# ============================================================================
+# PROGRESS DISPLAY HELPERS
+# ============================================================================
+
+# Clear current line and print message
+print_status() {
+    printf "\r\033[K%s" "$1"
+}
+
+print_done() {
+    printf "\r\033[K✅ %s\n" "$1"
+}
+
+print_progress() {
+    printf "\r\033[K⏳ %s" "$1"
+}
+
+print_error() {
+    printf "\r\033[K❌ %s\n" "$1"
+}
+
+# ============================================================================
+# WORKSPACE SETUP (with suppressed output)
+# ============================================================================
+
 WORKTREE="$REPO_ROOT/worktrees/$USER_ID"
+
 if [ ! -d "$WORKTREE" ]; then
-    echo "Creating workspace for $USER_ID..."
+    print_progress "Cloning repository..."
+    
     mkdir -p "$REPO_ROOT/worktrees"
-    git clone --branch {{branch_name}} "$REPO_ROOT/canonical" "$WORKTREE"
+    
+    # Clone with suppressed output, log errors
+    if ! git clone --quiet --branch {{branch_name}} "$REPO_ROOT/canonical" "$WORKTREE" >> "$LOG_FILE" 2>&1; then
+        print_error "Failed to clone repository"
+        echo "See $LOG_FILE for details"
+        exit 1
+    fi
+    
     cd "$WORKTREE"
-    git remote rename origin canonical
+    git remote rename origin canonical >> "$LOG_FILE" 2>&1
     git config user.name "$USER_ID"
     git config user.email "$USER_ID@steadystate.local"
 
@@ -66,6 +100,8 @@ if [ ! -d "$WORKTREE" ]; then
     mkdir -p .worktree
     HEAD_COMMIT=$(git rev-parse HEAD)
     echo "{\"session_branch\": \"{{branch_name}}\", \"last_synced_commit\": \"$HEAD_COMMIT\"}" > .worktree/steadystate.json
+    
+    print_done "Repository cloned"
 fi
 
 export HOME="$WORKTREE"
@@ -74,79 +110,99 @@ export CANONICAL_REPO="$REPO_ROOT/canonical"
 
 cd "$WORKTREE" || exit 1
 
-# Welcome message
-cat << 'WELCOME'
-╔════════════════════════════════════════════════════════════╗
-║         Welcome to SteadyState Collaboration Mode          ║
-╚════════════════════════════════════════════════════════════╝
-
-Commands:
-  steadystate sync      - Sync your changes
-  steadystate diff      - Show changes
-  steadystate status    - Check status
-
-WELCOME
-
 # ============================================================================
-# ENVIRONMENT ACTIVATION
-# Values baked in at session creation:
-#   --env = "{{environment}}"
-#   flake = "{{flake_path}}"
+# ENVIRONMENT ACTIVATION (with suppressed output)
 # ============================================================================
 
-run_command() {
-    if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-        bash -c "$SSH_ORIGINAL_COMMAND"
-    else
-        bash -l
-    fi
+run_in_env() {
+    # This function runs a command inside the nix environment
+    # Used after environment is built
+    case "{{environment}}" in
+        noenv|python)
+            nix develop "{{flake_path}}" --command "$@"
+            ;;
+        flake)
+            if [ -f "$WORKTREE/flake.nix" ]; then
+                nix develop "$WORKTREE" --command "$@"
+            else
+                "$@"
+            fi
+            ;;
+        legacy-nix)
+            if [ -f "$WORKTREE/shell.nix" ]; then
+                nix-shell "$WORKTREE/shell.nix" --command "$*"
+            elif [ -f "$WORKTREE/default.nix" ]; then
+                nix-shell "$WORKTREE/default.nix" --command "$*"
+            else
+                "$@"
+            fi
+            ;;
+        *)
+            "$@"
+            ;;
+    esac
 }
 
+# Build environment if needed (suppress output)
 case "{{environment}}" in
     noenv|python)
-        echo "Activating SteadyState environment..."
-        if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-            exec nix develop "{{flake_path}}" --command bash -c "$SSH_ORIGINAL_COMMAND"
-        else
-            exec nix develop "{{flake_path}}" --command bash -l
+        print_progress "Building environment..."
+        
+        # Build the environment silently, capturing output
+        if ! nix develop "{{flake_path}}" --command true >> "$LOG_FILE" 2>&1; then
+            print_error "Failed to build environment"
+            echo "See $LOG_FILE for details"
+            echo ""
+            echo "You can try manually with: nix develop {{flake_path}}"
+            exit 1
         fi
+        
+        print_done "Environment ready"
         ;;
     flake)
         if [ -f "$WORKTREE/flake.nix" ]; then
-            echo "Activating repository flake..."
-            if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-                exec nix develop "$WORKTREE" --command bash -c "$SSH_ORIGINAL_COMMAND"
-            else
-                exec nix develop "$WORKTREE" --command bash -l
+            print_progress "Building environment..."
+            
+            if ! nix develop "$WORKTREE" --command true >> "$LOG_FILE" 2>&1; then
+                print_error "Failed to build environment"
+                echo "See $LOG_FILE for details"
+                exit 1
             fi
-        else
-            echo "Warning: --env=flake but no flake.nix found in repository"
-            exec run_command
+            
+            print_done "Environment ready"
         fi
         ;;
     legacy-nix)
-        if [ -f "$WORKTREE/shell.nix" ]; then
+        if [ -f "$WORKTREE/shell.nix" ] || [ -f "$WORKTREE/default.nix" ]; then
+            print_progress "Building environment..."
+            
             NIX_FILE="$WORKTREE/shell.nix"
-        elif [ -f "$WORKTREE/default.nix" ]; then
-            NIX_FILE="$WORKTREE/default.nix"
-        else
-            echo "Warning: --env=legacy-nix but no shell.nix or default.nix found"
-            exec run_command
+            [ -f "$NIX_FILE" ] || NIX_FILE="$WORKTREE/default.nix"
+            
+            if ! nix-shell "$NIX_FILE" --command true >> "$LOG_FILE" 2>&1; then
+                print_error "Failed to build environment"
+                echo "See $LOG_FILE for details"
+                exit 1
+            fi
+            
+            print_done "Environment ready"
         fi
-        echo "Activating nix-shell environment..."
-        if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
-            exec nix-shell "$NIX_FILE" --command "bash -c '$SSH_ORIGINAL_COMMAND'"
-        else
-            exec nix-shell "$NIX_FILE" --command "bash -l"
-        fi
-        ;;
-    *)
-        # Unknown or missing environment - this shouldn't happen if CLI validates
-        echo "Error: Unknown environment '{{environment}}'"
-        echo "This session was created with an invalid --env value."
-        exit 1
         ;;
 esac
+
+echo ""
+
+# ============================================================================
+# LAUNCH DASHBOARD OR COMMAND
+# ============================================================================
+
+if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+    # User ran a specific command (e.g., ssh user@host "some command")
+    run_in_env bash -c "$SSH_ORIGINAL_COMMAND"
+else
+    # Interactive session - launch dashboard
+    run_in_env steadystate dash
+fi
 "#)
 }
 
