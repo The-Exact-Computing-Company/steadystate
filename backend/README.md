@@ -123,12 +123,31 @@ curl -H "Authorization: Bearer <jwt>" http://localhost:8080/auth/me
 
 ### Environment variables
 
-| Name                   | Description                         |
-| ---------------------- | ----------------------------------- |
-| `GITHUB_CLIENT_ID`     | OAuth client ID for your GitHub app |
-| `GITHUB_CLIENT_SECRET` | OAuth client secret                 |
-| `JWT_SECRET`           | Symmetric signing key for JWTs      |
-| `PORT`                 | Optional, defaults to `8080`        |
+| Name                   | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `GITHUB_CLIENT_ID`     | OAuth client ID for your GitHub app                                |
+| `GITHUB_CLIENT_SECRET` | OAuth client secret                                                |
+| `JWT_SECRET`           | Symmetric signing key for JWTs                                     |
+| `PORT`                 | Optional, defaults to `8080`                                       |
+| `STEADYSTATE_PROVIDER` | Default compute provider (`local`); set to `hetzner` if configured |
+| `NOENV_FLAKE_PATH`     | Required path used for `--env=noenv` sessions                      |
+| `TLANG_FLAKE_URL`      | Optional flake providing the `t` binary (default `github:b-rodrigues/tlang`) |
+| `HCLOUD_TOKEN`         | Hetzner Cloud API token (enables the `hetzner` provider)           |
+| `HCLOUD_SERVER_TYPE`   | Optional, defaults to `cx23`                                       |
+| `HCLOUD_IMAGE`         | Optional, defaults to `ubuntu-24.04`                               |
+| `HCLOUD_LOCATION`      | Optional, defaults to `nbg1`                                       |
+| `HCLOUD_SSH_KEY`       | Optional name of an uploaded Hetzner SSH key                       |
+| `HCLOUD_SSH_IDENTITY`  | Optional local path to the SSH private key for Hetzner hosts       |
+
+### Sessions
+
+```bash
+# T-lang project (tproject.toml -> t update -> nix develop), auto-detected
+steadystate up --env=auto --mode=collab https://github.com/user/repo
+
+# Explicit provider (requires HCLOUD_TOKEN on the backend for hetzner)
+steadystate up --provider=hetzner --env=tproject --mode=collab https://github.com/user/repo
+```
 
 ### Example `.env` file
 
