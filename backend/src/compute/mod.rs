@@ -10,6 +10,7 @@ pub mod providers;
 
 pub use traits::ComputeProvider;
 pub use providers::local::provider::{LocalComputeProvider, LocalProviderConfig};
+pub use providers::hetzner::provider::HetznerComputeProvider;
 
 /// The system user used for SSH sessions across all providers.
 /// This user must exist on any machine running the backend.

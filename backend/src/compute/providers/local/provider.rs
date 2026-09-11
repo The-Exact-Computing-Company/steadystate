@@ -95,9 +95,30 @@ impl LocalComputeProvider {
         environment: Option<&str>,
     ) -> Result<String> {
         use crate::compute::common::python::{detect_python_version, generate_python_flake};
+        use crate::compute::common::tproject::{ensure_nix, has_tproject, t_update};
         const NOENV_FLAKE_URL: &str = "https://raw.githubusercontent.com/The-Exact-Computing-Company/steadystate/main/backend/flakes/noenv";
 
-        match environment {
+        // Auto-detect: prefer tproject.toml over flake.nix over legacy-nix.
+        // Order matters: tlang projects declare tproject.toml as source of truth
+        // and flake.nix is generated from it via `t update`.
+        let resolved: Option<String> = match environment {
+            None | Some("auto") => {
+                if has_tproject(self.executor.as_ref(), &workspace.repo_path).await? {
+                    Some("tproject".to_string())
+                } else if self.executor.exists(&workspace.repo_path.join("flake.nix")).await? {
+                    Some("flake".to_string())
+                } else if self.executor.exists(&workspace.repo_path.join("shell.nix")).await?
+                    || self.executor.exists(&workspace.repo_path.join("default.nix")).await?
+                {
+                    Some("legacy-nix".to_string())
+                } else {
+                    None
+                }
+            }
+            Some(e) => Some(e.to_string()),
+        };
+
+        match resolved.as_deref() {
             Some("noenv") => {
             // Create flake directory in session workspace
             let flake_dest = workspace.root.join("flake");
@@ -163,6 +184,18 @@ impl LocalComputeProvider {
             }
             Some("flake") | Some("legacy-nix") => {
                 // Use repo's own flake - path resolved at runtime via $WORKTREE
+                Ok("$WORKTREE".to_string())
+            }
+            Some(e) if e.starts_with("legacy-nix[") && e.ends_with(']') => {
+                // Explicit nix file, e.g. legacy-nix[custom.nix] - resolved via $WORKTREE at runtime.
+                Ok("$WORKTREE".to_string())
+            }
+            Some("tproject") => {
+                // T-lang project: ensure nix, run `t update` to regenerate
+                // flake.nix from tproject.toml, then use repo flake via $WORKTREE.
+                ensure_nix(self.executor.as_ref()).await?;
+                t_update(self.executor.as_ref(), &workspace.repo_path).await?;
+                tracing::info!("tproject.toml detected: ran `t update`, using nix develop on $WORKTREE");
                 Ok("$WORKTREE".to_string())
             }
             _ => {
@@ -740,6 +773,9 @@ impl ComputeProvider for LocalComputeProvider {
                 "flake".into(),
                 "noenv".into(),
                 "legacy-nix".into(),
+                "python".into(),
+                "tproject".into(),
+                "auto".into(),
             ],
         }
     }

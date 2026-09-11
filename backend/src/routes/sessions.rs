@@ -91,6 +91,18 @@ async fn create_session(
     let session_id = Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now();
 
+    let requested_provider = request.provider.clone()
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty());
+    let compute_provider = match requested_provider {
+        Some(p) if state.compute_providers.contains_key(&p) => p,
+        Some(p) => {
+            tracing::warn!("Unknown compute provider '{}', falling back to '{}'", p, state.config.default_compute_provider);
+            state.config.default_compute_provider.clone()
+        }
+        None => state.config.default_compute_provider.clone(),
+    };
+
     let session = Session {
         id: session_id.clone(),
         state: SessionState::Provisioning,
@@ -98,8 +110,7 @@ async fn create_session(
         branch: request.branch.clone(),
         environment: request.environment.clone(),
         endpoint: None,
-        // FIX IS HERE: Access default_compute_provider via config
-        compute_provider: state.config.default_compute_provider.clone(),
+        compute_provider,
         creator_login: claims.sub.clone(),
         created_at: now,
         updated_at: now,

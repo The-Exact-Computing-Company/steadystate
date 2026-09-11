@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::auth;
 use crate::auth::provider::{AuthProviderDyn, AuthProviderFactoryDyn};
-use crate::compute::{ComputeProvider, LocalComputeProvider, LocalProviderConfig};
+use crate::compute::{ComputeProvider, LocalComputeProvider, LocalProviderConfig, HetznerComputeProvider};
 use crate::jwt::JwtKeys;
 use crate::models::{PendingDevice, ProviderId, RefreshRecord, Session};
 
@@ -128,6 +128,17 @@ impl AppState {
         };
         let local_provider = Arc::new(LocalComputeProvider::new(provider_config, http.clone()));
         compute_providers.insert(local_provider.id().to_string(), local_provider);
+
+        // Initialize hetzner provider if configured (HCLOUD_TOKEN present).
+        match HetznerComputeProvider::into_arc(http.clone()) {
+            Ok(h) => {
+                tracing::info!("Hetzner compute provider enabled");
+                compute_providers.insert(h.id().to_string(), h);
+            }
+            Err(e) => {
+                tracing::info!("Hetzner provider disabled: {:#}", e);
+            }
+        }
 
         // 3. Build State
         let state = Arc::new(Self {

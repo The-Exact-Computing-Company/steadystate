@@ -56,6 +56,7 @@ async fn test_integration_nix_check() {
         repo_url: "https://github.com/this-repo/does-not-exist-12345.git".into(),
         branch: None,
         environment: None,
+        provider: None,
         provider_config: None,
         allowed_users: None,
         public: false,

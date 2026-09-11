@@ -137,6 +137,7 @@ pub struct SessionRequest {
     pub repo_url: String,
     pub branch: Option<String>,
     pub environment: Option<String>,
+    pub provider: Option<String>,
     pub provider_config: Option<serde_json::Value>,
     pub allowed_users: Option<Vec<String>>,
     #[serde(default)]

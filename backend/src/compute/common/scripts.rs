@@ -121,6 +121,18 @@ run_in_env() {
         noenv|python)
             nix develop "{{flake_path}}" --command "$@"
             ;;
+        tproject|auto)
+            # tlang project: flake.nix was regenerated via `t update` at provision time.
+            # Re-run `t update` defensively (cheap if up to date), then enter dev shell.
+            if [ -f "$WORKTREE/tproject.toml" ]; then
+                (cd "$WORKTREE" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >/dev/null 2>&1 || true
+            fi
+            if [ -f "$WORKTREE/flake.nix" ]; then
+                nix develop "$WORKTREE" --command "$@"
+            else
+                "$@"
+            fi
+            ;;
         flake)
             if [ -f "$WORKTREE/flake.nix" ]; then
                 nix develop "$WORKTREE" --command "$@"
@@ -145,6 +157,25 @@ run_in_env() {
 
 # Build environment if needed (suppress output)
 case "{{environment}}" in
+    tproject|auto)
+        print_progress "Setting up tlang environment (t update)..."
+        if [ -f "$WORKTREE/tproject.toml" ]; then
+            if ! (cd "$WORKTREE" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >> "$LOG_FILE" 2>&1; then
+                print_error "Failed to run t update"
+                echo "See $LOG_FILE for details"
+                exit 1
+            fi
+        fi
+        if [ -f "$WORKTREE/flake.nix" ]; then
+            print_progress "Building environment..."
+            if ! nix develop "$WORKTREE" --command true >> "$LOG_FILE" 2>&1; then
+                print_error "Failed to build environment"
+                echo "See $LOG_FILE for details"
+                exit 1
+            fi
+            print_done "Environment ready"
+        fi
+        ;;
     noenv|python)
         print_progress "Building environment..."
         
@@ -284,6 +315,17 @@ start_tmux() {
 }
 
 case "$ENVIRONMENT" in
+    tproject|auto)
+        # tlang project: ensure flake is fresh, then enter dev shell with shared tmux
+        if [ -f "$REPO_PATH/tproject.toml" ]; then
+            (cd "$REPO_PATH" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >/dev/null 2>&1 || true
+        fi
+        if [ -f "$REPO_PATH/flake.nix" ]; then
+            exec nix develop "$REPO_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
+        else
+            exec nix develop "$FLAKE_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
+        fi
+        ;;
     noenv|python)
         # Wrap tmux in nix develop
         exec nix develop "$FLAKE_PATH" --command tmux new-session -A -s "$TMUX_SESSION"

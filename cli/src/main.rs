@@ -79,6 +79,9 @@ enum Commands {
         /// Session mode: "pair" or "collab"
         #[arg(long)]
         mode: Option<String>,
+        /// Compute provider: "local" or "hetzner"
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Join a remote session using a magic link or SSH URL
     Join {
@@ -197,7 +200,7 @@ async fn logout(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>) -> Result<()> {
+async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>, provider: Option<String>) -> Result<()> {
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
@@ -211,6 +214,8 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
             eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
             eprintln!("  --env=python                Python + uv (auto-detects version)");
             eprintln!("  --env=flake                 Use repository's flake.nix");
+            eprintln!("  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)");
+            eprintln!("  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)");
             eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
             eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
             return Ok(());
@@ -221,6 +226,8 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     let is_valid = env_val == "noenv" ||
                    env_val == "python" ||
                    env_val == "flake" ||
+                   env_val == "tproject" ||
+                   env_val == "auto" ||
                    env_val == "legacy-nix" ||
                    (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
 
@@ -230,6 +237,8 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
         eprintln!("  --env=python                Python + uv (auto-detects version)");
         eprintln!("  --env=flake                 Use repository's flake.nix");
+        eprintln!("  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)");
+        eprintln!("  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)");
         eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
         eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
         return Ok(());
@@ -255,6 +264,19 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         return Ok(());
     }
 
+    // Validate --provider flag (optional, defaults to backend default).
+    let provider_val: Option<String> = match provider.as_deref() {
+        None => None,
+        Some("local") | Some("hetzner") => provider.clone(),
+        Some(other) => {
+            eprintln!("Error: Invalid --provider option: {}", other);
+            eprintln!("Valid options:");
+            eprintln!("  --provider=local    Run on this machine");
+            eprintln!("  --provider=hetzner  Provision a Hetzner Cloud server");
+            return Ok(());
+        }
+    };
+
     // Get credentials to send with request
     let session = read_session(None).await.context(
         "Not logged in. Please run 'steadystate login' first."
@@ -272,6 +294,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         "public": public,
         "environment": env_val,
         "mode": mode_val,
+        "provider": provider_val,
         "provider_config": {
             "github": {
                 "login": session.login,
@@ -763,8 +786,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Up { repo, json, allow, public, env, mode } => {
-            if let Err(e) = up(&client, repo, json, allow, public, env, mode).await {
+        Commands::Up { repo, json, allow, public, env, mode, provider } => {
+            if let Err(e) = up(&client, repo, json, allow, public, env, mode, provider).await {
                 let msg = format!("{:#}", e);
                 let usage_error = msg.contains("Invalid repository URL.");
 
