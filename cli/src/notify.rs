@@ -174,10 +174,12 @@ fn run_dashboard(stdout: &mut std::io::Stdout) -> Result<()> {
                             if !filename.is_empty() {
                                 println!("Running credit on {}...", filename);
 
-                                // Use sh -c to pipe to less for paging
+                                // Single-quote the filename before handing it
+                                // to the shell: it is free-form user input.
+                                let quoted = format!("'{}'", filename.replace('\'', "'\\''"));
                                 let status = std::process::Command::new("sh")
                                     .arg("-c")
-                                    .arg(format!("steadystate credit {} | less", filename))
+                                    .arg(format!("steadystate credit {} | less", quoted))
                                     .current_dir(path)
                                     .status();
 

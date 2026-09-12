@@ -227,7 +227,14 @@ async fn logout(client: &Client) -> Result<()> {
     if let Err(e) = delete_refresh_token(&username, None).await {
         eprintln!("Warning: Failed to delete refresh token: {}", e);
     }
-    let _ = remove_session(None).await;
+    // Also remove the forge access token (PAT/OAuth); otherwise a later
+    // `up` would still send a credential after logout.
+    if let Err(e) = auth::delete_access_token(&username, None).await {
+        eprintln!("Warning: Failed to delete access token: {}", e);
+    }
+    if let Err(e) = remove_session(None).await {
+        eprintln!("Warning: Failed to remove session file: {}", e);
+    }
     println!("Logged out (local tokens removed).");
     Ok(())
 }
@@ -375,6 +382,90 @@ async fn list_sessions(client: &Client, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Arguments for `steadystate up`, grouped to keep the signature manageable.
+struct UpArgs {
+    repo: String,
+    json: bool,
+    allow: Vec<String>,
+    public: bool,
+    env: Option<String>,
+    mode: Option<String>,
+    provider: Option<String>,
+    ttl: Option<String>,
+    forge_token: Option<String>,
+}
+
+const ENV_HELP: &str = "\
+Valid --env options:
+  --env=noenv                 Minimal environment (ne, neovim, git)
+  --env=python                Python + uv (auto-detects version)
+  --env=flake                 Use repository's flake.nix
+  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)
+  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)
+  --env=legacy-nix            Use default.nix (nix-shell)
+  --env=legacy-nix[filename]  Use specified nix file (nix-shell)";
+
+const MODE_HELP: &str = "\
+Valid --mode options:
+  --mode=pair    Pair programming mode (Tmux)
+  --mode=collab  Collaboration mode (SSH)";
+
+/// Single-quote a string for safe interpolation into a remote shell command.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Write a 0600 known_hosts file for a session and return its path.
+/// The path is derived from a hash of `seed` (never the raw, server- or
+/// magic-link-controlled id), so it cannot traverse out of /tmp or be
+/// symlink-squatted predictably. `host_key` is validated as a single
+/// `type base64` pair so embedded newlines cannot inject extra entries.
+fn write_known_hosts(
+    prefix: &str,
+    seed: &str,
+    host: &str,
+    port: u16,
+    host_key: &str,
+) -> Result<String> {
+    let cleaned = host_key.trim();
+    if cleaned.contains(['\n', '\r']) {
+        anyhow::bail!("Refusing host key containing newlines");
+    }
+    let mut parts = cleaned.split_whitespace();
+    let (ktype, kb64) = match (parts.next(), parts.next()) {
+        (Some(a), Some(b)) => (a, b),
+        _ => anyhow::bail!("Malformed host key in magic link"),
+    };
+    if !(ktype.starts_with("ssh-") || ktype.starts_with("ecdsa-")) {
+        anyhow::bail!("Unsupported host key type: {}", ktype);
+    }
+
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    let path = format!(
+        "/tmp/steadystate-{}-{:x}-known_hosts",
+        prefix,
+        hasher.finish()
+    );
+    let content = format!("[{}]:{} {} {}\n", host, port, ktype, kb64);
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    use std::io::Write;
+    opts.open(&path)
+        .with_context(|| format!("create {}", path))?
+        .write_all(content.as_bytes())
+        .with_context(|| format!("write {}", path))?;
+    Ok(path)
+}
+
 /// Parse a human duration into seconds: plain seconds (`3600`) or a
 /// number with one suffix (`90s`, `90m`, `12h`, `2d`, `1w`).
 /// Rejects empty input, unknown suffixes, and zero.
@@ -407,44 +498,25 @@ fn parse_duration_secs(s: &str) -> Result<u64> {
     Ok(secs)
 }
 
-async fn up(
-    client: &Client,
-    repo: String,
-    json: bool,
-    allow: Vec<String>,
-    public: bool,
-    env: Option<String>,
-    mode: Option<String>,
-    provider: Option<String>,
-    ttl: Option<String>,
-    forge_token: Option<String>,
-) -> Result<()> {
+async fn up(client: &Client, args: UpArgs) -> Result<()> {
+    let UpArgs {
+        repo,
+        json,
+        allow,
+        public,
+        env,
+        mode,
+        provider,
+        ttl,
+        forge_token,
+    } = args;
+
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
 
-    // Validate --env flag
-    let env_val = match env {
-        Some(e) => e,
-        None => {
-            eprintln!("Error: --env flag is required.");
-            eprintln!("Valid options:");
-            eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
-            eprintln!("  --env=python                Python + uv (auto-detects version)");
-            eprintln!("  --env=flake                 Use repository's flake.nix");
-            eprintln!(
-                "  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)"
-            );
-            eprintln!(
-                "  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)"
-            );
-            eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
-            eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
-            return Ok(());
-        }
-    };
-
-    // Check if env is valid
+    // Validate --env (required).
+    let env_val = env.ok_or_else(|| anyhow::anyhow!("--env flag is required.\n{}", ENV_HELP))?;
     let is_valid = env_val == "noenv"
         || env_val == "python"
         || env_val == "flake"
@@ -452,68 +524,37 @@ async fn up(
         || env_val == "auto"
         || env_val == "legacy-nix"
         || (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
-
     if !is_valid {
-        eprintln!("Error: Invalid --env option: {}", env_val);
-        eprintln!("Valid options:");
-        eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
-        eprintln!("  --env=python                Python + uv (auto-detects version)");
-        eprintln!("  --env=flake                 Use repository's flake.nix");
-        eprintln!(
-            "  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)"
-        );
-        eprintln!(
-            "  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)"
-        );
-        eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
-        eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
-        return Ok(());
+        anyhow::bail!("Invalid --env option: {}\n{}", env_val, ENV_HELP);
     }
 
-    // Validate --mode flag
-    let mode_val = match mode {
-        Some(m) => m,
-        None => {
-            eprintln!("Error: --mode flag is required.");
-            eprintln!("Valid options:");
-            eprintln!("  --mode=pair    Pair programming mode (Tmux)");
-            eprintln!("  --mode=collab  Collaboration mode (SSH)");
-            return Ok(());
-        }
-    };
-
+    // Validate --mode (required).
+    let mode_val = mode.ok_or_else(|| anyhow::anyhow!("--mode flag is required.\n{}", MODE_HELP))?;
     if mode_val != "pair" && mode_val != "collab" {
-        eprintln!("Error: Invalid --mode option: {}", mode_val);
-        eprintln!("Valid options:");
-        eprintln!("  --mode=pair    Pair programming mode (Tmux)");
-        eprintln!("  --mode=collab  Collaboration mode (SSH)");
-        return Ok(());
+        anyhow::bail!("Invalid --mode option: {}\n{}", mode_val, MODE_HELP);
     }
 
-    // Validate --provider flag (optional, defaults to backend default).
+    // Validate --provider (optional, defaults to the backend default).
     let provider_val: Option<String> = match provider.as_deref() {
         None => None,
         Some("local") | Some("hetzner") => provider.clone(),
         Some(other) => {
-            eprintln!("Error: Invalid --provider option: {}", other);
-            eprintln!("Valid options:");
-            eprintln!("  --provider=local    Run on this machine");
-            eprintln!("  --provider=hetzner  Provision a Hetzner Cloud server");
-            return Ok(());
+            anyhow::bail!(
+                "Invalid --provider option: {}\nValid options:\n  --provider=local    Run on this machine\n  --provider=hetzner  Provision a Hetzner Cloud server",
+                other
+            );
         }
     };
 
-    // Parse --ttl flag (optional). Server clamps to its max.
+    // Parse --ttl (optional). The server clamps to its max.
     let ttl_secs: Option<u64> = match ttl.as_deref() {
         None => None,
-        Some(s) => match parse_duration_secs(s) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                eprintln!("Error: Invalid --ttl option: {}", e);
-                eprintln!("Examples: --ttl=12h, --ttl=90m, --ttl=2d, --ttl=3600");
-                return Ok(());
-            }
-        },
+        Some(s) => Some(parse_duration_secs(s).with_context(|| {
+            format!(
+                "Invalid --ttl option '{}'. Examples: --ttl=12h, --ttl=90m, --ttl=2d, --ttl=3600",
+                s
+            )
+        })?),
     };
 
     // Get credentials to send with request.
@@ -659,19 +700,24 @@ async fn up(
                         return Err(anyhow::anyhow!("Session provisioning failed"));
                     }
                     SessionState::Provisioning => {
-                        if attempts >= max_attempts {
-                            println!("⏱️  Timed out waiting for session. Check status later with:");
-                            println!(
-                                "  curl -H 'Authorization: Bearer <token>' {}/sessions/{}",
-                                &*BACKEND_URL, resp.id
-                            );
-                            break;
-                        }
-                        // Continue polling
+                        // Keep polling; the shared timeout check below bounds it.
                     }
                     other => {
                         println!("Session state: {:?}", other);
                     }
+                }
+
+                // Unconditional timeout: never loop forever on an unknown or
+                // stuck state.
+                if attempts >= max_attempts {
+                    println!(
+                        "⏱️  Timed out waiting for session {}. Check status later with `steadystate list`.",
+                        resp.id
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Timed out waiting for session {} to become ready",
+                        resp.id
+                    ));
                 }
             }
         } else if let Some(endpoint) = &resp.endpoint {
@@ -720,10 +766,8 @@ async fn up(
                     ];
 
                     if let Some(host_key) = final_host_key {
-                        let known_hosts = format!("[{}]:{} {}", host, port, host_key);
-                        let known_hosts_path = format!("/tmp/steadystate-{}-known_hosts", resp.id);
-                        std::fs::write(&known_hosts_path, known_hosts)?;
-
+                        let known_hosts_path =
+                            write_known_hosts("dash", &resp.id, host, port, &host_key)?;
                         args.extend([
                             "-o".to_string(),
                             format!("UserKnownHostsFile={}", known_hosts_path),
@@ -744,6 +788,9 @@ async fn up(
                     } else {
                         host.to_string()
                     };
+                    // `--` ends ssh option parsing so a hostile host/user
+                    // cannot smuggle an ssh flag.
+                    args.push("--".to_string());
                     args.push(target);
 
                     // Command to run
@@ -804,17 +851,8 @@ async fn join(url_str: String) -> Result<()> {
                 let mut args = vec!["-p".to_string(), port.to_string()];
 
                 if let Some(key) = host_key {
-                    // We don't have session ID easily here, use random or hash of url
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = DefaultHasher::new();
-                    url_str.hash(&mut hasher);
-                    let session_id = format!("{:x}", hasher.finish());
-
-                    let known_hosts = format!("[{}]:{} {}", host, port, key);
-                    let known_hosts_path = format!("/tmp/steadystate-{}-known_hosts", session_id);
-                    std::fs::write(&known_hosts_path, known_hosts)?;
-
+                    let known_hosts_path =
+                        write_known_hosts("join", &url_str, host, port, &key)?;
                     args.extend([
                         "-o".to_string(),
                         format!("UserKnownHostsFile={}", known_hosts_path),
@@ -832,17 +870,21 @@ async fn join(url_str: String) -> Result<()> {
 
                 args.push("-t".to_string()); // Force PTY
 
+                // `--` ends ssh option parsing so a hostile host/user cannot
+                // smuggle an ssh flag through the magic link.
+                args.push("--".to_string());
                 if !user.is_empty() {
                     args.push(format!("{}@{}", user, host));
                 } else {
                     args.push(host.to_string());
                 }
 
-                // Inject username if available
+                // Inject username if available (shell-quoted: the login comes
+                // from a user-editable session file).
                 let shell_cmd = if let Ok(session) = crate::session::read_session(None).await {
                     format!(
                         "export STEADYSTATE_USERNAME={}; exec $SHELL -l",
-                        session.login
+                        shell_quote(&session.login)
                     )
                 } else {
                     "exec $SHELL -l".to_string()
@@ -948,18 +990,7 @@ async fn open_dashboard(link: &str) -> Result<()> {
 
     // Handle host key verification
     if let Some(key) = host_key {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        link.hash(&mut hasher);
-        let hash = format!("{:x}", hasher.finish());
-
-        let known_hosts = format!("[{}]:{} {}", host, port, key);
-        let known_hosts_path = format!("/tmp/steadystate-dash-{}-known_hosts", hash);
-        std::fs::write(&known_hosts_path, &known_hosts)
-            .context("Failed to write known_hosts file")?;
-
+        let known_hosts_path = write_known_hosts("dash", link, host, port, &key)?;
         args.extend([
             "-o".to_string(),
             format!("UserKnownHostsFile={}", known_hosts_path),
@@ -977,7 +1008,9 @@ async fn open_dashboard(link: &str) -> Result<()> {
         ]);
     }
 
-    // Add target
+    // `--` ends ssh option parsing before the destination so a hostile
+    // host/user cannot smuggle an ssh flag through the magic link.
+    args.push("--".to_string());
     let target = if !user.is_empty() {
         format!("{}@{}", user, host)
     } else {
@@ -985,15 +1018,12 @@ async fn open_dashboard(link: &str) -> Result<()> {
     };
     args.push(target);
 
-    // Run watch command on remote
-    // Use -- to separate SSH args from remote command
-    args.push("--".to_string());
-
     // Inject username if available so the dashboard knows who we are
+    // (shell-quoted: the login comes from a user-editable session file).
     if let Ok(session) = crate::session::read_session(None).await {
         args.push(format!(
             "export STEADYSTATE_USERNAME={}; steadystate watch",
-            session.login
+            shell_quote(&session.login)
         ));
     } else {
         args.push("steadystate watch".to_string());
@@ -1124,15 +1154,17 @@ async fn main() -> Result<()> {
         } => {
             if let Err(e) = up(
                 &client,
-                repo,
-                json,
-                allow,
-                public,
-                env,
-                mode,
-                provider,
-                ttl,
-                forge_token,
+                UpArgs {
+                    repo,
+                    json,
+                    allow,
+                    public,
+                    env,
+                    mode,
+                    provider,
+                    ttl,
+                    forge_token,
+                },
             )
             .await
             {

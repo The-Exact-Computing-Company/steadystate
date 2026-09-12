@@ -201,6 +201,9 @@ pub async fn token_login(client: &Client, provider: &str, token: &str) -> Result
     let login = out.login.context("no login returned")?;
 
     store_refresh_token(&login, &refresh, None).await?;
+    // Store the PAT as the provider access token: `up` reads it to build
+    // provider_config (clone auth + collaborator lookup).
+    store_access_token(&login, token.trim(), None).await?;
     let session = Session::with_provider(login.clone(), jwt, Some(provider.to_string()));
     write_session(&session, None).await?;
     println!("✅ Logged in as {} (via {})", login, provider);

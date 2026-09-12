@@ -224,6 +224,21 @@ pub async fn credit_command(file: &str) -> Result<()> {
     if !file_path.exists() {
         return Err(anyhow::anyhow!("File '{}' not found in worktree", file));
     }
+    // Reject paths that escape the worktree (e.g. via `..`) and pass the
+    // path after `--` so a leading dash cannot be read as a git flag.
+    let canonical = file_path
+        .canonicalize()
+        .with_context(|| format!("resolve '{}'", file))?;
+    let worktree = ctx
+        .worktree_path
+        .canonicalize()
+        .context("resolve worktree path")?;
+    if !canonical.starts_with(&worktree) {
+        return Err(anyhow::anyhow!(
+            "File '{}' is outside the session worktree",
+            file
+        ));
+    }
 
     // Run git blame on the file in the worktree
     // We use the worktree path directly, but git needs to know it's a git repo.
@@ -239,7 +254,7 @@ pub async fn credit_command(file: &str) -> Result<()> {
     let status = Command::new("git")
         .arg("-C")
         .arg(&ctx.canonical_path)
-        .args(["blame", file])
+        .args(["blame", "--", file])
         .status()
         .await?;
 

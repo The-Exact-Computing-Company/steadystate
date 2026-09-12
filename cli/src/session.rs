@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::warn;
 
 use crate::auth::extract_exp_from_jwt;
 use crate::config::{CONFIG_OVERRIDE_ENV, SERVICE_NAME};
@@ -78,19 +77,28 @@ pub async fn write_session(session: &Session, override_dir: Option<&PathBuf>) ->
     let path = session_file(override_dir).await?;
     let data = serde_json::to_vec_pretty(session)?;
 
-    tokio::fs::write(&path, &data)
-        .await
-        .context("write session file")?;
-
+    // Write to a sibling temp file with 0600 from creation, then rename
+    // into place: atomic (no partial session file) and never world-readable.
+    let tmp = path.with_extension("json.tmp");
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) =
-            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await
-        {
-            warn!("Failed to set strict permissions on session file: {}", e);
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
     }
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut f = opts
+            .open(&tmp)
+            .await
+            .context("open temp session file")?;
+        f.write_all(&data).await.context("write session file")?;
+        f.flush().await.context("flush session file")?;
+    }
+    tokio::fs::rename(&tmp, &path)
+        .await
+        .context("replace session file")?;
 
     Ok(())
 }
