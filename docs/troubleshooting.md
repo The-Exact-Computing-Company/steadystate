@@ -239,7 +239,7 @@ Result: "HeyHi World"
 
 2. Check port availability:
    ```
-   lsof -i :3000
+   lsof -i :8080
    ```
 
 3. Check logs:
@@ -251,7 +251,7 @@ Result: "HeyHi World"
 
 **Cause:** Port conflict with another sshd or service.
 
-**Solution:** The backend now uses dynamic port allocation. If you see this error, ensure the port range (2000-3000) is available.
+**Solution:** The backend binds an OS-assigned ephemeral port per local session (Hetzner sessions use deterministic ports in `20000-28000`). If you see this error, check for a collision with `ss -tlnp` and retry — a fresh port is picked per session.
 
 ## GitHub OAuth errors
 

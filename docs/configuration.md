@@ -8,15 +8,15 @@ SteadyState is configured primarily through environment variables. This page doc
 
 # CLI CONFIGURATION
 
-## STEADYSTATE_BACKEND_URL
+## STEADYSTATE_BACKEND
 
 URL of the SteadyState backend server.
 
 ```
-export STEADYSTATE_BACKEND_URL="http://localhost:3000"
+export STEADYSTATE_BACKEND="http://localhost:8080"
 ```
 
-**Default:** `http://localhost:3000`
+**Default:** `http://localhost:8080`
 
 ## STEADYSTATE_USERNAME
 
@@ -88,15 +88,15 @@ Generate a random 32+ byte string. All backend instances must share the same sec
 
 ## Optional Variables
 
-### STEADYSTATE_PORT
+### PORT
 
 Port for the backend HTTP server.
 
 ```
-export STEADYSTATE_PORT=3000
+export PORT=8080
 ```
 
-**Default:** `3000`
+**Default:** `8080`
 
 ### STEADYSTATE_EXTERNAL_HOST
 
@@ -122,6 +122,62 @@ export STEADYSTATE_SSH_USER="steadystate"
 **Default:** `steadystate`
 
 This user must exist on the system and have appropriate permissions.
+
+### STEADYSTATE_PROVIDER
+
+Default compute provider for new sessions. Overrides per session with
+`steadystate up --provider=...`.
+
+```
+export STEADYSTATE_PROVIDER="local"
+```
+
+**Default:** `local`
+
+### STEADYSTATE_DB_PATH
+
+SQLite file used for sessions and refresh tokens.
+
+```
+export STEADYSTATE_DB_PATH="$HOME/.steadystate/steadystate.db"
+```
+
+**Default:** `~/.steadystate/steadystate.db`
+
+### TLANG_FLAKE_URL
+
+Flake providing the `t` binary for `tproject.toml` environments.
+
+```
+export TLANG_FLAKE_URL="github:b-rodrigues/tlang"
+```
+
+**Default:** `github:b-rodrigues/tlang`
+
+### HCLOUD_TOKEN
+
+Hetzner Cloud API token. Required for the `hetzner` compute provider;
+without it the backend serves `local` sessions only.
+
+```
+export HCLOUD_TOKEN="your-hetzner-token"
+```
+
+**Default:** Unset (hetzner provider disabled)
+
+### HCLOUD_SERVER_TYPE / HCLOUD_IMAGE / HCLOUD_LOCATION / HCLOUD_SSH_KEY / HCLOUD_SSH_IDENTITY
+
+Hetzner server shape and access (all optional):
+
+```
+export HCLOUD_SERVER_TYPE="cx23"
+export HCLOUD_IMAGE="ubuntu-24.04"
+export HCLOUD_LOCATION="nbg1"
+export HCLOUD_SSH_KEY="your-uploaded-ssh-key-name"
+export HCLOUD_SSH_IDENTITY="$HOME/.ssh/id_ed25519"
+```
+
+**Defaults:** `cx23` / `ubuntu-24.04` / `nbg1` / unset / unset
 
 ### RUST_LOG
 
@@ -195,7 +251,7 @@ RestartSec=5
 Environment=GITHUB_CLIENT_ID=Iv1.abc123
 Environment=GITHUB_CLIENT_SECRET=secret123
 Environment=JWT_SECRET=your-secret-here
-Environment=STEADYSTATE_PORT=3000
+Environment=PORT=8080
 Environment=STEADYSTATE_EXTERNAL_HOST=your-server.com
 Environment=RUST_LOG=info
 
@@ -224,7 +280,7 @@ Example NixOS module:
     
     environment = {
       GITHUB_CLIENT_ID = "Iv1.abc123";
-      STEADYSTATE_PORT = "3000";
+      PORT = "8080";
       STEADYSTATE_EXTERNAL_HOST = "your-server.com";
       RUST_LOG = "info";
     };
@@ -241,9 +297,9 @@ Example NixOS module:
     };
   };
 
-  networking.firewall.allowedTCPPorts = [ 3000 ];
+  networking.firewall.allowedTCPPorts = [ 8080 ];
   networking.firewall.allowedTCPPortRanges = [
-    { from = 2000; to = 3000; }  # SSH sessions
+    { from = 20000; to = 28000; }  # Hetzner session SSH (local sessions use ephemeral ports)
   ];
 }
 ```

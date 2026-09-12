@@ -42,8 +42,8 @@ steadystate up --env=tproject --mode=collab --provider=hetzner https://github.co
 ## Environment Variables
 
 - `STEADYSTATE_BACKEND` — overrides the API base URL.
-  - Defaults to `https://localhost:8080` for safety.
-  - For local development against a non-TLS backend, export `STEADYSTATE_BACKEND=http://localhost:8080`.
+  - Defaults to `http://localhost:8080`.
+  - Point it at your server, e.g. `STEADYSTATE_BACKEND=http://your-server:8080` (plain HTTP; use an SSH tunnel or TLS proxy on untrusted networks).
 - `RUST_LOG` — controls logging (e.g. `RUST_LOG=info` or `RUST_LOG=steadystate=debug`). When set to `debug`, the CLI emits a warning because logs may contain sensitive tokens.
 - `STEADYSTATE_CONFIG_DIR` — optional override for the configuration directory (used mainly for testing).
 

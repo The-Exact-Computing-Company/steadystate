@@ -11,9 +11,9 @@
 
 1. Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
 2. Fill in:
-   - **Application name**: `SteadyState` (or your preferred name)
-   - **Homepage URL**: `http://your-server:3000`
-   - **Authorization callback URL**: `http://your-server:3000/auth/callback`
+    - **Application name**: `SteadyState` (or your preferred name)
+    - **Homepage URL**: `http://your-server:8080`
+    - **Authorization callback URL**: `http://your-server:8080/auth/callback` (required by GitHub, unused: login uses the OAuth device flow, no browser redirect)
 3. Note your **Client ID** and generate a **Client Secret**
 
 ## 2. Clone and Build
@@ -42,7 +42,7 @@ export GITHUB_CLIENT_SECRET="your_github_client_secret"
 export JWT_SECRET="$(openssl rand -base64 32)"
 
 # Optional
-export STEADYSTATE_PORT=3000
+export PORT=8080
 export STEADYSTATE_EXTERNAL_HOST="your-server-ip-or-hostname"
 export STEADYSTATE_SSH_USER="steadystate"  # System user for SSH sessions
 export STEADYSTATE_PROVIDER="local"        # Default compute provider
@@ -99,7 +99,7 @@ users.users.steadystate = {
 sudo systemctl start steadystate
 ```
 
-The backend will start on port 3000 (or your configured port).
+The backend will start on port 8080 (or your configured `PORT`).
 
 ## 6. Firewall Configuration
 
@@ -107,12 +107,99 @@ Ensure these ports are accessible:
 
 | Port | Purpose |
 |------|---------|
-| 3000 | Backend API |
+| 8080 | Backend API |
 | ephemeral high ports | Local sessions bind an OS-assigned port per session |
 | 20000-28000 | Hetzner sessions listen on a deterministic high port per session |
 
 ```bash
 # UFW example
-sudo ufw allow 3000/tcp
+sudo ufw allow 8080/tcp
 sudo ufw allow 20000:28000/tcp  # hetzner session SSH; local sessions use ephemeral ports
 ```
+
+## 7. Serving a Team from One VM
+
+This is the standard "job VM" setup: the backend runs on a machine at work
+(e.g. `devbox.corp`), sessions live on that machine, and teammates connect
+from their laptops over the (trusted) office network or VPN.
+
+### On the VM
+
+1. Follow steps 1–5 above. Use a stable address for SSH links:
+   ```bash
+   export STEADYSTATE_EXTERNAL_HOST="devbox.corp"
+   ```
+   Without it, the backend falls back to its auto-detected LAN IP, which is
+   fine on a flat office network but wrong behind NAT.
+2. Open the firewall for the API plus session SSH (see §6). Local sessions
+   each bind an OS-assigned ephemeral port; Hetzner sessions use `20000–28000`.
+3. Keep the backend running with systemd (see `configuration.md` for a unit
+   file) so sessions survive logouts. Session records and refresh tokens are
+   stored in SQLite (`~/.steadystate/steadystate.db` by default,
+   `STEADYSTATE_DB_PATH` to override), so a backend restart keeps the session
+   list — but live SSH handles do not survive a restart.
+
+### On each laptop
+
+```bash
+# Point the CLI at the team server (default is http://localhost:8080)
+export STEADYSTATE_BACKEND="http://devbox.corp:8080"
+
+# One-time login (GitHub device flow, works from anywhere)
+steadystate login
+steadystate whoami
+
+# Host a session on the VM
+steadystate up --env=auto --mode=collab https://github.com/org/repo
+# Share the printed magic link, e.g.:
+steadystate join "steadystate://collab/abc123?ssh=...&host_key=..."
+
+# Collaborator prerequisites: a GitHub account with an SSH key uploaded,
+# plus repo access (or be listed in --allow=user1,user2)
+```
+
+Traffic here is plain HTTP + SSH. That is fine on a trusted LAN/VPN but not
+on open Wi-Fi — see §8.
+
+## 8. Locking It Down
+
+### Option A: SSH tunnels (no open ports except 22)
+
+Keep the firewall closed except SSH, and tunnel everything through it:
+
+```bash
+# Terminal 1: forward the API
+ssh -N -L 8080:localhost:8080 you@devbox.corp
+
+# Terminal 2: point the CLI at the tunnel
+export STEADYSTATE_BACKEND="http://localhost:8080"
+steadystate login
+steadystate up --env=auto --mode=collab https://github.com/org/repo
+```
+
+Session SSH then also goes through a tunnel. If the magic link says
+`ssh://steady@devbox.corp:45678`, forward that port too:
+
+```bash
+ssh -N -L 45678:localhost:45678 you@devbox.corp
+# then connect as if it were local (host-key check still applies)
+ssh steady@localhost -p 45678
+```
+
+Or skip per-port forwarding with a jump host (`ssh -J you@devbox.corp`)
+if the VM can route to itself — the session ports only need to be reachable
+from the VM.
+
+### Option B: TLS reverse proxy
+
+Put Caddy or nginx in front of `localhost:8080` and point
+`STEADYSTATE_BACKEND` at `https://devbox.corp`. Native TLS in the backend
+is deliberately out of scope; the proxy also lets you restrict `/auth/*`
+or add client certs without touching SteadyState.
+
+### What the server never sees
+
+Your GitHub password or PAT never touches the backend: login is an OAuth
+device flow between your browser and GitHub. The backend only ever holds a
+short-lived JWT, a refresh token, and (transiently) the OAuth access token
+used to fetch your public SSH keys and clone private repos.

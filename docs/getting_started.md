@@ -29,8 +29,8 @@ SteadyState is a real-time collaboration tool for data science and development p
 1. Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
 2. Fill in:
    - **Application name**: `SteadyState` (or your preferred name)
-   - **Homepage URL**: `http://your-server:3000`
-   - **Authorization callback URL**: `http://your-server:3000/auth/callback`
+    - **Homepage URL**: `http://your-server:8080`
+    - **Authorization callback URL**: `http://your-server:8080/auth/callback` (required by GitHub, unused: login uses the OAuth device flow)
 3. Note your **Client ID** and generate a **Client Secret**
 
 ### 2. Clone and Build
@@ -59,7 +59,7 @@ export GITHUB_CLIENT_SECRET="your_github_client_secret"
 export JWT_SECRET="$(openssl rand -base64 32)"
 
 # Optional
-export STEADYSTATE_PORT=3000
+export PORT=8080
 export STEADYSTATE_EXTERNAL_HOST="your-server-ip-or-hostname"
 export STEADYSTATE_SSH_USER="steadystate"  # System user for SSH sessions
 ```
@@ -96,7 +96,7 @@ users.users.steadystate = {
 sudo systemctl start steadystate
 ```
 
-The backend will start on port 3000 (or your configured port).
+The backend will start on port 8080 (or your configured `PORT`).
 
 ### 6. Firewall Configuration
 
@@ -104,13 +104,14 @@ Ensure these ports are accessible:
 
 | Port | Purpose |
 |------|---------|
-| 3000 | Backend API |
-| 2000-3000 | SSH sessions (dynamic range) |
+| 8080 | Backend API |
+| ephemeral high ports | Local sessions bind an OS-assigned port per session |
+| 20000-28000 | Hetzner sessions listen on a deterministic high port per session |
 
 ```bash
 # UFW example
-sudo ufw allow 3000/tcp
-sudo ufw allow 2000:3000/tcp
+sudo ufw allow 8080/tcp
+sudo ufw allow 20000:28000/tcp  # hetzner session SSH; local sessions use ephemeral ports
 ```
 
 ---
@@ -123,7 +124,7 @@ SteadyState uses GitHub for authentication via the device flow (no browser redir
 
 ```bash
 # Point CLI to your backend
-export STEADYSTATE_BACKEND_URL="http://your-server:3000"
+export STEADYSTATE_BACKEND="http://your-server:8080"
 
 # Login with GitHub
 steadystate login
@@ -558,7 +559,7 @@ On GitHub:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STEADYSTATE_BACKEND_URL` | Backend server URL | `http://localhost:3000` |
+| `STEADYSTATE_BACKEND` | Backend server URL | `http://localhost:8080` |
 | `STEADYSTATE_EXTERNAL_HOST` | Public hostname/IP for SSH | Auto-detected |
 | `STEADYSTATE_SSH_USER` | System user for sessions | `steadystate` |
 | `STEADYSTATE_DEBUG_MERGE` | Enable merge debugging | (unset) |
