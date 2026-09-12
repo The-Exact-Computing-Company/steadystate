@@ -20,4 +20,3 @@ SECTION: Internals
 architecture|Architecture
 merge-engine|Merge Engine
 troubleshooting|Troubleshooting
-smoke-tests|Smoke Tests
