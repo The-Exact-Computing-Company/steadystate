@@ -38,7 +38,7 @@ coming later) and manages **ephemeral SSH-accessible sessions** in the cloud.
 | `/auth/token`   | PAT login for providers without a device flow (GitLab)            |
 | `/auth/refresh` | Exchange a refresh token for a new JWT                            |
 | `/auth/me`      | Return current user identity from JWT                             |
-| `/sessions`     | Create/list/terminate reproducible dev environments (48h TTL, capped per user) |
+| `/sessions`     | Create/list/terminate reproducible dev environments (48h TTL, capped per user); `POST /sessions/{id}/extend` extends the lifetime (creator-only, clamped to max) |
 | `providers/`    | Modular auth providers (`github.rs`, `gitlab.rs`, `orchid.rs`, …) |
 | `storage.rs`    | SQLite persistence for sessions + refresh tokens                  |
 | `rate_limit.rs` | Per-IP tiers on auth routes (5/30/120 per min, env-configurable)  |

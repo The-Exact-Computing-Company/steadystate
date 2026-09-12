@@ -74,7 +74,7 @@ fn up_rejects_invalid_repository_url() {
     let harness = TestHarness::new_no_server();
     harness.create_session("tester", "jwt", Some(4_000_000_000));
 
-    let output = harness.run_cli(&["up", "not-a-url", "--env=noenv"]);
+    let output = harness.run_cli(&["up", "not-a-url", "--env=tproject"]);
     assert!(!output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Invalid repository URL"));
@@ -91,7 +91,7 @@ fn up_prints_human_output_on_success() {
     let (output, reqs) = harness.run_cli_and_assert_success(&[
         "up",
         "https://example.com/repo.git",
-        "--env=noenv",
+        "--env=tproject",
         "--mode=pair",
     ]);
 
@@ -121,7 +121,7 @@ fn up_prints_json_on_success() {
     let (output, reqs) = harness.run_cli_and_assert_success(&[
         "up",
         "https://example.com/repo.git",
-        "--env=noenv",
+        "--env=tproject",
         "--json",
         "--mode=pair",
     ]);
@@ -232,4 +232,84 @@ fn list_json_dumps_array() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse json");
     assert_eq!(value[0]["id"], "aaa111");
+}
+
+#[test]
+fn extend_sends_post_with_bearer_and_reports_expiry() {
+    // 200 + SessionInfo body (missing Option fields default to None).
+    let response = serde_json::json!({
+        "id": "session-abc",
+        "state": "Running",
+        "expires_at": 4_000_000_000u64,
+    });
+    let script = vec![MockResponse::Json(response)];
+    let mut harness = TestHarness::new(script);
+    harness.create_future_session();
+
+    let (output, reqs) = harness.run_cli_and_assert_success(&["extend", "session-abc", "--ttl=2h"]);
+    assert_eq!(reqs.len(), 1);
+    assert!(reqs[0].starts_with("POST /sessions/session-abc/extend"));
+    assert!(
+        reqs[0]
+            .to_lowercase()
+            .contains("authorization: bearer test-jwt")
+    );
+    // Body carries the parsed TTL (2h = 7200s).
+    assert!(reqs[0].contains("7200"));
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Session session-abc extended."));
+    assert!(stdout.contains("New expiry:"));
+}
+
+#[test]
+fn extend_defaults_ttl_when_omitted() {
+    let response = serde_json::json!({
+        "id": "session-abc",
+        "state": "Running",
+    });
+    let script = vec![MockResponse::Json(response)];
+    let mut harness = TestHarness::new(script);
+    harness.create_future_session();
+
+    let (output, reqs) = harness.run_cli_and_assert_success(&["extend", "session-abc"]);
+    assert_eq!(reqs.len(), 1);
+    assert!(reqs[0].starts_with("POST /sessions/session-abc/extend"));
+    // No --ttl: body carries ttl_secs: null (server default applies).
+    assert!(reqs[0].contains("null"));
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Session session-abc extended."));
+}
+
+#[test]
+fn extend_accepts_magic_link() {
+    let response = serde_json::json!({
+        "id": "abc123",
+        "state": "Running",
+    });
+    let script = vec![MockResponse::Json(response)];
+    let mut harness = TestHarness::new(script);
+    harness.create_future_session();
+
+    let (output, reqs) = harness.run_cli_and_assert_success(&[
+        "extend",
+        "steadystate://collab/abc123?ssh=ssh%3A%2F%2Fh%3A2222&host_key=k",
+    ]);
+    assert_eq!(reqs.len(), 1);
+    assert!(reqs[0].starts_with("POST /sessions/abc123/extend"));
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Session abc123 extended."));
+}
+
+#[test]
+fn extend_rejects_invalid_ttl() {
+    let harness = TestHarness::new_no_server();
+    harness.create_future_session();
+
+    let output = harness.run_cli(&["extend", "session-abc", "--ttl=notaduration"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Invalid --ttl"), "{}", stderr);
 }

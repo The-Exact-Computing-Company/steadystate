@@ -197,6 +197,15 @@ pub struct SessionRequest {
     pub ttl_secs: Option<u64>,
 }
 
+/// Request to extend a session's lifetime.
+#[derive(Debug, Deserialize)]
+pub struct ExtendIn {
+    /// Additional lifetime in seconds, added to the current expiry.
+    /// `None` uses the server default TTL. Explicit values are clamped so
+    /// the session never outlives the server max; `Some(0)` is rejected.
+    pub ttl_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MagicLink {
     pub mode: String,

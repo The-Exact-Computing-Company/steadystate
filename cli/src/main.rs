@@ -137,6 +137,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Extend a session's lifetime by ID (or magic link)
+    Extend {
+        /// Session ID or steadystate:// magic link
+        target: String,
+        /// Additional lifetime (e.g. 12h, 90m, 2d, 3600). Added to the
+        /// current expiry, clamped to the server max. Defaults to the
+        /// server default TTL when omitted.
+        #[arg(long)]
+        ttl: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -342,6 +352,54 @@ async fn down(client: &Client, target: String) -> Result<()> {
         401 => anyhow::bail!("Session expired or revoked. Run 'steadystate login' again."),
         s => anyhow::bail!("Terminate failed with status {}", s),
     }
+    Ok(())
+}
+
+/// Extends a session's lifetime (POST /sessions/{id}/extend).
+async fn extend(client: &Client, target: String, ttl: Option<String>) -> Result<()> {
+    let id = session_id_from_target(&target)?;
+
+    let ttl_secs = match ttl.as_deref() {
+        None => None,
+        Some(s) => Some(parse_duration_secs(s).with_context(|| {
+            format!(
+                "Invalid --ttl option '{}'. Examples: --ttl=12h, --ttl=90m, --ttl=2d, --ttl=3600",
+                s
+            )
+        })?),
+    };
+
+    // Manual auth (like `down`) so 403/404 get distinct, actionable messages
+    // instead of request_with_auth's generic failure.
+    let session = read_session(None)
+        .await
+        .context("Not logged in. Please run 'steadystate login' first.")?;
+    let mut jwt = session.jwt.clone();
+    if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
+        jwt = perform_refresh(client, Some(session.login.clone()), None)
+            .await
+            .context("Session expired and refresh failed")?
+            .jwt;
+    }
+
+    let url = format!("{}/sessions/{}/extend", &*BACKEND_URL, id);
+    let body = serde_json::json!({ "ttl_secs": ttl_secs });
+    let resp = auth::send_with_retries(|| client.post(&url).bearer_auth(&jwt).json(&body))
+        .await
+        .context("extend request failed")?;
+
+    match resp.status().as_u16() {
+        200 => {}
+        404 => anyhow::bail!("No such session: {} (already gone?)", id),
+        403 => anyhow::bail!("Not allowed: only the session creator can extend it."),
+        409 => anyhow::bail!("Session is terminating or terminated and cannot be extended."),
+        401 => anyhow::bail!("Session expired or revoked. Run 'steadystate login' again."),
+        s => anyhow::bail!("Extend failed with status {}", s),
+    }
+
+    let info: UpResponse = resp.json().await.context("parse extend response")?;
+    println!("✅ Session {} extended.", id);
+    println!("   New expiry: {}", format_expiry(info.expires_at));
     Ok(())
 }
 
@@ -1222,6 +1280,12 @@ async fn main() -> Result<()> {
         Commands::List { json } => {
             if let Err(e) = list_sessions(&client, json).await {
                 eprintln!("list failed: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Extend { target, ttl } => {
+            if let Err(e) = extend(&client, target, ttl).await {
+                eprintln!("extend failed: {:#}", e);
                 std::process::exit(1);
             }
         }

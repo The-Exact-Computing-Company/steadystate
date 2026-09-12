@@ -135,6 +135,31 @@ steadystate down "steadystate://collab/abc123?ssh=...&host_key=..."
 Only the session creator can terminate it (`403` otherwise). Unknown IDs
 report "already gone?" instead of failing.
 
+## steadystate extend
+
+Extend a session's lifetime by ID (or magic link).
+
+```
+steadystate extend abc123 --ttl=12h
+steadystate extend "steadystate://collab/abc123?ssh=..." --ttl=2d
+steadystate extend abc123
+```
+
+**Arguments:**
+
+`<TARGET>`
+:   Session ID or `steadystate://` magic link.
+
+**Options:**
+
+`--ttl=<DURATION>`
+:   Additional lifetime added to the current expiry (`12h`, `90m`, `2d`,
+    `3600`). Clamped so the session never outlives the server max.
+    Omitted: extends by the server default TTL (48h).
+
+Only the session creator can extend it (`403`). Terminating/terminated
+sessions answer `409`.
+
 ## steadystate join
 
 Join an existing collaboration session.

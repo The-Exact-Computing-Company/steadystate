@@ -26,6 +26,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 | `steadystate logout` | Revoke the refresh token (if possible) and clear local session files. |
 | `steadystate up <repo> --env=<ENV> --mode=<MODE> [--provider=<PROVIDER>]` | Create a remote development session for the given repository URL. Add `--json` for structured output. |
 | `steadystate down <id-or-magic-link>` | Terminate one of your sessions (creator-only). |
+| `steadystate extend <id-or-magic-link> [--ttl=12h]` | Extend a session's lifetime (creator-only; clamped to server max). |
 | `steadystate list [--json]` | List your sessions with state, provider, expiry, idle time, and repo. |
 | `steadystate --version` or `-v` | Print the CLI version. |
 

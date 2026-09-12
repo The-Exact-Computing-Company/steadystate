@@ -115,8 +115,7 @@ impl LocalComputeProvider {
         ensure_nix(self.executor.as_ref()).await?;
         t_update(self.executor.as_ref(), &workspace.repo_path).await?;
         // Non-fatal: warns if the installed `t` predates [t].min_version.
-        let _ =
-            check_min_version(self.executor.as_ref(), &workspace.repo_path).await;
+        let _ = check_min_version(self.executor.as_ref(), &workspace.repo_path).await;
         tracing::info!(
             "tproject.toml found: ran `t update`; wrappers will `nix develop` the worktree"
         );

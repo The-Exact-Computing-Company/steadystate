@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     jwt::CustomClaims,
-    models::{Session, SessionInfo, SessionRequest, SessionState},
+    models::{ExtendIn, Session, SessionInfo, SessionRequest, SessionState},
     state::AppState,
 };
 
@@ -21,6 +21,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/", post(create_session).get(list_sessions))
         .route("/{id}", get(get_session_status))
         .route("/{id}", delete(terminate_session))
+        .route("/{id}/extend", post(extend_session))
 }
 
 async fn run_provisioning(app_state: Arc<AppState>, session_id: String, request: SessionRequest) {
@@ -439,6 +440,110 @@ pub(crate) async fn terminate_inner(
     }
 }
 
+/// Extends a session's lifetime: adds `ttl_secs` to the current expiry,
+/// clamped so the session never outlives the server maximum. Omitting
+/// `ttl_secs` extends by the server default TTL.
+///
+/// Requires a valid JWT, and only the session creator may extend it.
+/// Extending a Provisioning session is allowed (a slow cloud-init should
+/// not cost the user their TTL).
+///
+/// # Returns
+/// * `200 OK` with the updated session info.
+/// * `400 Bad Request` if `ttl_secs` is 0.
+/// * `403 Forbidden` if the caller did not create the session.
+/// * `404 Not Found` if the session does not exist.
+/// * `409 Conflict` if the session is already terminating/terminated.
+async fn extend_session(
+    State(state): State<Arc<AppState>>,
+    claims: CustomClaims,
+    Path(id): Path<String>,
+    Json(inp): Json<ExtendIn>,
+) -> Result<Json<SessionInfo>, (StatusCode, Json<serde_json::Value>)> {
+    if inp.ttl_secs == Some(0) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "ttl_secs must be > 0" })),
+        ));
+    }
+
+    // Existence before ownership (same ordering rationale as terminate).
+    let creator = match state.sessions.get(&id) {
+        Some(session) => session.creator_login.clone(),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Session not found" })),
+            ));
+        }
+    };
+    if creator != claims.sub {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Only the session creator can extend it" })),
+        ));
+    }
+
+    // Terminal sessions cannot be extended.
+    let is_terminal = state
+        .sessions
+        .get(&id)
+        .map(|s| {
+            matches!(
+                s.state,
+                SessionState::Terminating | SessionState::Terminated
+            )
+        })
+        .unwrap_or(true);
+    if is_terminal {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "Session is terminating or terminated and cannot be extended" })),
+        ));
+    }
+
+    // session_ttl applies the default and clamps to the server max.
+    let added = state.session_ttl(inp.ttl_secs);
+    let now = std::time::SystemTime::now();
+    // A max of 0 means no upper bound; only clamp when a max is set.
+    let clamp_to_max = |candidate: std::time::SystemTime| {
+        if state.config.max_session_ttl_secs == 0 {
+            candidate
+        } else {
+            std::cmp::min(
+                candidate,
+                now + std::time::Duration::from_secs(state.config.max_session_ttl_secs),
+            )
+        }
+    };
+
+    let Some(mut session) = state.sessions.get_mut(&id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Session not found" })),
+        ));
+    };
+    let new_expires = match session.expires_at {
+        // Extend from the later of (current expiry, now) so an already-
+        // expired-but-not-yet-reaped session still gets its full extension.
+        Some(exp) if exp > now => clamp_to_max(exp + std::time::Duration::from_secs(added)),
+        _ => clamp_to_max(now + std::time::Duration::from_secs(added)),
+    };
+    session.expires_at = Some(new_expires);
+    session.updated_at = now;
+    drop(session);
+
+    state.persist_session(&id).await;
+    tracing::info!("Session {} extended by {}s", id, added);
+
+    let info = state
+        .sessions
+        .get(&id)
+        .map(|s| SessionInfo::from(&*s))
+        .expect("session existed moments ago");
+    Ok(Json(info))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,5 +810,156 @@ mod tests {
 
         let Json(none) = list_sessions(State(test_state().await), claims("carol")).await;
         assert!(none.is_empty());
+    }
+
+    // --- extend ---
+
+    fn extend_in(ttl_secs: u64) -> Json<ExtendIn> {
+        Json(ExtendIn {
+            ttl_secs: Some(ttl_secs),
+        })
+    }
+
+    /// Seed a session with a known expiry `in_secs` from now.
+    fn seed_with_expiry(state: &Arc<AppState>, id: &str, creator: &str, in_secs: Option<u64>) {
+        seed_session(state, id, creator);
+        let expires =
+            in_secs.map(|s| std::time::SystemTime::now() + std::time::Duration::from_secs(s));
+        if let Some(mut s) = state.sessions.get_mut(id) {
+            s.expires_at = expires;
+        }
+    }
+
+    #[tokio::test]
+    async fn extend_creator_bumps_expiry() {
+        // test_state: default ttl 3600, max ttl 7200.
+        let state = test_state().await;
+        seed_with_expiry(&state, "ext-1", "alice", Some(3600));
+        let before = state
+            .sessions
+            .get("ext-1")
+            .and_then(|s| s.expires_at)
+            .expect("seeded expiry");
+
+        let Json(info) = extend_session(
+            State(state.clone()),
+            claims("alice"),
+            Path("ext-1".to_string()),
+            extend_in(1800),
+        )
+        .await
+        .unwrap();
+
+        let after = state.sessions.get("ext-1").and_then(|s| s.expires_at);
+        assert!(info.expires_at.is_some());
+        assert_eq!(after, Some(before + std::time::Duration::from_secs(1800)));
+    }
+
+    #[tokio::test]
+    async fn extend_from_now_for_expired_session() {
+        // Already expired (but not yet reaped): extension starts from now.
+        let state = test_state().await;
+        seed_with_expiry(&state, "ext-2", "alice", Some(0));
+
+        let Json(info) = extend_session(
+            State(state.clone()),
+            claims("alice"),
+            Path("ext-2".to_string()),
+            extend_in(1800),
+        )
+        .await
+        .unwrap();
+
+        let remaining = expires_in_secs(&info);
+        // 1800s added from now; expires_in_secs computed moments later.
+        assert!(remaining <= 1800 && remaining > 1700, "{}", remaining);
+    }
+
+    #[tokio::test]
+    async fn extend_clamps_to_server_max() {
+        let state = test_state().await;
+        seed_with_expiry(&state, "ext-3", "alice", Some(3600));
+        // 3600 remaining + 999_999 requested would far exceed the 7200 max.
+        let Json(info) = extend_session(
+            State(state.clone()),
+            claims("alice"),
+            Path("ext-3".to_string()),
+            extend_in(999_999),
+        )
+        .await
+        .unwrap();
+        let remaining = expires_in_secs(&info);
+        assert!(remaining <= 7200 && remaining > 7100, "{}", remaining);
+    }
+
+    #[tokio::test]
+    async fn extend_zero_ttl_is_400() {
+        let state = test_state().await;
+        seed_with_expiry(&state, "ext-4", "alice", Some(3600));
+        let err = extend_session(
+            State(state),
+            claims("alice"),
+            Path("ext-4".to_string()),
+            extend_in(0),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn extend_non_creator_is_403() {
+        let state = test_state().await;
+        seed_with_expiry(&state, "ext-5", "alice", Some(3600));
+        let err = extend_session(
+            State(state),
+            claims("mallory"),
+            Path("ext-5".to_string()),
+            extend_in(600),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn extend_unknown_id_is_404() {
+        let state = test_state().await;
+        let err = extend_session(
+            State(state),
+            claims("alice"),
+            Path("nope".to_string()),
+            extend_in(600),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn extend_persists_new_expiry() {
+        let state = test_state().await;
+        seed_with_expiry(&state, "ext-6", "alice", Some(3600));
+        let _ = extend_session(
+            State(state.clone()),
+            claims("alice"),
+            Path("ext-6".to_string()),
+            extend_in(1800),
+        )
+        .await
+        .unwrap();
+
+        let saved = state.storage.load_sessions().unwrap();
+        let rec = saved.iter().find(|s| s.id == "ext-6").unwrap();
+        let live = state.sessions.get("ext-6").and_then(|s| s.expires_at);
+        // Compare epoch seconds: storage truncates sub-second precision.
+        let secs = |t: Option<std::time::SystemTime>| {
+            t.map(|v| v.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
+        };
+        assert_eq!(
+            secs(rec.expires_at),
+            secs(live),
+            "durable store must match live map"
+        );
     }
 }

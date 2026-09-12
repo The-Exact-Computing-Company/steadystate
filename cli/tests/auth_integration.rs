@@ -25,7 +25,7 @@ fn up_refreshes_proactively_when_jwt_expired() {
     let (out, reqs) = harness.run_cli_and_assert_success(&[
         "up",
         "https://github.com/example/repo",
-        "--env=noenv",
+        "--env=tproject",
         "--mode=pair",
     ]);
 
@@ -49,7 +49,7 @@ fn up_errors_gracefully_if_server_returns_401() {
     let output = harness.run_cli(&[
         "up",
         "https://github.com/example/repo",
-        "--env=noenv",
+        "--env=tproject",
         "--mode=pair",
     ]);
     harness.join_server();
