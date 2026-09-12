@@ -75,10 +75,10 @@ enum Commands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
-        /// Allow specific GitHub users to connect. Defaults to all repository collaborators. Use "none" to restrict to host only.
+        /// Allow specific forge users to connect. Defaults to all repository collaborators. Use "none" to restrict to host only.
         #[arg(long)]
         allow: Vec<String>,
-        /// Environment to load (e.g. "noenv")
+        /// Environment to load. Only "tproject" is currently supported.
         #[arg(long)]
         env: Option<String>,
         /// Session mode: "pair" or "collab"

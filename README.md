@@ -1,42 +1,23 @@
 # SteadyState
 
-**SteadyState** is a set of free software tools for creating **reproducible**, **ephemeral**, and
-**collaborative** development environments directly from Git repositories. It
-consists of two main components:
+**SteadyState** is a real-time collaboration tool for codebases. It hosts
+ephemeral, reproducible development sessions directly from Git repositories and
+uses T through Nix to build the correct environment from the repository's
+`tproject.toml`. It consists of two main components:
 
 * **SteadyState CLI** — a Rust-based command-line client used to authenticate,
   launch, and manage sessions.
 * **SteadyState Backend** — a Rust/Axum service that handles authentication,
   environment orchestration, and session lifecycle.
 
-The entire system is designed to provide a fast, minimal, transparent way to
-enter fully configured cloud developer environments with zero manual setup.
+The system provides a fast, minimal, transparent way to enter fully configured
+collaborative development environments with zero manual setup.
 
 ---
 
 ## What SteadyState Provides
 
-### 1. Reproducible Environments
-
-SteadyState builds development environments from repository definitions such as:
-
-* `flake.nix`
-* `default.nix` / `shell.nix`
-* (future) `requirements.txt`, `renv.lock`, `uv.lock`, etc.
-
-These environments run remotely and are defined declaratively for consistent, deterministic behavior.
-
-### 2. Ephemeral, On-Demand Sessions
-
-Users can request a fresh environment at any time.
-Each session:
-
-* Runs in the cloud (initial target: Hetzner)
-* Is short-lived by default
-* Automatically cleans up after use
-* Provides a complete dev environment without any local dependencies
-
-### 3. Collaborative Access
+### 1. Collaborative Access
 
 Each session exposes a multi-user SSH endpoint through an embedded collaboration
 layer (using `tmux`). This allows:
@@ -47,6 +28,28 @@ layer (using `tmux`). This allows:
 
 Environments ship with [ne](https://github.com/vigna/ne/), the nice editor, for
 users who want a minimal in-terminal editor without needing an SSH-aware GUI.
+
+### 2. Reproducible T Environments
+
+SteadyState builds development environments from the repository's
+`tproject.toml` using T and Nix:
+
+* `t update` regenerates the Nix flake from the T project definition.
+* The session enters the resulting `nix develop` environment.
+* `[t].min_version` is checked before entering the shell.
+
+These environments run remotely and are defined declaratively for consistent,
+deterministic behavior.
+
+### 3. Ephemeral, On-Demand Sessions
+
+Users can request a fresh environment at any time.
+Each session:
+
+* Runs in the cloud (initial target: Hetzner)
+* Is short-lived by default
+* Automatically cleans up after use
+* Provides a complete dev environment without any local dependencies
 
 ### 4. Authentication System
 
@@ -95,9 +98,9 @@ Both CLI and backend expose simple interfaces that integrate with existing workf
 
 ### Reproducibility above all
 
-Nix is used to define and build environments in a controlled, deterministic way.
-For non-Nix users, `steadystate` will try to bootstrap the environment from
-common lock files.
+T and Nix are used to define and build environments in a controlled,
+deterministic way. SteadyState reads the repository's `tproject.toml`, runs
+`t update`, and enters the resulting `nix develop` environment.
 
 ### Editor-agnostic collaboration
 
@@ -131,7 +134,6 @@ SteadyState supports two distinct modes for collaboration:
 * Shows the authenticated identity (`whoami`)
 * Refreshes and revokes tokens
 * Creates development sessions (`up`)
-* Supports a `--noenv` mode for fast, editor-only sessions
 
 ### Backend
 
@@ -161,13 +163,11 @@ SteadyState supports two distinct modes for collaboration:
 
 ### Environment Handling
 
-* [x] Pure Nix environments
-* [x] T-lang projects (`tproject.toml` → `t update` → `nix develop`, with `[t].min_version` check)
-* [x] Python auto-detection (`uv.lock` / `pyproject.toml` / `requirements.txt`)
-* [ ] Lightweight compatibility layers:
+* [x] T projects (`tproject.toml` → `t update` → `nix develop`, with `[t].min_version` check)
+* [ ] Optional compatibility layers:
 
-  * `requirements.txt`
-  * `uv.lock`
+  * Pure Nix flakes
+  * Python auto-detection (`uv.lock` / `pyproject.toml` / `requirements.txt`)
   * `renv.lock`
   * `environment.yml`
 * [ ] Prebuilt environment cache

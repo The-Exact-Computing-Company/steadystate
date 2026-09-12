@@ -150,7 +150,7 @@ steadystate login
 steadystate whoami
 
 # Host a session on the VM
-steadystate up --env=auto --mode=collab https://github.com/org/repo
+steadystate up --env=tproject --mode=collab https://github.com/org/repo
 # Share the printed magic link, e.g.:
 steadystate join "steadystate://collab/abc123?ssh=...&host_key=..."
 
@@ -174,7 +174,7 @@ ssh -N -L 8080:localhost:8080 you@devbox.corp
 # Terminal 2: point the CLI at the tunnel
 export STEADYSTATE_BACKEND="http://localhost:8080"
 steadystate login
-steadystate up --env=auto --mode=collab https://github.com/org/repo
+steadystate up --env=tproject --mode=collab https://github.com/org/repo
 ```
 
 Session SSH then also goes through a tunnel. If the magic link says

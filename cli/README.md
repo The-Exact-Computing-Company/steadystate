@@ -24,7 +24,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 | `steadystate whoami` | Show the currently authenticated user. Add `--json` for machine-readable output. |
 | `steadystate refresh` | Force-refresh the JWT using the stored refresh token. |
 | `steadystate logout` | Revoke the refresh token (if possible) and clear local session files. |
-| `steadystate up <repo> --env=<ENV> --mode=<MODE> [--provider=<PROVIDER>]` | Create a remote development session for the given repository URL. Add `--json` for structured output. |
+| `steadystate up <repo> --env=tproject --mode=<MODE> [--provider=<PROVIDER>]` | Create a remote development session for the given repository URL. Add `--json` for structured output. |
 | `steadystate down <id-or-magic-link>` | Terminate one of your sessions (creator-only). |
 | `steadystate extend <id-or-magic-link> [--ttl=12h]` | Extend a session's lifetime (creator-only; clamped to server max). |
 | `steadystate list [--json]` | List your sessions with state, provider, expiry, idle time, and repo. |
@@ -32,15 +32,15 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 
 ### `up` flags
 
-- `--env`: required. `noenv` (minimal tools), `python` (auto-detected version + uv), `flake` (repo's `flake.nix`), `tproject` (tlang project: `t update` then `nix develop`), `auto` (detect `tproject.toml` > `flake.nix` > `legacy-nix`), `legacy-nix`, `legacy-nix[filename]`.
+- `--env`: required. Only `tproject` is supported now. It reads the repository's `tproject.toml`, runs `t update`, then enters `nix develop`.
 - `--mode`: required. `collab` (isolated worktrees + merge) or `pair` (shared tmux terminal).
 - `--provider`: optional. `local` (default) or `hetzner` (provisions a Hetzner Cloud server; backend needs `HCLOUD_TOKEN`).
 - `--forge-token`: optional PAT for collaborator lookup + clone auth (needed for SSO logins; `FORGE_TOKEN` env fallback).
 - `--ttl`: optional lifetime (`12h`, `90m`, `2d`, …). Clamped to the server max; default 48h. Expired sessions are reaped automatically.
-- `--allow`: comma-separated GitHub usernames allowed to join (default: repo collaborators).
+- `--allow`: comma-separated forge usernames allowed to join (default: repo collaborators).
 
 ```bash
-steadystate up --env=auto --mode=collab https://github.com/user/repo
+steadystate up --env=tproject --mode=collab https://github.com/user/repo
 steadystate up --env=tproject --mode=collab --provider=hetzner https://github.com/user/repo
 ```
 

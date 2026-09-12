@@ -19,17 +19,16 @@ Conventions used below:
 # 0. PREREQUISITES
 
 - [ ] Backend builds from a clean checkout: `nix build .#cli .#backend`
-- [ ] `nix flake show` works on the root flake and
-      `backend/flakes/noenv` (both track `rstats-on-nix/nixpkgs`)
+- [ ] `nix flake show` works on the root flake
 - [ ] `cargo test --workspace` is green before starting
 
 # 1. LOCAL SESSIONS (no cloud account needed)
 
-- [ ] **Collab round-trip.** `steadystate up --env=noenv --mode=collab REPO`,
+- [ ] **Collab round-trip.** `steadystate up --env=tproject --mode=collab REPO`,
       share the magic link, `join` from a second machine/user, both edit,
       both `sync`, `publish`, open the PR. Expect: additive merge, one
       session branch, dashboard shows both users.
-- [ ] **Pair round-trip.** `up --env=noenv --mode=pair REPO`, second user
+- [ ] **Pair round-trip.** `up --env=tproject --mode=pair REPO`, second user
       joins via the magic link, both land in the same `tmux` session
       (type in one terminal, appears in the other), `Ctrl-b d` detaches
       without killing the session.
@@ -40,10 +39,10 @@ Conventions used below:
 
 # 2. TPROJECT ENVIRONMENTS (needs a tlang project repo)
 
-- [ ] **Auto-detect.** `up --env=auto --mode=collab` on a repo containing
+- [ ] **T project.** `up --env=tproject --mode=collab` on a repo containing
       `tproject.toml`. Expect: backend runs `t update`, session enters
       `nix develop`, `t --version` works inside.
-- [ ] **Explicit.** Same with `--env=tproject`.
+- [ ] **Pair mode.** Same with `--mode=pair`.
 - [ ] **min_version warning.** Point a session at a project whose
       `[t].min_version` is newer than the installed `t`. Expect: session
       still provisions, backend log warns about the version skew.
@@ -53,15 +52,14 @@ Conventions used below:
 Set on the backend: `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY`,
 `HCLOUD_SSH_IDENTITY`. Check `hcloud server list` between steps.
 
-- [ ] **Collab provision.** `up --provider=hetzner --env=noenv --mode=collab REPO`.
+- [ ] **Collab provision.** `up --provider=hetzner --env=tproject --mode=collab REPO`.
       Expect: server `steady-<id>` appears, reaches `Running`, magic link
       connects, `sync`/`publish` work, `down` deletes the server.
 - [ ] **Pair provision.** Same with `--mode=pair`. Expect:
       `steadystate://pair/...` link, shared `tmux`, `nix develop` active
-      inside tmux for `--env=flake` repos.
-- [ ] **Python env on a VM.** `--env=python` on a repo with `uv.lock`.
-      Expect: version-detected flake, `uv sync` ran, `python --version`
-      matches the lockfile.
+      inside tmux for `tproject` repos.
+- [ ] **T project on a VM.** `--env=tproject` on a repo with `tproject.toml`.
+      Expect: `t update` ran, `nix develop` is active, `t --version` works.
 - [ ] **Orphan cleanup.** Force a setup failure (e.g. point at a private
       repo the token cannot read). Expect: session goes `Failed`, the
       server is deleted anyway (no `steady-*` leftovers in hcloud).
@@ -76,8 +74,8 @@ Set on the backend: `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY`,
 - [ ] **GitLab PAT (gitlab.com).** `login --provider=gitlab` with each of:
       `--token`, `GITLAB_TOKEN`, interactive prompt. Expect: `whoami`
       shows the GitLab username with `(via gitlab)`.
-- [ ] **GitLab session.** With a GitLab login, `up --mode=collab` on a
-      GitLab repo. Expect: clone works, collaborators auto-added from
+- [ ] **GitLab session.** With a GitLab login, `up --env=tproject --mode=collab`
+      on a GitLab repo. Expect: clone works, collaborators auto-added from
       project members, SSH keys resolve, `publish` pushes the session branch.
 - [ ] **Self-managed GitLab.** Backend with `GITLAB_URL=https://git.example.com`,
       repeat PAT login + session. Expect: same as above against the instance.
@@ -86,8 +84,8 @@ Set on the backend: `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY`,
       Expect: browser flow completes, `whoami` shows `(via oidc)`.
 - [ ] **OIDC --no-browser.** Same, with `--no-browser`, pasting the redirect
       URL. Expect: same result (covers headless/SSH laptops).
-- [ ] **OIDC + forge bridge.** OIDC login, then `up` on a GitHub repo with
-      `--forge-token <PAT>`. Expect: collaborator lookup + push work;
+- [ ] **OIDC + forge bridge.** OIDC login, then `up --env=tproject` on a GitHub
+      repo with `--forge-token <PAT>`. Expect: collaborator lookup + push work;
       without the flag they degrade gracefully (explicit `--allow` only).
 - [ ] **Rate limits live.** Temporarily set `RATE_LIMIT_TOKEN_PER_MIN=2`,
       fire 3 bad PAT logins. Expect: `401, 401, 429` with JSON body and
@@ -102,11 +100,11 @@ Set `STEADYSTATE_DEFAULT_SESSION_TTL_SECS=120`,
 `STEADYSTATE_MAX_SESSION_TTL_SECS=300`,
 `STEADYSTATE_MAX_SESSIONS_PER_USER=2` on a throwaway backend.
 
-- [ ] **Default expiry.** `up` without `--ttl`. Expect: `expires_at` ≈ +120s
-      in `list --json`; ~2 minutes later the reaper terminates it
-      (backend log: `Reaper terminated 1 expired session(s)`).
-- [ ] **Clamp.** `up --ttl=2d`. Expect: granted ≈ +300s, log notes the
-      requested vs granted TTL.
+- [ ] **Default expiry.** `up --env=tproject` without `--ttl`. Expect:
+      `expires_at` ≈ +120s in `list --json`; ~2 minutes later the reaper
+      terminates it (backend log: `Reaper terminated 1 expired session(s)`).
+- [ ] **Clamp.** `up --env=tproject --ttl=2d`. Expect: granted ≈ +300s, log
+      notes the requested vs granted TTL.
 - [ ] **Cap.** Create 2 sessions, third `up` fails. Expect: `429` with the
       "terminate one" message; `down` one, retry succeeds.
 - [ ] **Legacy rows.** If you have a pre-expiry `steadystate.db`, start the

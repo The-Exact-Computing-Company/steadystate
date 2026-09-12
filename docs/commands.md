@@ -78,12 +78,12 @@ steadystate up [OPTIONS] <REPOSITORY>
 **Arguments:**
 
 `<REPOSITORY>`
-:   GitHub repository URL (https or git@)
+:   Forge repository URL (HTTPS or git@)
 
 **Options:**
 
 `--env=<ENV>` (required)
-:   Session environment. One of `noenv`, `python`, `flake`, `tproject`, `auto`, `legacy-nix`, `legacy-nix[filename]`. `auto` detects `tproject.toml` first, then `flake.nix`, then `legacy-nix`. `tproject` ensures Nix, runs `t update` to regenerate `flake.nix`, warns if `t` predates `[t].min_version`, then enters `nix develop`.
+:   Environment to load. Only `tproject` is supported now. It reads the repository's `tproject.toml`, ensures Nix is available, runs `t update` to regenerate `flake.nix`, warns if the local `t` predates `[t].min_version`, then enters `nix develop`.
 
 `--mode=<MODE>` (required)
 :   Session mode. `collab` for collaboration mode (isolated worktrees + merge), `pair` for shared-terminal pair programming.
@@ -98,14 +98,14 @@ steadystate up [OPTIONS] <REPOSITORY>
 :   Forge PAT attached to the session for collaborator lookup and token-injected clone. Required for SSO logins (which carry no forge token); falls back to `FORGE_TOKEN` env. The forge (github vs gitlab) is detected from the repository URL.
 
 `--allow=<USERS>`
-:   Comma-separated list of GitHub usernames allowed to join. Default: all repository collaborators
+:   Comma-separated list of forge usernames allowed to join. Default: all repository collaborators
 
 **Examples:**
 
 ```
-steadystate up --env=auto --mode=collab https://github.com/user/repo
+steadystate up --env=tproject --mode=collab https://github.com/user/repo
 steadystate up --env=tproject --mode=collab --provider=hetzner https://github.com/user/repo
-steadystate up --env=noenv --mode=pair --allow=alice,bob https://github.com/user/repo
+steadystate up --env=tproject --mode=pair --allow=alice,bob https://github.com/user/repo
 ```
 
 ## steadystate list

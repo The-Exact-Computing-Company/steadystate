@@ -15,20 +15,21 @@ The **session host** creates a collaboration session using `steadystate up`.
 
 ```bash
 # Create a collaboration session for a GitHub repository
-steadystate up --mode=collab https://github.com/username/repository
+steadystate up --env=tproject --mode=collab https://github.com/username/repository
 ```
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `--mode=collab` | Enable collaboration mode (required for multi-user) |
-| `--allow=user1,user2` | Restrict access to specific GitHub users |
+| `--env=tproject` | Load the T project environment (required) |
+| `--mode=collab` | Enable collaboration mode (required) |
+| `--allow=user1,user2` | Restrict access to specific forge users |
 
 ### Example
 
 ```bash
-steadystate up --mode=collab https://github.com/b-rodrigues/housing
+steadystate up --env=tproject --mode=collab https://github.com/b-rodrigues/housing
 ```
 
 ### Session Branch

@@ -13,13 +13,13 @@ SteadyState's **Pair Programming Mode** (`--mode=pair`) creates a shared termina
 To start a pair programming session:
 
 ```bash
-steadystate up --mode=pair <REPOSITORY>
+steadystate up --env=tproject --mode=pair <REPOSITORY>
 ```
 
 ### Example
 
 ```bash
-steadystate up --mode=pair https://github.com/b-rodrigues/housing
+steadystate up --env=tproject --mode=pair https://github.com/b-rodrigues/housing
 ```
 
 Output:

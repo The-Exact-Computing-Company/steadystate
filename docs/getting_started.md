@@ -174,21 +174,24 @@ The **session host** creates a collaboration session using `steadystate up`.
 
 ```bash
 # Create a collaboration session for a GitHub repository
-steadystate up --mode=collab https://github.com/username/repository
+steadystate up --env=tproject --mode=collab https://github.com/username/repository
 ```
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `--mode=collab` | Enable collaboration mode (required for multi-user) |
+| `--env=tproject` | Load the T project environment (required) |
+| `--mode=collab` | Enable collaboration mode (required; use `pair` for pair programming) |
 | `--branch=NAME` | Start from a specific branch (default: main) |
-| `--allow=user1,user2` | Restrict access to specific GitHub users |
+| `--provider=PROVIDER` | Run on `local` or `hetzner` (default: backend default) |
+| `--ttl=TIME` | Session lifetime, e.g. `1h`, `12h`, `2d` (server clamps to its maximum) |
+| `--allow=user1,user2` | Restrict access to specific forge users |
 
 ### Example
 
 ```bash
-steadystate up --mode=collab --branch=feature-analysis https://github.com/b-rodrigues/housing
+steadystate up --env=tproject --mode=collab --branch=feature-analysis https://github.com/b-rodrigues/housing
 ```
 
 Output:
@@ -439,7 +442,7 @@ Here's a typical collaboration workflow:
 
 ```bash
 # 1. Create session
-steadystate up --mode=collab https://github.com/b-rodrigues/housing
+steadystate up --env=tproject --mode=collab https://github.com/b-rodrigues/housing
 
 # 2. Share the magic link with rap4all via Slack/email
 
@@ -543,7 +546,7 @@ On GitHub:
 | `steadystate login` | Authenticate with GitHub |
 | `steadystate logout` | Clear local credentials |
 | `steadystate whoami` | Show current user |
-| `steadystate up --mode=collab <repo>` | Create a collaboration session |
+| `steadystate up --env=tproject --mode=collab <repo>` | Create a collaboration session |
 | `steadystate down <id>` | Terminate one of your sessions |
 | `steadystate list` | List your sessions |
 | `steadystate join "<magic_link>"` | Join an existing session |

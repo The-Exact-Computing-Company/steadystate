@@ -162,7 +162,7 @@ from the Projects members API.
 | `PORT`                 | Optional, defaults to `8080`                                       |
 | `STEADYSTATE_PROVIDER` | Default compute provider (`local`); set to `hetzner` if configured |
 | `STEADYSTATE_DB_PATH`  | SQLite file for sessions + refresh tokens (default `~/.steadystate/steadystate.db`) |
-| `NOENV_FLAKE_PATH`     | Required path used for `--env=noenv` sessions                      |
+| `NOENV_FLAKE_PATH`     | Test-only path used by unit/integration tests                      |
 | `TLANG_FLAKE_URL`      | Optional flake providing the `t` binary (default `github:b-rodrigues/tlang`) |
 | `HCLOUD_TOKEN`         | Hetzner Cloud API token (enables the `hetzner` provider)           |
 | `HCLOUD_SERVER_TYPE`   | Optional, defaults to `cx23`                                       |
@@ -174,8 +174,8 @@ from the Projects members API.
 ### Sessions
 
 ```bash
-# T-lang project (tproject.toml -> t update -> nix develop), auto-detected
-steadystate up --env=auto --mode=collab https://github.com/user/repo
+# T-lang project (tproject.toml -> t update -> nix develop)
+steadystate up --env=tproject --mode=collab https://github.com/user/repo
 
 # Explicit provider (requires HCLOUD_TOKEN on the backend for hetzner)
 steadystate up --provider=hetzner --env=tproject --mode=collab https://github.com/user/repo
