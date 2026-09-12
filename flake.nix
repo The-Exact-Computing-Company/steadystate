@@ -3,9 +3,8 @@
   inputs = {
     nixpkgs.url = "github:rstats-on-nix/nixpkgs/2026-06-23";
     flake-utils.url = "github:numtide/flake-utils";
-    treemerge.url = "github:b-rodrigues/treemerge";
   };
-  outputs = { self, nixpkgs, flake-utils, treemerge }:
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs { inherit system; };
@@ -67,7 +66,6 @@
           backend
           cli
           pkgs.tmux
-          treemerge.packages.${system}.default
         ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.iproute2 ]
           ++ pkgs.lib.optionals (!isCI) [ pkgs.gemini-cli ];
         shellHook = ''

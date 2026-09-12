@@ -4,10 +4,9 @@
   inputs = {
     nixpkgs.url = "github:rstats-on-nix/nixpkgs/2026-06-23";
     flake-utils.url = "github:numtide/flake-utils";
-    treemerge.url = "github:b-rodrigues/treemerge";
   };
 
-  outputs = { self, nixpkgs, flake-utils, treemerge }:
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs { inherit system; };
@@ -22,7 +21,6 @@
           pkgs.ne
           pkgs.neovim
           pkgs.tmux
-          treemerge.packages.${system}.default
         ];
 
         # Optional helper tools
@@ -32,7 +30,7 @@
 
         shellHook = ''
           echo "SteadyState --noenv environment activated."
-          echo "You have access to following tools: nano, ne, neovim, git, treemerge."
+          echo "You have access to following tools: nano, ne, neovim, git."
         '';
       };
     });
