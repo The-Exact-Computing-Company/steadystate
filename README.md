@@ -153,7 +153,8 @@ SteadyState supports two distinct modes for collaboration:
 
 ### Sessions
 
-* [ ] Hetzner Cloud orchestration
+* [x] Local orchestration (`local` provider: pair + collab over ephemeral SSH)
+* [x] Hetzner Cloud orchestration (MVP: API-provisioned servers, SSH transport, collab setup reuse — not yet live-tested)
 * [ ] Optional persistent volumes
 * [ ] Resource telemetry and usage reporting
 * [ ] Web dashboard
@@ -161,6 +162,8 @@ SteadyState supports two distinct modes for collaboration:
 ### Environment Handling
 
 * [x] Pure Nix environments
+* [x] T-lang projects (`tproject.toml` → `t update` → `nix develop`, with `[t].min_version` check)
+* [x] Python auto-detection (`uv.lock` / `pyproject.toml` / `requirements.txt`)
 * [ ] Lightweight compatibility layers:
 
   * `requirements.txt`

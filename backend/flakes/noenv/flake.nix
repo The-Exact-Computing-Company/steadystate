@@ -2,7 +2,7 @@
   description = "SteadyState --noenv environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:rstats-on-nix/nixpkgs/2026-06-23";
     flake-utils.url = "github:numtide/flake-utils";
     treemerge.url = "github:b-rodrigues/treemerge";
   };

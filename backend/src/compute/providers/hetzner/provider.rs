@@ -19,9 +19,7 @@ use crate::compute::ssh_session_user;
 struct RemoteSession {
     server_id: u64,
     ip: String,
-    sshd_pid: u32,
     session_sshd_port: u16,
-    workspace_root: String,
 }
 
 #[derive(Debug)]
@@ -108,6 +106,7 @@ impl HetznerComputeProvider {
         if env_resolved == "tproject" {
             tproject::ensure_nix(ex).await?;
             tproject::t_update(ex, PathBuf::from(&repo_path).as_path()).await?;
+            let _ = tproject::check_min_version(ex, PathBuf::from(&repo_path).as_path()).await;
         }
 
         let canonical = format!("{}/canonical", root);
@@ -147,7 +146,7 @@ impl HetznerComputeProvider {
         ex.write_file(PathBuf::from(format!("{}/bin/steadystate-wrapper", root)).as_path(), wrapper.as_bytes(), 0o755).await?;
 
         // Session info for dashboard.
-        let (pid, port, host_pub) = self.launch_remote_sshd(ex, &root, &authorized_keys).await?;
+        let (port, host_pub) = self.launch_remote_sshd(ex, &root, &authorized_keys).await?;
         let user = ssh_session_user();
         let invite = format!("ssh://{}@{}:{}", user, public_ip, port);
         let magic_link = format!(
@@ -179,7 +178,7 @@ impl HetznerComputeProvider {
         ex: &dyn RemoteExecutor,
         root: &str,
         authorized_keys: &[crate::compute::common::ssh_keys::AuthorizedKey],
-    ) -> Result<(u32, u16, String)> {
+    ) -> Result<(u16, String)> {
         let ssh_dir = format!("{}/ssh", root);
         ex.mkdir_p(PathBuf::from(&ssh_dir).as_path(), 0o700).await?;
 
@@ -223,12 +222,14 @@ impl HetznerComputeProvider {
             "nohup /usr/sbin/sshd -f {} -D -E {} >/dev/null 2>&1 & echo $!",
             shell_quote(&cfg_path), shell_quote(&log_path)
         )).await?;
-        let pid: u32 = launch.stdout.trim().parse().context("parse remote sshd pid")?;
+        // Parse the pid to confirm the daemon actually started; the pid itself
+        // is not tracked because deleting the server cleans up everything.
+        let _pid: u32 = launch.stdout.trim().parse().context("parse remote sshd pid")?;
 
         let pubkey = ex.read_file(PathBuf::from(format!("{}.pub", host_key)).as_path()).await?;
         let pub_s = String::from_utf8(pubkey).context("host pubkey utf8")?;
         let host_pub = pub_s.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-        Ok((pid, port, host_pub))
+        Ok((port, host_pub))
     }
 }
 
@@ -266,23 +267,23 @@ impl ComputeProvider for HetznerComputeProvider {
 
         let result = self.remote_setup(&admin, &ip, session_id, request).await?;
 
-        // Record for terminate/health.
-        if let Some(ep) = result.endpoint.clone() {
-            // endpoint is ssh://user@ip:port -> extract port.
-            let port = ep.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(22);
-            self.sessions.insert(session_id.to_string(), RemoteSession {
-                server_id: server.id,
-                ip: ip.clone(),
-                sshd_pid: 0,
-                session_sshd_port: port,
-                workspace_root: format!("/home/{}/.steadystate/sessions/{}", user, session_id),
-            });
-        }
+        // Record for terminate/health. On failure to parse, still record the
+        // server id so terminate_session can always clean up the VM.
+        let port = result.endpoint.as_ref()
+            .and_then(|ep| ep.rsplit(':').next())
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(22);
+        self.sessions.insert(session_id.to_string(), RemoteSession {
+            server_id: server.id,
+            ip: ip.clone(),
+            session_sshd_port: port,
+        });
         Ok(result)
     }
 
     async fn terminate_session(&self, session: &Session) -> Result<()> {
         if let Some((_, rs)) = self.sessions.remove(&session.id) {
+            tracing::info!("Deleting hetzner server {} ({}:{})", rs.server_id, rs.ip, rs.session_sshd_port);
             self.api.delete_server(rs.server_id).await?;
         }
         Ok(())
@@ -292,8 +293,8 @@ impl ComputeProvider for HetznerComputeProvider {
         if let Some(rs) = self.sessions.get(&session.id) {
             match self.api.get_server(rs.server_id).await {
                 Ok(s) if s.status == "running" => Ok(SessionHealth::Healthy),
-                Ok(s) => Ok(SessionHealth::Unhealthy { reason: format!("server status: {}", s.status) }),
-                Err(e) => Ok(SessionHealth::Degraded { reason: format!("hcloud api: {:#}", e) }),
+                Ok(s) => Ok(SessionHealth::Unhealthy { reason: format!("server {} ({}:{}) status: {}", rs.server_id, rs.ip, rs.session_sshd_port, s.status) }),
+                Err(e) => Ok(SessionHealth::Degraded { reason: format!("hcloud api for server {}: {:#}", rs.server_id, e) }),
             }
         } else {
             Ok(SessionHealth::Unknown)

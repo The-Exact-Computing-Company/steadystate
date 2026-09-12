@@ -45,7 +45,27 @@ export JWT_SECRET="$(openssl rand -base64 32)"
 export STEADYSTATE_PORT=3000
 export STEADYSTATE_EXTERNAL_HOST="your-server-ip-or-hostname"
 export STEADYSTATE_SSH_USER="steadystate"  # System user for SSH sessions
+export STEADYSTATE_PROVIDER="local"        # Default compute provider
+export TLANG_FLAKE_URL="github:b-rodrigues/tlang"  # Flake providing the `t` binary
 ```
+
+### Hetzner Cloud provider (optional)
+
+To let users provision sessions on Hetzner Cloud with
+`steadystate up --provider=hetzner ...`, set:
+
+```bash
+export HCLOUD_TOKEN="your_hetzner_cloud_api_token"
+# Optional (defaults shown)
+export HCLOUD_SERVER_TYPE="cx23"
+export HCLOUD_IMAGE="ubuntu-24.04"
+export HCLOUD_LOCATION="nbg1"
+export HCLOUD_SSH_KEY="your-uploaded-ssh-key-name"
+export HCLOUD_SSH_IDENTITY="$HOME/.ssh/id_ed25519"  # Key used for provisioned hosts
+```
+
+Without `HCLOUD_TOKEN` the backend serves `local` sessions only and
+rejects `--provider=hetzner` by falling back to the default provider.
 
 ## 4. Create the SteadyState System User
 
@@ -88,10 +108,11 @@ Ensure these ports are accessible:
 | Port | Purpose |
 |------|---------|
 | 3000 | Backend API |
-| 2000-3000 | SSH sessions (dynamic range) |
+| ephemeral high ports | Local sessions bind an OS-assigned port per session |
+| 20000-28000 | Hetzner sessions listen on a deterministic high port per session |
 
 ```bash
 # UFW example
 sudo ufw allow 3000/tcp
-sudo ufw allow 2000:3000/tcp
+sudo ufw allow 20000:28000/tcp  # hetzner session SSH; local sessions use ephemeral ports
 ```

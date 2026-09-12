@@ -224,3 +224,57 @@ fn decode_base64(s: &str) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_target_and_defaults() {
+        let ex = SshExecutor::new("1.2.3.4".to_string(), 22, "root".to_string());
+        assert_eq!(ex.target(), "root@1.2.3.4");
+        assert!(ex.identity_file.is_none());
+        assert!(!ex.strict_host_checking);
+    }
+
+    #[test]
+    fn test_base_args_non_interactive() {
+        let ex = SshExecutor::new("host".to_string(), 2222, "steady".to_string());
+        let args = ex.base_args().join(" ");
+        assert!(args.contains("-p 2222"));
+        assert!(args.contains("BatchMode=yes"));
+        assert!(args.contains("StrictHostKeyChecking=no"));
+        assert!(!args.contains("-i "));
+    }
+
+    #[test]
+    fn test_base_args_strict_with_key() {
+        let mut ex = SshExecutor::new("host".to_string(), 22, "steady".to_string());
+        ex.strict_host_checking = true;
+        ex.identity_file = Some("/tmp/id".to_string());
+        let args = ex.base_args().join(" ");
+        assert!(args.contains("StrictHostKeyChecking=yes"));
+        assert!(args.contains("-i /tmp/id"));
+    }
+
+    #[test]
+    fn test_shell_quote() {
+        assert_eq!(SshExecutor::shell_quote("plain"), "'plain'");
+        assert_eq!(SshExecutor::shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn test_base64_round_trip() {
+        for data in [&b""[..], b"hi".as_slice(), b"hello world".as_slice(), &[0u8, 1, 2, 250, 255]] {
+            let enc = base64_like_encode::encode(data);
+            let dec = decode_base64(&enc).unwrap();
+            assert_eq!(dec, data);
+        }
+    }
+
+    #[test]
+    fn test_decode_base64_rejects_garbage() {
+        assert!(decode_base64("!!!").is_err());
+        assert!(decode_base64("abc").is_err());
+    }
+}

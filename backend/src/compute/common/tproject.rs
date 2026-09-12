@@ -56,6 +56,79 @@ pub fn t_shell_prefix() -> String {
     )
 }
 
+/// Parse the first `X.Y[.Z]` numeric version found in `s`.
+/// Accepts outputs like `t 0.55.0`, `0.55.0`, `v0.55`.
+pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let mut nums = Vec::new();
+    let mut cur = String::new();
+    let flush = |cur: &mut String, nums: &mut Vec<u64>| {
+        if !cur.is_empty() {
+            if let Ok(n) = cur.parse::<u64>() {
+                nums.push(n);
+            }
+            cur.clear();
+        }
+    };
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            cur.push(c);
+        } else if c == '.' && !cur.is_empty() {
+            flush(&mut cur, &mut nums);
+            // Peek-style handling: a '.' only separates if digits follow;
+            // trailing '.' is ignored by the final flush logic below.
+        } else {
+            flush(&mut cur, &mut nums);
+            if nums.len() >= 3 {
+                break;
+            }
+        }
+    }
+    flush(&mut cur, &mut nums);
+    match nums.as_slice() {
+        [maj, min, patch, ..] => Some((*maj, *min, *patch)),
+        [maj, min] => Some((*maj, *min, 0)),
+        _ => None,
+    }
+}
+
+/// Verify the installed `t` satisfies the project's `[t].min_version`.
+/// Non-fatal: warns on mismatch or unparseable versions, since `t` is
+/// fetched unpinned and is usually newer than the minimum.
+pub async fn check_min_version(executor: &dyn RemoteExecutor, repo_path: &Path) -> Result<()> {
+    let raw = match executor.read_file(&repo_path.join("tproject.toml")).await {
+        Ok(b) => b,
+        Err(_) => return Ok(()),
+    };
+    let content = String::from_utf8_lossy(&raw);
+    let Some(min_s) = parse_min_version(&content) else {
+        return Ok(());
+    };
+    let Some(min_v) = parse_version(&min_s) else {
+        return Ok(());
+    };
+    let script = format!("t --version || {} --version", t_shell_prefix());
+    let out = executor.exec_shell(&script).await?;
+    if !out.exit_status.success() {
+        tracing::warn!("Could not determine `t` version; project requires >= {}", min_s);
+        return Ok(());
+    }
+    match parse_version(&out.stdout) {
+        Some(installed) if installed < min_v => {
+            tracing::warn!(
+                "`t` version {:?} is older than project minimum {} — `t update` output may differ",
+                installed, min_s
+            );
+        }
+        Some(installed) => {
+            tracing::info!("`t` version {:?} satisfies minimum {}", installed, min_s);
+        }
+        None => {
+            tracing::warn!("Unparseable `t --version` output; project requires >= {}", min_s);
+        }
+    }
+    Ok(())
+}
+
 /// Run `t update` in `repo_path` so `flake.nix`/`flake.lock` are regenerated
 /// from `tproject.toml` before `nix develop`.
 /// If `t` is not on PATH, falls back to `nix shell <tlang> -c t update`.
@@ -91,5 +164,18 @@ mod tests {
         let p = t_shell_prefix();
         assert!(p.contains("nix shell"));
         assert!(p.ends_with("-c t"));
+    }
+
+    #[test]
+    fn test_parse_version() {
+        assert_eq!(parse_version("t 0.55.0"), Some((0, 55, 0)));
+        assert_eq!(parse_version("0.53.3"), Some((0, 53, 3)));
+        assert_eq!(parse_version("v1.10"), Some((1, 10, 0)));
+        assert_eq!(parse_version("version 2.4.1 (rev abc)"), Some((2, 4, 1)));
+        assert_eq!(parse_version("no version here"), None);
+        assert_eq!(parse_version(""), None);
+        // Ordering: tuple comparison drives the minimum-version check.
+        assert!((0, 54, 0) < (0, 55, 0));
+        assert!((0, 55, 0) >= (0, 55, 0));
     }
 }

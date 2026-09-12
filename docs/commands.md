@@ -55,8 +55,14 @@ steadystate up [OPTIONS] <REPOSITORY>
 
 **Options:**
 
-`--mode=<MODE>`
-:   Session mode. Use `collab` for collaboration mode. Default: `solo`
+`--env=<ENV>` (required)
+:   Session environment. One of `noenv`, `python`, `flake`, `tproject`, `auto`, `legacy-nix`, `legacy-nix[filename]`. `auto` detects `tproject.toml` first, then `flake.nix`, then `legacy-nix`. `tproject` ensures Nix, runs `t update` to regenerate `flake.nix`, warns if `t` predates `[t].min_version`, then enters `nix develop`.
+
+`--mode=<MODE>` (required)
+:   Session mode. `collab` for collaboration mode (isolated worktrees + merge), `pair` for shared-terminal pair programming.
+
+`--provider=<PROVIDER>`
+:   Compute provider. `local` (default, runs on the backend host) or `hetzner` (provisions a Hetzner Cloud server; requires `HCLOUD_TOKEN` on the backend).
 
 `--allow=<USERS>`
 :   Comma-separated list of GitHub usernames allowed to join. Default: all repository collaborators
@@ -64,9 +70,9 @@ steadystate up [OPTIONS] <REPOSITORY>
 **Examples:**
 
 ```
-steadystate up --mode=collab https://github.com/user/repo
-steadystate up --mode=collab --branch=develop git@github.com:org/repo.git
-steadystate up --mode=collab --allow=alice,bob https://github.com/user/repo
+steadystate up --env=auto --mode=collab https://github.com/user/repo
+steadystate up --env=tproject --mode=collab --provider=hetzner https://github.com/user/repo
+steadystate up --env=noenv --mode=pair --allow=alice,bob https://github.com/user/repo
 ```
 
 ## steadystate join

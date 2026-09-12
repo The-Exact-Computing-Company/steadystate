@@ -14,8 +14,6 @@ use crate::compute::{
 };
 use crate::models::{Session, SessionRequest};
 
-const UPTERM_INVITE_TIMEOUT_SECS: u64 = 30;
-
 #[derive(Debug)]
 pub struct LocalComputeProvider {
     executor: Arc<dyn RemoteExecutor>,
@@ -195,6 +193,11 @@ impl LocalComputeProvider {
                 // flake.nix from tproject.toml, then use repo flake via $WORKTREE.
                 ensure_nix(self.executor.as_ref()).await?;
                 t_update(self.executor.as_ref(), &workspace.repo_path).await?;
+                // Non-fatal: warns if installed `t` predates [t].min_version.
+                let _ = crate::compute::common::tproject::check_min_version(
+                    self.executor.as_ref(),
+                    &workspace.repo_path,
+                ).await;
                 tracing::info!("tproject.toml detected: ran `t update`, using nix develop on $WORKTREE");
                 Ok("$WORKTREE".to_string())
             }

@@ -160,3 +160,110 @@ runcmd:
         user = ssh_user
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::provider::HetznerComputeProvider;
+    use crate::compute::ComputeProvider;
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let mut saved = Vec::new();
+        for (k, v) in vars {
+            saved.push((k.to_string(), std::env::var(k).ok()));
+            // SAFETY: tests in this module are serialized by ENV_LOCK.
+            unsafe {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        f();
+        for (k, old) in saved {
+            // SAFETY: still holding ENV_LOCK.
+            unsafe {
+                match old {
+                    Some(val) => std::env::set_var(&k, val),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_config_requires_token() {
+        with_env(&[("HCLOUD_TOKEN", None)], || {
+            assert!(HetznerConfig::from_env().is_err());
+            assert!(!HetznerConfig::available());
+        });
+    }
+
+    #[test]
+    fn test_config_defaults() {
+        with_env(
+            &[
+                ("HCLOUD_TOKEN", Some("test-token")),
+                ("HCLOUD_SERVER_TYPE", None),
+                ("HCLOUD_IMAGE", None),
+                ("HCLOUD_LOCATION", None),
+                ("HCLOUD_SSH_KEY", None),
+            ],
+            || {
+                let cfg = HetznerConfig::from_env().unwrap();
+                assert_eq!(cfg.token, "test-token");
+                assert_eq!(cfg.server_type, "cx23");
+                assert_eq!(cfg.image, "ubuntu-24.04");
+                assert_eq!(cfg.location, "nbg1");
+                assert!(cfg.ssh_key_name.is_none());
+                assert!(HetznerConfig::available());
+            },
+        );
+    }
+
+    #[test]
+    fn test_config_overrides() {
+        with_env(
+            &[
+                ("HCLOUD_TOKEN", Some("tok")),
+                ("HCLOUD_SERVER_TYPE", Some("cax21")),
+                ("HCLOUD_IMAGE", Some("debian-12")),
+                ("HCLOUD_LOCATION", Some("fsn1")),
+                ("HCLOUD_SSH_KEY", Some("my-key")),
+            ],
+            || {
+                let cfg = HetznerConfig::from_env().unwrap();
+                assert_eq!(cfg.server_type, "cax21");
+                assert_eq!(cfg.image, "debian-12");
+                assert_eq!(cfg.location, "fsn1");
+                assert_eq!(cfg.ssh_key_name.as_deref(), Some("my-key"));
+            },
+        );
+    }
+
+    #[test]
+    fn test_cloud_init_script() {
+        let script = cloud_init_script("steadystate");
+        assert!(script.starts_with("#cloud-config"));
+        assert!(script.contains("name: steadystate"));
+        assert!(script.contains("openssh-server"));
+        assert!(script.contains("nix-installer"));
+        // Must not hard-fail cloud-init if nix install fails (idempotent reruns).
+        assert!(script.contains("|| true"));
+    }
+
+    #[test]
+    fn test_provider_identity_and_capabilities() {
+        with_env(&[("HCLOUD_TOKEN", Some("test-token"))], || {
+            let p = HetznerComputeProvider::from_env(reqwest::Client::new()).unwrap();
+            assert_eq!(p.id(), "hetzner");
+            let caps = p.capabilities();
+            assert!(caps.supports_collab_mode);
+            assert!(caps.supports_pair_mode);
+            assert!(caps.supported_environments.contains(&"tproject".to_string()));
+            assert!(caps.supported_environments.contains(&"auto".to_string()));
+        });
+    }
+}
