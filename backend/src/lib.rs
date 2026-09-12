@@ -4,3 +4,4 @@ pub mod models;
 pub mod routes;
 pub mod auth;
 pub mod compute;
+pub mod storage;

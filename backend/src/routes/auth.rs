@@ -182,7 +182,7 @@ pub async fn refresh(
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(json!({ "error": "invalid refresh token" }))))?;
 
     if now() >= rec.expires_at {
-        state.refresh_store.remove(&inp.refresh_token);
+        state.revoke_refresh_token(&inp.refresh_token);
         return Err((StatusCode::UNAUTHORIZED, Json(json!({ "error": "refresh expired" }))));
     }
 
@@ -210,7 +210,7 @@ pub async fn revoke(
     State(state): State<Arc<AppState>>,
     Json(inp): Json<RevokeIn>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    state.refresh_store.remove(&inp.refresh_token);
+    state.revoke_refresh_token(&inp.refresh_token);
     Ok(Json(json!({ "revoked": true })))
 }
 

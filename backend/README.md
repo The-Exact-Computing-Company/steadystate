@@ -130,6 +130,7 @@ curl -H "Authorization: Bearer <jwt>" http://localhost:8080/auth/me
 | `JWT_SECRET`           | Symmetric signing key for JWTs                                     |
 | `PORT`                 | Optional, defaults to `8080`                                       |
 | `STEADYSTATE_PROVIDER` | Default compute provider (`local`); set to `hetzner` if configured |
+| `STEADYSTATE_DB_PATH`  | SQLite file for sessions + refresh tokens (default `~/.steadystate/steadystate.db`) |
 | `NOENV_FLAKE_PATH`     | Required path used for `--env=noenv` sessions                      |
 | `TLANG_FLAKE_URL`      | Optional flake providing the `t` binary (default `github:b-rodrigues/tlang`) |
 | `HCLOUD_TOKEN`         | Hetzner Cloud API token (enables the `hetzner` provider)           |

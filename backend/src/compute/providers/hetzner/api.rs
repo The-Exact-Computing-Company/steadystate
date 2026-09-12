@@ -166,10 +166,10 @@ mod tests {
     use super::*;
     use super::super::provider::HetznerComputeProvider;
     use crate::compute::ComputeProvider;
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::state::lock_test_env;
 
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let mut saved = Vec::new();
         for (k, v) in vars {
             saved.push((k.to_string(), std::env::var(k).ok()));

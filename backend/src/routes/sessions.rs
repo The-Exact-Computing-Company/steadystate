@@ -69,6 +69,8 @@ async fn run_provisioning(
                 session.updated_at = std::time::SystemTime::now();
             }
         }
+        drop(session);
+        app_state.persist_session(&session_id);
     } else {
         tracing::warn!("Session {} disappeared after provisioning", session_id);
     }
@@ -122,6 +124,7 @@ async fn create_session(
     let session_info = SessionInfo::from(&session);
     
     state.sessions.insert(session_id.clone(), session);
+    state.persist_session(&session_id);
     tracing::info!("Session {} inserted into map, total sessions: {}", session_id, state.sessions.len());
 
     // --- Inject GitHub token if available ---
@@ -174,32 +177,175 @@ async fn get_session_status(
 
 /// Terminates a session.
 ///
+/// Requires a valid JWT, and only the session creator may terminate it.
+///
 /// # Arguments
 /// * `state` - The application state.
+/// * `claims` - The JWT claims of the caller.
 /// * `id` - The session ID.
 ///
 /// # Returns
 /// * `202 Accepted` if termination was initiated.
+/// * `403 Forbidden` if the caller did not create the session.
 /// * `404 Not Found` if the session does not exist.
 async fn terminate_session(
     State(state): State<Arc<AppState>>,
+    claims: CustomClaims,
     Path(id): Path<String>,
-) -> StatusCode {
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    // 404 first so session IDs are not enumerable via 403-vs-404.
+    let creator = match state.sessions.get(&id) {
+        Some(session) => session.creator_login.clone(),
+        None => return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" })))),
+    };
+    if creator != claims.sub {
+        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Only the session creator can terminate it" }))));
+    }
+
     if let Some(mut session) = state.sessions.get_mut(&id) {
         session.state = SessionState::Terminating;
-        
-        if let Some(provider) = state.compute_providers.get(&session.compute_provider) {
+        session.updated_at = std::time::SystemTime::now();
+        let session_clone = session.clone();
+        drop(session);
+
+        // Persist the Terminating state before spawning cleanup.
+        state.persist_session(&id);
+
+        if let Some(provider) = state.compute_providers.get(&session_clone.compute_provider) {
             let provider = provider.clone();
-            let session_clone = session.clone();
-            
+            let bg_state = state.clone();
             tokio::spawn(async move {
-                if let Err(e) = provider.terminate_session(&session_clone).await {
-                    tracing::error!("Failed to terminate session {}: {:#}", id, e);
+                match provider.terminate_session(&session_clone).await {
+                    Ok(()) => {
+                        if let Some(mut s) = bg_state.sessions.get_mut(&id) {
+                            s.state = SessionState::Terminated;
+                            s.updated_at = std::time::SystemTime::now();
+                        }
+                        bg_state.persist_session(&id);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to terminate session {}: {:#}", id, e);
+                        if let Some(mut s) = bg_state.sessions.get_mut(&id) {
+                            s.state = SessionState::Failed;
+                            s.error_message = Some(format!("terminate failed: {:#}", e));
+                            s.updated_at = std::time::SystemTime::now();
+                        }
+                        bg_state.persist_session(&id);
+                    }
                 }
             });
         }
-        StatusCode::ACCEPTED
+        Ok(StatusCode::ACCEPTED)
     } else {
-        StatusCode::NOT_FOUND
+        Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" }))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Session;
+    use crate::state::lock_test_env;
+
+    /// Minimal AppState for route tests: in-memory SQLite, dummy secrets.
+    /// Env is saved, overridden, and restored under the shared test lock,
+    /// so parallel env-mutating tests cannot observe intermediate values.
+    async fn test_state() -> Arc<AppState> {
+        let _guard = lock_test_env();
+        let saved: Vec<(String, Option<String>)> = ["JWT_SECRET", "NOENV_FLAKE_PATH", "STEADYSTATE_DB_PATH", "HCLOUD_TOKEN"]
+            .iter()
+            .map(|k| (k.to_string(), std::env::var(k).ok()))
+            .collect();
+        // SAFETY: serialized by the shared test-env lock.
+        unsafe {
+            std::env::set_var("JWT_SECRET", "test-secret-for-route-tests");
+            std::env::set_var("NOENV_FLAKE_PATH", "/tmp/dummy-flake");
+            std::env::set_var("STEADYSTATE_DB_PATH", ":memory:");
+            std::env::remove_var("HCLOUD_TOKEN");
+        }
+        let state = AppState::try_new().await.expect("test AppState");
+        // SAFETY: still holding the shared lock; nothing after try_new reads env.
+        unsafe {
+            for (k, old) in saved {
+                match old {
+                    Some(v) => std::env::set_var(&k, v),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
+        state
+    }
+
+    fn seed_session(state: &Arc<AppState>, id: &str, creator: &str) {
+        let now = std::time::SystemTime::now();
+        state.sessions.insert(id.to_string(), Session {
+            id: id.to_string(),
+            state: SessionState::Running,
+            repo_url: "https://github.com/user/repo".to_string(),
+            branch: None,
+            environment: None,
+            endpoint: None,
+            compute_provider: "local".to_string(),
+            creator_login: creator.to_string(),
+            created_at: now,
+            updated_at: now,
+            error_message: None,
+            magic_link: None,
+            host_public_key: None,
+        });
+    }
+
+    fn claims(login: &str) -> CustomClaims {
+        CustomClaims { sub: login.to_string(), provider: "github".to_string() }
+    }
+
+    #[tokio::test]
+    async fn terminate_unknown_id_is_404() {
+        let state = test_state().await;
+        let err = terminate_session(State(state), claims("alice"), Path("nope".to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn terminate_non_creator_is_403_and_keeps_session() {
+        let state = test_state().await;
+        seed_session(&state, "sess-1", "alice");
+        let err = terminate_session(State(state.clone()), claims("bob"), Path("sess-1".to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        let s = state.sessions.get("sess-1").unwrap();
+        assert_eq!(s.state, SessionState::Running);
+    }
+
+    #[tokio::test]
+    async fn terminate_creator_is_accepted_then_terminated() {
+        let state = test_state().await;
+        seed_session(&state, "sess-2", "alice");
+        let status = terminate_session(State(state.clone()), claims("alice"), Path("sess-2".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        // Local provider has no live handle for the seed, so cleanup resolves
+        // immediately; poll for the spawned task to record Terminated.
+        let mut final_state = SessionState::Terminating;
+        for _ in 0..50 {
+            if let Some(s) = state.sessions.get("sess-2") {
+                final_state = s.state.clone();
+                if final_state == SessionState::Terminated {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(final_state, SessionState::Terminated);
+
+        // And the durable store agrees (restart would rehydrate Terminated).
+        let saved = state.storage.load_sessions().unwrap();
+        let rec = saved.iter().find(|s| s.id == "sess-2").unwrap();
+        assert_eq!(rec.state, SessionState::Terminated);
     }
 }

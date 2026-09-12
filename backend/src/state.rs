@@ -12,6 +12,7 @@ use crate::auth::provider::{AuthProviderDyn, AuthProviderFactoryDyn};
 use crate::compute::{ComputeProvider, LocalComputeProvider, LocalProviderConfig, HetznerComputeProvider};
 use crate::jwt::JwtKeys;
 use crate::models::{PendingDevice, ProviderId, RefreshRecord, Session};
+use crate::storage::Storage;
 
 pub type SessionStore = DashMap<String, Session>;
 
@@ -45,6 +46,9 @@ pub struct Config {
     // Compute
     pub noenv_flake_path: String,
     pub default_compute_provider: String,
+
+    // Storage
+    pub db_path: std::path::PathBuf,
 }
 
 impl Config {
@@ -69,6 +73,15 @@ impl Config {
                 .context("NOENV_FLAKE_PATH must be set")?,
             default_compute_provider: std::env::var("STEADYSTATE_PROVIDER")
                 .unwrap_or_else(|_| "local".to_string()),
+
+            db_path: std::env::var("STEADYSTATE_DB_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    dirs::home_dir()
+                        .expect("HOME not set")
+                        .join(".steadystate")
+                        .join("steadystate.db")
+                }),
         })
     }
 }
@@ -93,6 +106,9 @@ pub struct AppState {
     pub sessions: SessionStore,
     // Map is wrapped in Arc to allow cheap cloning of AppState
     pub compute_providers: Arc<HashMap<String, Arc<dyn ComputeProvider>>>,
+
+    // Durable backing store (SQLite). DashMaps above stay the live store.
+    pub storage: Arc<Storage>,
 }
 
 impl AppState {
@@ -100,9 +116,10 @@ impl AppState {
         // 1. Load Config first to fail fast on missing env vars
         let config = Config::from_env()?;
 
-        tracing::warn!(
-            "⚠️  Using in-memory storage. All sessions will be lost on restart. \
-            Set DATABASE_URL for persistent storage."
+        tracing::info!(
+            "Durable storage: {}. Device-flow pending entries stay in-memory; \
+             live compute handles (PIDs, SSH) do not survive restarts.",
+            config.db_path.display(),
         );
 
         let http = Client::builder()
@@ -140,18 +157,56 @@ impl AppState {
             }
         }
 
+        // 2b. Open durable storage and rehydrate live maps.
+        // Live provider handles (PIDs, SSH) cannot survive a restart, so
+        // resumed sessions report Unknown health until re-provisioned —
+        // but their records, endpoints and magic links are preserved.
+        let storage = Arc::new(Storage::open(&config.db_path)?);
+        let sessions = SessionStore::new();
+        match storage.load_sessions() {
+            Ok(saved) => {
+                for s in saved {
+                    sessions.insert(s.id.clone(), s);
+                }
+                tracing::info!("Rehydrated {} session(s) from {}", sessions.len(), config.db_path.display());
+            }
+            Err(e) => tracing::warn!("Failed to load sessions from {}: {:#}", config.db_path.display(), e),
+        }
+        let refresh_store = Arc::new(DashMap::new());
+        match storage.load_refresh() {
+            Ok(tokens) => {
+                let now = now();
+                let mut live = 0;
+                for (token, rec) in tokens {
+                    if rec.expires_at > now {
+                        refresh_store.insert(token, rec);
+                        live += 1;
+                    }
+                }
+                // Drop expired rows so the table does not grow forever.
+                if let Ok(pruned) = storage.prune_expired_refresh(now) {
+                    if pruned > 0 {
+                        tracing::info!("Pruned {} expired refresh token(s)", pruned);
+                    }
+                }
+                tracing::info!("Rehydrated {} live refresh token(s)", live);
+            }
+            Err(e) => tracing::warn!("Failed to load refresh tokens: {:#}", e),
+        }
+
         // 3. Build State
         let state = Arc::new(Self {
             http,
             jwt,
             config,
             device_pending: Arc::new(DashMap::new()),
-            refresh_store: Arc::new(DashMap::new()),
+            refresh_store,
             providers: Arc::new(DashMap::new()),
             provider_factories: Arc::new(DashMap::new()),
             provider_tokens: Arc::new(load_tokens()),
-            sessions: SessionStore::new(),
+            sessions,
             compute_providers: Arc::new(compute_providers),
+            storage,
         });
 
         // 4. Register Auth Providers
@@ -184,17 +239,42 @@ impl AppState {
 
     pub fn issue_refresh_token(&self, login: String, provider: ProviderId) -> String {
         let token = Uuid::new_v4().to_string();
-        
+
         // Use cached TTL from config
         let expires_at = now() + self.config.refresh_ttl_secs;
 
-        self.refresh_store.insert(token.clone(), RefreshRecord {
+        let rec = RefreshRecord {
             login,
             provider,
             expires_at,
-        });
+        };
+        self.refresh_store.insert(token.clone(), rec.clone());
+        if let Err(e) = self.storage.save_refresh(&token, &rec) {
+            tracing::warn!("Failed to persist refresh token: {:#}", e);
+        }
 
         token
+    }
+
+    /// Write-through persistence for one session record.
+    /// Best-effort: logs on failure so storage outages degrade to
+    /// in-memory behavior instead of failing requests.
+    pub fn persist_session(&self, id: &str) {
+        if let Some(s) = self.sessions.get(id) {
+            let owned = s.clone();
+            drop(s);
+            if let Err(e) = self.storage.save_session(&owned) {
+                tracing::warn!("Failed to persist session {}: {:#}", id, e);
+            }
+        }
+    }
+
+    /// Remove a refresh token from both live and durable stores.
+    pub fn revoke_refresh_token(&self, token: &str) {
+        self.refresh_store.remove(token);
+        if let Err(e) = self.storage.delete_refresh(token) {
+            tracing::warn!("Failed to delete persisted refresh token: {:#}", e);
+        }
     }
     pub fn save_tokens(&self) -> Result<()> {
         let home = std::env::var("HOME").context("HOME not set")?;
@@ -216,6 +296,7 @@ impl AppState {
 }
 
 fn load_tokens() -> DashMap<(String, String), String> {
+
     let dash = DashMap::new();
     if let Ok(home) = std::env::var("HOME") {
         let file_path = std::path::PathBuf::from(home).join(".steadystate").join("tokens.json");
@@ -240,4 +321,16 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("System time is before UNIX EPOCH")
         .as_secs()
+}
+
+/// Process-wide lock serializing tests that mutate process environment.
+/// Env vars are global mutable state; without this, parallel tests that
+/// set/remove vars (e.g. `HCLOUD_TOKEN`, `JWT_SECRET`) race each other.
+/// Poison-tolerant: a panicking test must not cascade into the rest.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 } 

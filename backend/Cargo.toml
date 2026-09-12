@@ -33,4 +33,5 @@ clap = { version = "4.5.53", features = ["derive"] }
 chrono = "0.4.42"
 steadystate-common = { path = "../packages/common" }
 hostname = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
