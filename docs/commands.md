@@ -77,6 +77,9 @@ steadystate up [OPTIONS] <REPOSITORY>
 `--provider=<PROVIDER>`
 :   Compute provider. `local` (default, runs on the backend host) or `hetzner` (provisions a Hetzner Cloud server; requires `HCLOUD_TOKEN` on the backend).
 
+`--ttl=<DURATION>`
+:   Session lifetime, e.g. `12h`, `90m`, `2d`, `3600` (suffixes `s/m/h/d/w`, plain number = seconds). Clamped to the server max; defaults to the server default (48h). Expired sessions are terminated automatically.
+
 `--allow=<USERS>`
 :   Comma-separated list of GitHub usernames allowed to join. Default: all repository collaborators
 

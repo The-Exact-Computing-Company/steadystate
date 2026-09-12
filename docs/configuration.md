@@ -190,6 +190,38 @@ export GITLAB_URL="https://git.example.com"
 
 **Default:** `https://gitlab.com`
 
+### STEADYSTATE_DEFAULT_SESSION_TTL_SECS
+
+Default session lifetime. Sessions past expiry are terminated automatically
+by the reaper (every 60s). Applies from creation — idle time is not tracked.
+
+```
+export STEADYSTATE_DEFAULT_SESSION_TTL_SECS=172800
+```
+
+**Default:** `172800` (48h)
+
+### STEADYSTATE_MAX_SESSION_TTL_SECS
+
+Upper bound for `--ttl` requests (clamped, not rejected). `0` disables the cap.
+
+```
+export STEADYSTATE_MAX_SESSION_TTL_SECS=604800
+```
+
+**Default:** `604800` (7 days)
+
+### STEADYSTATE_MAX_SESSIONS_PER_USER
+
+Max live (`Provisioning`/`Running`) sessions per user. Over-cap creates get
+`429 Too Many Requests`. `0` disables the limit.
+
+```
+export STEADYSTATE_MAX_SESSIONS_PER_USER=5
+```
+
+**Default:** `5`
+
 ### RUST_LOG
 
 Control logging verbosity.

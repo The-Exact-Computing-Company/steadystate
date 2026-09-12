@@ -83,6 +83,7 @@ mod tests {
             allowed_users: None,
             public: false,
             mode: None,
+            ttl_secs: None,
         }
     }
 

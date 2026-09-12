@@ -9,6 +9,10 @@ pub struct SessionInfo {
     pub host_public_key: Option<String>,
     pub compute_provider: Option<String>,
     pub message: Option<String>,
+    /// Expiry as Unix epoch seconds. Absent on records written before
+    /// expiry tracking existed (treated as non-expiring legacy).
+    #[serde(default)]
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

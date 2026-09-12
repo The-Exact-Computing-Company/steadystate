@@ -136,6 +136,9 @@ pub struct Session {
     pub error_message: Option<String>,
     pub magic_link: Option<String>,
     pub host_public_key: Option<String>,
+    /// When the session is reaped (terminated) automatically.
+    /// `None` only on records written before expiry tracking existed.
+    pub expires_at: Option<std::time::SystemTime>,
 }
 
 /// The request from the CLI to create a new session.
@@ -150,6 +153,9 @@ pub struct SessionRequest {
     #[serde(default)]
     pub public: bool,
     pub mode: Option<String>,
+    /// Requested lifetime in seconds. Clamped to the server max;
+    /// defaults to the server default when absent.
+    pub ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +180,9 @@ impl From<&Session> for SessionInfo {
             message: session.error_message.clone(),
             magic_link: session.magic_link.clone(),
             host_public_key: session.host_public_key.clone(),
+            expires_at: session.expires_at.and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+            }),
         }
     }
 }

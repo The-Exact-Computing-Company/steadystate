@@ -32,6 +32,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 - `--env`: required. `noenv` (minimal tools), `python` (auto-detected version + uv), `flake` (repo's `flake.nix`), `tproject` (tlang project: `t update` then `nix develop`), `auto` (detect `tproject.toml` > `flake.nix` > `legacy-nix`), `legacy-nix`, `legacy-nix[filename]`.
 - `--mode`: required. `collab` (isolated worktrees + merge) or `pair` (shared tmux terminal).
 - `--provider`: optional. `local` (default) or `hetzner` (provisions a Hetzner Cloud server; backend needs `HCLOUD_TOKEN`).
+- `--ttl`: optional lifetime (`12h`, `90m`, `2d`, …). Clamped to the server max; default 48h. Expired sessions are reaped automatically.
 - `--allow`: comma-separated GitHub usernames allowed to join (default: repo collaborators). `--public`: anyone with the link can connect.
 
 ```bash

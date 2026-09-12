@@ -19,6 +19,12 @@ pub type SessionStore = DashMap<String, Session>;
 const DEFAULT_DEVICE_POLL_INTERVAL: u64 = 15;
 const DEFAULT_JWT_TTL: u64 = 900; // 15 minutes
 const DEFAULT_REFRESH_TTL: u64 = 14 * 24 * 3600; // 14 days
+/// Default session lifetime: 48h. Sessions are reaped past expiry.
+pub const DEFAULT_SESSION_TTL_SECS: u64 = 48 * 3600;
+/// Upper bound for requested lifetimes: 7 days. 0 = no upper bound.
+pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 7 * 24 * 3600;
+/// Max live (Provisioning/Running) sessions per user. 0 = unlimited.
+pub const DEFAULT_MAX_SESSIONS_PER_USER: usize = 5;
 const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 8;
 
 // --- Centralized Configuration ---
@@ -42,6 +48,9 @@ pub struct Config {
     pub device_poll_interval: u64,
     pub jwt_ttl_secs: u64,
     pub refresh_ttl_secs: u64,
+    pub default_session_ttl_secs: u64,
+    pub max_session_ttl_secs: u64,
+    pub max_sessions_per_user: usize,
 
     // Compute
     pub noenv_flake_path: String,
@@ -68,6 +77,12 @@ impl Config {
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_JWT_TTL),
             refresh_ttl_secs: std::env::var("REFRESH_TTL_SECS")
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_REFRESH_TTL),
+            default_session_ttl_secs: std::env::var("STEADYSTATE_DEFAULT_SESSION_TTL_SECS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_SESSION_TTL_SECS),
+            max_session_ttl_secs: std::env::var("STEADYSTATE_MAX_SESSION_TTL_SECS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_SESSION_TTL_SECS),
+            max_sessions_per_user: std::env::var("STEADYSTATE_MAX_SESSIONS_PER_USER")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_SESSIONS_PER_USER),
             
             noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
                 .context("NOENV_FLAKE_PATH must be set")?,
@@ -254,6 +269,31 @@ impl AppState {
         }
 
         token
+    }
+
+    /// Effective lifetime in seconds for a create request: the requested
+    /// TTL clamped to the server max, or the server default when absent.
+    /// A max of 0 disables the upper bound.
+    pub fn session_ttl(&self, requested: Option<u64>) -> u64 {
+        let ttl = requested.unwrap_or(self.config.default_session_ttl_secs);
+        if self.config.max_session_ttl_secs == 0 {
+            ttl
+        } else {
+            ttl.min(self.config.max_session_ttl_secs)
+        }
+    }
+
+    /// Count of the user's live (Provisioning/Running) sessions,
+    /// used for per-user cap enforcement.
+    pub fn live_session_count(&self, login: &str) -> usize {
+        use crate::models::SessionState;
+        self.sessions
+            .iter()
+            .filter(|e| {
+                e.creator_login == login
+                    && matches!(e.state, SessionState::Provisioning | SessionState::Running)
+            })
+            .count()
     }
 
     /// Write-through persistence for one session record.

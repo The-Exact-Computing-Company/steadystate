@@ -12,6 +12,9 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::try_new().await?;
 
+    // Expiry enforcement: reap Running sessions past expires_at.
+    tokio::spawn(steadystate_backend::reaper::run_forever(state.clone()));
+
     let app: Router = Router::new()
         .nest("/auth", steadystate_backend::routes::auth::router())
         .nest("/sessions", steadystate_backend::routes::sessions::router())

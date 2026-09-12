@@ -440,7 +440,24 @@ impl ComputeProvider for HetznerComputeProvider {
         // Best-effort: ensure session user exists (cloud-init usually handles it).
         let _ = admin.exec_shell(&format!("id {} >/dev/null 2>&1 || useradd -m -s /bin/bash {}", user, user)).await;
 
-        let result = self.remote_setup(&admin, &ip, session_id, request).await?;
+        let result = match self.remote_setup(&admin, &ip, session_id, request).await {
+            Ok(result) => result,
+            Err(e) => {
+                // The VM exists but was never recorded: delete it here or it
+                // bills forever with no handle to clean it up.
+                tracing::warn!(
+                    "Setup failed for hetzner server {} ({}); deleting it: {:#}",
+                    server.id, ip, e
+                );
+                if let Err(del_err) = self.api.delete_server(server.id).await {
+                    tracing::error!(
+                        "ORPHANED hetzner server {} ({}): setup failed ({:#}) and delete failed ({:#}). Delete it manually in hcloud.",
+                        server.id, ip, e, del_err
+                    );
+                }
+                return Err(e);
+            }
+        };
 
         // Record for terminate/health. On failure to parse, still record the
         // server id so terminate_session can always clean up the VM.

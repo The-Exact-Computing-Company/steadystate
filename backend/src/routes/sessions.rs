@@ -105,6 +105,38 @@ async fn create_session(
         None => state.config.default_compute_provider.clone(),
     };
 
+    // Per-user live-session cap (cost control, chiefly for cloud providers).
+    // A cap of 0 disables the limit.
+    if state.config.max_sessions_per_user > 0
+        && state.live_session_count(&claims.sub) >= state.config.max_sessions_per_user
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(SessionInfo {
+                id: String::new(),
+                state: SessionState::Failed,
+                endpoint: None,
+                compute_provider: None,
+                message: Some(format!(
+                    "Session limit reached ({} live sessions). Terminate one with DELETE /sessions/{{id}} first.",
+                    state.config.max_sessions_per_user
+                )),
+                magic_link: None,
+                host_public_key: None,
+                expires_at: None,
+            }),
+        );
+    }
+
+    let ttl = state.session_ttl(request.ttl_secs);
+    let expires_at = now + std::time::Duration::from_secs(ttl);
+    tracing::info!(
+        "Session {} requested ttl {:?}, granted {}s",
+        session_id,
+        request.ttl_secs,
+        ttl
+    );
+
     let session = Session {
         id: session_id.clone(),
         state: SessionState::Provisioning,
@@ -119,6 +151,7 @@ async fn create_session(
         error_message: None,
         magic_link: None,
         host_public_key: None,
+        expires_at: Some(expires_at),
     };
 
     let session_info = SessionInfo::from(&session);
@@ -204,14 +237,26 @@ async fn terminate_session(
         return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Only the session creator can terminate it" }))));
     }
 
-    if let Some(mut session) = state.sessions.get_mut(&id) {
+    terminate_inner(&state, &id).await
+}
+
+/// Shared termination core: mark Terminating, persist, and spawn provider
+/// cleanup (which records Terminated/Failed on completion).
+/// Used by DELETE (after the ownership check above) and by the reaper,
+/// which needs no caller auth — expiry is server policy.
+pub(crate) async fn terminate_inner(
+    state: &Arc<AppState>,
+    id: &str,
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    if let Some(mut session) = state.sessions.get_mut(id) {
         session.state = SessionState::Terminating;
         session.updated_at = std::time::SystemTime::now();
         let session_clone = session.clone();
+        let owned_id = id.to_string();
         drop(session);
 
         // Persist the Terminating state before spawning cleanup.
-        state.persist_session(&id);
+        state.persist_session(&owned_id);
 
         if let Some(provider) = state.compute_providers.get(&session_clone.compute_provider) {
             let provider = provider.clone();
@@ -219,20 +264,20 @@ async fn terminate_session(
             tokio::spawn(async move {
                 match provider.terminate_session(&session_clone).await {
                     Ok(()) => {
-                        if let Some(mut s) = bg_state.sessions.get_mut(&id) {
+                        if let Some(mut s) = bg_state.sessions.get_mut(&owned_id) {
                             s.state = SessionState::Terminated;
                             s.updated_at = std::time::SystemTime::now();
                         }
-                        bg_state.persist_session(&id);
+                        bg_state.persist_session(&owned_id);
                     }
                     Err(e) => {
-                        tracing::error!("Failed to terminate session {}: {:#}", id, e);
-                        if let Some(mut s) = bg_state.sessions.get_mut(&id) {
+                        tracing::error!("Failed to terminate session {}: {:#}", owned_id, e);
+                        if let Some(mut s) = bg_state.sessions.get_mut(&owned_id) {
                             s.state = SessionState::Failed;
                             s.error_message = Some(format!("terminate failed: {:#}", e));
                             s.updated_at = std::time::SystemTime::now();
                         }
-                        bg_state.persist_session(&id);
+                        bg_state.persist_session(&owned_id);
                     }
                 }
             });
@@ -254,7 +299,15 @@ mod tests {
     /// so parallel env-mutating tests cannot observe intermediate values.
     async fn test_state() -> Arc<AppState> {
         let _guard = lock_test_env();
-        let saved: Vec<(String, Option<String>)> = ["JWT_SECRET", "NOENV_FLAKE_PATH", "STEADYSTATE_DB_PATH", "HCLOUD_TOKEN"]
+        let saved: Vec<(String, Option<String>)> = [
+            "JWT_SECRET",
+            "NOENV_FLAKE_PATH",
+            "STEADYSTATE_DB_PATH",
+            "HCLOUD_TOKEN",
+            "STEADYSTATE_DEFAULT_SESSION_TTL_SECS",
+            "STEADYSTATE_MAX_SESSION_TTL_SECS",
+            "STEADYSTATE_MAX_SESSIONS_PER_USER",
+        ]
             .iter()
             .map(|k| (k.to_string(), std::env::var(k).ok()))
             .collect();
@@ -264,6 +317,9 @@ mod tests {
             std::env::set_var("NOENV_FLAKE_PATH", "/tmp/dummy-flake");
             std::env::set_var("STEADYSTATE_DB_PATH", ":memory:");
             std::env::remove_var("HCLOUD_TOKEN");
+            std::env::set_var("STEADYSTATE_DEFAULT_SESSION_TTL_SECS", "3600");
+            std::env::set_var("STEADYSTATE_MAX_SESSION_TTL_SECS", "7200");
+            std::env::set_var("STEADYSTATE_MAX_SESSIONS_PER_USER", "2");
         }
         let state = AppState::try_new().await.expect("test AppState");
         // SAFETY: still holding the shared lock; nothing after try_new reads env.
@@ -294,6 +350,7 @@ mod tests {
             error_message: None,
             magic_link: None,
             host_public_key: None,
+            expires_at: None,
         });
     }
 
@@ -349,5 +406,66 @@ mod tests {
         let saved = state.storage.load_sessions().unwrap();
         let rec = saved.iter().find(|s| s.id == "sess-2").unwrap();
         assert_eq!(rec.state, SessionState::Terminated);
+    }
+
+    fn create_req(ttl_secs: Option<u64>) -> SessionRequest {
+        SessionRequest {
+            repo_url: "https://github.com/user/repo".to_string(),
+            branch: None,
+            environment: None,
+            provider: None,
+            provider_config: None,
+            allowed_users: None,
+            public: false,
+            mode: Some("pair".to_string()),
+            ttl_secs,
+        }
+    }
+
+    fn expires_in_secs(info: &SessionInfo) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        info.expires_at.expect("create sets expiry") - now
+    }
+
+    #[tokio::test]
+    async fn create_applies_default_ttl() {
+        // test_state pins default=3600, max=7200.
+        let state = test_state().await;
+        let (status, Json(info)) =
+            create_session(State(state), claims("alice"), Json(create_req(None))).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let remaining = expires_in_secs(&info);
+        assert!(remaining <= 3600 && remaining > 3500, "{}", remaining);
+    }
+
+    #[tokio::test]
+    async fn create_clamps_over_max_ttl() {
+        let state = test_state().await;
+        let (status, Json(info)) =
+            create_session(State(state), claims("alice"), Json(create_req(Some(999_999)))).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let remaining = expires_in_secs(&info);
+        assert!(remaining <= 7200 && remaining > 7100, "{}", remaining);
+    }
+
+    #[tokio::test]
+    async fn create_enforces_per_user_cap() {
+        // test_state pins max 2 live sessions per user.
+        let state = test_state().await;
+        seed_session(&state, "cap-1", "alice");
+        seed_session(&state, "cap-2", "alice");
+        seed_session(&state, "other-1", "bob");
+
+        let (status, _) =
+            create_session(State(state.clone()), claims("alice"), Json(create_req(None))).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // Under the cap (bob has 1) still works.
+        let (status, _) =
+            create_session(State(state), claims("bob"), Json(create_req(None))).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
     }
 }

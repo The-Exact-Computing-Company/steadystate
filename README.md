@@ -155,6 +155,7 @@ SteadyState supports two distinct modes for collaboration:
 
 * [x] Local orchestration (`local` provider: pair + collab over ephemeral SSH)
 * [x] Hetzner Cloud orchestration (MVP: API-provisioned servers, SSH transport, collab setup reuse — not yet live-tested)
+* [x] 48h default expiry with background reaper + per-user live-session cap
 * [ ] Optional persistent volumes
 * [ ] Resource telemetry and usage reporting
 * [ ] Web dashboard

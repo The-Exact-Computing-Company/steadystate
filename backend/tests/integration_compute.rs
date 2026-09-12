@@ -50,6 +50,7 @@ async fn test_integration_nix_check() {
         error_message: None,
         magic_link: None,
         host_public_key: None,
+        expires_at: None,
     };
 
     let request = SessionRequest {
@@ -61,6 +62,7 @@ async fn test_integration_nix_check() {
         allowed_users: None,
         public: false,
         mode: Some("pair".to_string()),
+        ttl_secs: None,
     };
 
     let result = provider.start_session(&session.id, &request).await;

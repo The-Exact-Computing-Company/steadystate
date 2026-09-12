@@ -86,6 +86,10 @@ enum Commands {
         /// Compute provider: "local" or "hetzner"
         #[arg(long)]
         provider: Option<String>,
+        /// Session lifetime (e.g. 12h, 90m, 2d, 3600). Clamped to the
+        /// server max; defaults to the server default (48h).
+        #[arg(long)]
+        ttl: Option<String>,
     },
     /// Join a remote session using a magic link or SSH URL
     Join {
@@ -204,7 +208,36 @@ async fn logout(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>, provider: Option<String>) -> Result<()> {
+/// Parse a human duration into seconds: plain seconds (`3600`) or a
+/// number with one suffix (`90s`, `90m`, `12h`, `2d`, `1w`).
+/// Rejects empty input, unknown suffixes, and zero.
+fn parse_duration_secs(s: &str) -> Result<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        anyhow::bail!("empty duration");
+    }
+    let (num_part, mult) = match s.chars().last() {
+        Some(c) if c.is_ascii_alphabetic() => (&s[..s.len() - 1], match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            'w' => 604_800,
+            other => anyhow::bail!("unknown duration suffix '{}' (use s, m, h, d, w)", other),
+        }),
+        _ => (s, 1),
+    };
+    let n: u64 = num_part
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid duration number in '{}'", s))?;
+    let secs = n.checked_mul(mult).context("duration out of range")?;
+    if secs == 0 {
+        anyhow::bail!("duration must be positive");
+    }
+    Ok(secs)
+}
+
+async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>, provider: Option<String>, ttl: Option<String>) -> Result<()> {
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
@@ -281,6 +314,19 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         }
     };
 
+    // Parse --ttl flag (optional). Server clamps to its max.
+    let ttl_secs: Option<u64> = match ttl.as_deref() {
+        None => None,
+        Some(s) => match parse_duration_secs(s) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("Error: Invalid --ttl option: {}", e);
+                eprintln!("Examples: --ttl=12h, --ttl=90m, --ttl=2d, --ttl=3600");
+                return Ok(());
+            }
+        },
+    };
+
     // Get credentials to send with request
     let session = read_session(None).await.context(
         "Not logged in. Please run 'steadystate login' first."
@@ -306,6 +352,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         "environment": env_val,
         "mode": mode_val,
         "provider": provider_val,
+        "ttl_secs": ttl_secs,
         "provider_config": provider_config,
     });
 
@@ -806,8 +853,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Up { repo, json, allow, public, env, mode, provider } => {
-            if let Err(e) = up(&client, repo, json, allow, public, env, mode, provider).await {
+        Commands::Up { repo, json, allow, public, env, mode, provider, ttl } => {
+            if let Err(e) = up(&client, repo, json, allow, public, env, mode, provider, ttl).await {
                 let msg = format!("{:#}", e);
                 let usage_error = msg.contains("Invalid repository URL.");
 
@@ -871,4 +918,25 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_duration_secs() {
+        assert_eq!(parse_duration_secs("3600").unwrap(), 3600);
+        assert_eq!(parse_duration_secs("90s").unwrap(), 90);
+        assert_eq!(parse_duration_secs("90m").unwrap(), 5400);
+        assert_eq!(parse_duration_secs("12h").unwrap(), 43200);
+        assert_eq!(parse_duration_secs("48h").unwrap(), 172800);
+        assert_eq!(parse_duration_secs("2d").unwrap(), 172800);
+        assert_eq!(parse_duration_secs("1w").unwrap(), 604800);
+        assert_eq!(parse_duration_secs("  30m  ").unwrap(), 1800);
+
+        for bad in ["", "0", "0h", "abc", "10x", "h", "-5m", "1.5h"] {
+            assert!(parse_duration_secs(bad).is_err(), "{}", bad);
+        }
+    }
 } 
