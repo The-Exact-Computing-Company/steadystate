@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SELF_HOSTING - SteadyState Manual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- THEME TOGGLE (must be here, not in <head>) -->
+    <input type="checkbox" id="toggle-theme">
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header"><a href="index.html" >STEADYSTATE</a></div><div class="sidebar-section"><div class="sidebar-title">User Guide</div><ul><li><a href="hosting-pair-programming.html" >Pair Programming</a></li><li><a href="hosting-collaborative-session.html" >Collaborative Session</a></li><li><a href="self-hosting.html" class="current">Self-Hosting</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Reference</div><ul><li><a href="commands.html" >Commands</a></li><li><a href="configuration.html" >Configuration</a></li></ul></div><div class="sidebar-section"><div class="sidebar-title">Internals</div><ul><li><a href="architecture.html" >Architecture</a></li><li><a href="merge-engine.html" >Merge Engine</a></li><li><a href="troubleshooting.html" >Troubleshooting</a></li></ul></div>
+        </aside>
+
+        <div class="content">
+            <header>
+                <div class="header-left">STEADYSTATE(1)</div>
+                <div class="header-center">SteadyState Manual</div>
+                <div class="header-right">
+                    <label class="theme-toggle" for="toggle-theme">
+                        <span>Toggle Theme</span>
+                    </label>
+                </div>
+            </header>
+
+            <main>
+<h1 id="self-hosting-setup">Self-Hosting Setup</h1>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>Linux server (Ubuntu 22.04+ recommended) or NixOS</li>
+<li>Rust toolchain (1.75+)</li>
+<li>Git</li>
+<li>GitHub OAuth App credentials</li>
+</ul>
+<h2 id="create-a-github-oauth-app">1. Create a GitHub OAuth App</h2>
+<ol type="1">
+<li>Go to <strong>GitHub → Settings → Developer settings → OAuth Apps →
+New OAuth App</strong></li>
+<li>Fill in:
+<ul>
+<li><strong>Application name</strong>: <code>SteadyState</code> (or your
+preferred name)</li>
+<li><strong>Homepage URL</strong>:
+<code>http://your-server:8080</code></li>
+<li><strong>Authorization callback URL</strong>:
+<code>http://your-server:8080/auth/callback</code> (required by GitHub,
+unused: login uses the OAuth device flow, no browser redirect)</li>
+</ul></li>
+<li>Note your <strong>Client ID</strong> and generate a <strong>Client
+Secret</strong></li>
+</ol>
+<h2 id="clone-and-build">2. Clone and Build</h2>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Clone the repository</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> clone https://github.com/your-org/steadystate.git</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> steadystate</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Build the backend and CLI</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> build <span class="at">--release</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="co"># The binaries will be in target/release/</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="co"># - steadystate-backend (the server)</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="co"># - steadystate (the CLI)</span></span></code></pre></div>
+<h2 id="configure-the-backend">3. Configure the Backend</h2>
+<p>Create a configuration file or set environment variables:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Required</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GITHUB_CLIENT_ID</span><span class="op">=</span><span class="st">&quot;your_github_client_id&quot;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GITHUB_CLIENT_SECRET</span><span class="op">=</span><span class="st">&quot;your_github_client_secret&quot;</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">JWT_SECRET</span><span class="op">=</span><span class="st">&quot;</span><span class="va">$(</span><span class="ex">openssl</span> rand <span class="at">-base64</span> 32<span class="va">)</span><span class="st">&quot;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Optional</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">PORT</span><span class="op">=</span>8080</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_EXTERNAL_HOST</span><span class="op">=</span><span class="st">&quot;your-server-ip-or-hostname&quot;</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_SSH_USER</span><span class="op">=</span><span class="st">&quot;steadystate&quot;</span>  <span class="co"># System user for SSH sessions</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_PROVIDER</span><span class="op">=</span><span class="st">&quot;local&quot;</span>        <span class="co"># Default compute provider</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">TLANG_FLAKE_URL</span><span class="op">=</span><span class="st">&quot;github:b-rodrigues/tlang&quot;</span>  <span class="co"># Flake providing the `t` binary</span></span></code></pre></div>
+<h3 id="hetzner-cloud-provider-optional">Hetzner Cloud provider
+(optional)</h3>
+<p>To let users provision sessions on Hetzner Cloud with
+<code>steadystate up --provider=hetzner ...</code>, set:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">HCLOUD_TOKEN</span><span class="op">=</span><span class="st">&quot;your_hetzner_cloud_api_token&quot;</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Optional (defaults shown)</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">HCLOUD_SERVER_TYPE</span><span class="op">=</span><span class="st">&quot;cx23&quot;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">HCLOUD_IMAGE</span><span class="op">=</span><span class="st">&quot;ubuntu-24.04&quot;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">HCLOUD_LOCATION</span><span class="op">=</span><span class="st">&quot;nbg1&quot;</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">HCLOUD_SSH_KEY</span><span class="op">=</span><span class="st">&quot;your-uploaded-ssh-key-name&quot;</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">HCLOUD_SSH_IDENTITY</span><span class="op">=</span><span class="st">&quot;</span><span class="va">$HOME</span><span class="st">/.ssh/id_ed25519&quot;</span>  <span class="co"># Key used for provisioned hosts</span></span></code></pre></div>
+<p>Without <code>HCLOUD_TOKEN</code> the backend serves
+<code>local</code> sessions only and rejects
+<code>--provider=hetzner</code> by falling back to the default
+provider.</p>
+<h2 id="create-the-steadystate-system-user">4. Create the SteadyState
+System User</h2>
+<p>For collaboration sessions, SteadyState needs a dedicated system
+user:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Create the user</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> useradd <span class="at">-m</span> <span class="at">-s</span> /bin/bash steadystate</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Ensure the user can run the CLI</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> cp target/release/steadystate /usr/local/bin/</span></code></pre></div>
+<p>On <strong>NixOS</strong>, add to your configuration:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode nix"><code class="sourceCode nix"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>users.users.steadystate = <span class="op">{</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  <span class="va">isNormalUser</span> <span class="op">=</span> <span class="cn">true</span><span class="op">;</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  <span class="va">home</span> <span class="op">=</span> <span class="st">&quot;/home/steadystate&quot;</span><span class="op">;</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>  <span class="va">shell</span> <span class="op">=</span> pkgs.bash<span class="op">;</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>;</span></code></pre></div>
+<h2 id="start-the-backend">5. Start the Backend</h2>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Run the backend</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./target/release/steadystate-backend</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Or with systemd (recommended for production)</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl start steadystate</span></code></pre></div>
+<p>The backend will start on port 8080 (or your configured
+<code>PORT</code>).</p>
+<h2 id="firewall-configuration">6. Firewall Configuration</h2>
+<p>Ensure these ports are accessible:</p>
+<table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 60%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Port</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>8080</td>
+<td>Backend API</td>
+</tr>
+<tr class="even">
+<td>ephemeral high ports</td>
+<td>Local sessions bind an OS-assigned port per session</td>
+</tr>
+<tr class="odd">
+<td>20000-28000</td>
+<td>Hetzner sessions listen on a deterministic high port per
+session</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># UFW example</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ufw allow 8080/tcp</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ufw allow 20000:28000/tcp  <span class="co"># hetzner session SSH; local sessions use ephemeral ports</span></span></code></pre></div>
+<h2 id="serving-a-team-from-one-vm">7. Serving a Team from One VM</h2>
+<p>This is the standard “job VM” setup: the backend runs on a machine at
+work (e.g. <code>devbox.corp</code>), sessions live on that machine, and
+teammates connect from their laptops over the (trusted) office network
+or VPN.</p>
+<h3 id="on-the-vm">On the VM</h3>
+<ol type="1">
+<li><p>Follow steps 1–5 above. Use a stable address for SSH links:</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_EXTERNAL_HOST</span><span class="op">=</span><span class="st">&quot;devbox.corp&quot;</span></span></code></pre></div>
+<p>Without it, the backend falls back to its auto-detected LAN IP, which
+is fine on a flat office network but wrong behind NAT.</p></li>
+<li><p>Open the firewall for the API plus session SSH (see §6). Local
+sessions each bind an OS-assigned ephemeral port; Hetzner sessions use
+<code>20000–28000</code>.</p></li>
+<li><p>Keep the backend running with systemd (see
+<code>configuration.md</code> for a unit file) so sessions survive
+logouts. Session records and refresh tokens are stored in SQLite
+(<code>~/.steadystate/steadystate.db</code> by default,
+<code>STEADYSTATE_DB_PATH</code> to override), so a backend restart
+keeps the session list — but live SSH handles do not survive a
+restart.</p></li>
+</ol>
+<h3 id="on-each-laptop">On each laptop</h3>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Point the CLI at the team server (default is http://localhost:8080)</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_BACKEND</span><span class="op">=</span><span class="st">&quot;http://devbox.corp:8080&quot;</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="co"># One-time login (GitHub device flow, works from anywhere)</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> login</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> whoami</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Host a session on the VM</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--env</span><span class="op">=</span>tproject <span class="at">--mode</span><span class="op">=</span>collab https://github.com/org/repo</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Share the printed magic link, e.g.:</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> join <span class="st">&quot;steadystate://collab/abc123?ssh=...&amp;host_key=...&quot;</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Collaborator prerequisites: a GitHub account with an SSH key uploaded,</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a><span class="co"># plus repo access (or be listed in --allow=user1,user2)</span></span></code></pre></div>
+<p>Traffic here is plain HTTP + SSH. That is fine on a trusted LAN/VPN
+but not on open Wi-Fi — see §8.</p>
+<h2 id="locking-it-down">8. Locking It Down</h2>
+<h3 id="option-a-ssh-tunnels-no-open-ports-except-22">Option A: SSH
+tunnels (no open ports except 22)</h3>
+<p>Keep the firewall closed except SSH, and tunnel everything through
+it:</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Terminal 1: forward the API</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ssh</span> <span class="at">-N</span> <span class="at">-L</span> 8080:localhost:8080 you@devbox.corp</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Terminal 2: point the CLI at the tunnel</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">STEADYSTATE_BACKEND</span><span class="op">=</span><span class="st">&quot;http://localhost:8080&quot;</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> login</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="ex">steadystate</span> up <span class="at">--env</span><span class="op">=</span>tproject <span class="at">--mode</span><span class="op">=</span>collab https://github.com/org/repo</span></code></pre></div>
+<p>Session SSH then also goes through a tunnel. If the magic link says
+<code>ssh://steady@devbox.corp:45678</code>, forward that port too:</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ssh</span> <span class="at">-N</span> <span class="at">-L</span> 45678:localhost:45678 you@devbox.corp</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="co"># then connect as if it were local (host-key check still applies)</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ssh</span> steady@localhost <span class="at">-p</span> 45678</span></code></pre></div>
+<p>Or skip per-port forwarding with a jump host
+(<code>ssh -J you@devbox.corp</code>) if the VM can route to itself —
+the session ports only need to be reachable from the VM.</p>
+<h3 id="option-b-tls-reverse-proxy">Option B: TLS reverse proxy</h3>
+<p>Put Caddy or nginx in front of <code>localhost:8080</code> and point
+<code>STEADYSTATE_BACKEND</code> at <code>https://devbox.corp</code>.
+Native TLS in the backend is deliberately out of scope; the proxy also
+lets you restrict <code>/auth/*</code> or add client certs without
+touching SteadyState.</p>
+<h3 id="what-the-server-never-sees">What the server never sees</h3>
+<p>Your GitHub password or PAT never touches the backend: login is an
+OAuth device flow between your browser and GitHub. The backend only ever
+holds a short-lived JWT, a refresh token, and (transiently) the OAuth
+access token used to fetch your public SSH keys and clone private
+repos.</p>
+            </main>
+
+            <footer>
+                <div class="footer-left">SteadyState</div>
+                <div class="footer-center">2026-09-12</div>
+                <div class="footer-right">SELF_HOSTING</div>
+            </footer>
+        </div>
+    </div>
+
+</body>
+
+</html>

@@ -1,0 +1,503 @@
+/* SteadyState Documentation
+ * 
+ * THEME SELECTION:
+ * Dark theme is now the default.
+ */
+
+
+/* ============================================================================
+ * THEME TOGGLE (CSS only)
+ * Dark = default
+ * Light = when #toggle-theme:checked
+ * ============================================================================ */
+
+/* Hide checkbox but keep it focusable */
+#toggle-theme {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Style the toggle label */
+.theme-toggle {
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.8rem;
+    color: var(--fg);
+}
+
+/* ------------------------------
+   Light Theme Variables Override
+   (only active when checkbox is checked)
+   ------------------------------ */
+/* ------------------------------
+   Light Theme Variables Override
+   (only active when checkbox is checked)
+   ------------------------------ */
+#toggle-theme:checked~.layout {
+    --bg: #ffffff;
+    --bg-sidebar: #fafafa;
+    --fg: #000000;
+    --fg-dim: #666666;
+    --link: #000000;
+    --link-hover: #444444;
+    --border: #e0e0e0;
+    --code-bg: #f5f5f5;
+}
+
+
+/* ============================================================================
+ * LIGHT THEME (disabled)
+ * White background, black text
+ * ============================================================================ */
+/*
+:root {
+    --bg: #ffffff;
+    --bg-sidebar: #fafafa;
+    --fg: #000000;
+    --fg-dim: #666666;
+    --link: #000000;
+    --link-hover: #444444;
+    --border: #e0e0e0;
+    --code-bg: #f5f5f5;
+}
+*/
+
+/* ============================================================================
+ * DARK THEME (active by default)
+ * Black background, white text
+ * ============================================================================ */
+:root {
+    --bg: #0a0a0a;
+    --bg-sidebar: #111111;
+    --fg: #e0e0e0;
+    --fg-dim: #888888;
+    --link: #e0e0e0;
+    --link-hover: #ffffff;
+    --border: #333333;
+    --code-bg: #1a1a1a;
+}
+
+/* ============================================================================
+ * LAYOUT VARIABLES
+ * ============================================================================ */
+:root {
+    --sidebar-width: 200px;
+    --content-width: 120ch;
+    --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Mono",
+        "Droid Sans Mono", "Source Code Pro", ui-monospace, monospace;
+}
+
+/* ============================================================================
+ * BASE STYLES
+ * ============================================================================ */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+}
+
+body {
+    /* Background moved to .layout to support theme toggle */
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+/* ============================================================================
+ * LAYOUT: SIDEBAR + CONTENT
+ * ============================================================================ */
+.layout {
+    display: flex;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--fg);
+}
+
+/* ============================================================================
+ * LEFT SIDEBAR (FIXED)
+ * ============================================================================ */
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    padding: 1.5rem 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.sidebar-header {
+    padding: 0 1rem 1rem 1rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header a {
+    color: var(--fg);
+    text-decoration: none;
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+
+.sidebar-header a:hover {
+    text-decoration: underline;
+}
+
+.sidebar-section {
+    margin-bottom: 1.5rem;
+}
+
+.sidebar-title {
+    color: var(--fg-dim);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 0 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.sidebar ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.sidebar li {
+    margin: 0;
+}
+
+.sidebar a {
+    display: block;
+    padding: 0.3rem 1rem;
+    color: var(--fg);
+    text-decoration: none;
+    font-size: 0.85rem;
+}
+
+.sidebar a:hover {
+    color: var(--link-hover);
+    background: var(--bg);
+}
+
+.sidebar a.current {
+    font-weight: bold;
+    background: var(--bg);
+    border-left: 2px solid var(--fg);
+    padding-left: calc(1rem - 2px);
+}
+
+/* ============================================================================
+ * MAIN CONTENT AREA
+ * ============================================================================ */
+.content {
+    margin-left: var(--sidebar-width);
+    width: calc(100% - var(--sidebar-width));
+    max-width: var(--content-width);
+    padding: 1.5rem 2rem;
+}
+
+/* ============================================================================
+ * HEADER
+ * ============================================================================ */
+/* ============================================================================
+ * HEADER
+ * ============================================================================ */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--fg-dim);
+    font-size: 0.8rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+    margin-bottom: 2rem;
+    background: transparent;
+    /* Ensure it picks up theme background */
+}
+
+/* ============================================================================
+ * ARTICLE (MAIN CONTENT)
+ * ============================================================================ */
+article {
+    min-height: calc(100vh - 12rem);
+}
+
+/* ============================================================================
+ * TYPOGRAPHY
+ * ============================================================================ */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    color: var(--fg);
+    font-weight: bold;
+    margin-top: 2rem;
+    margin-bottom: 0.5rem;
+}
+
+h1 {
+    font-size: 1rem;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.25rem;
+}
+
+h2 {
+    font-size: 1rem;
+    text-transform: uppercase;
+    margin-top: 2.5rem;
+}
+
+h3 {
+    font-size: 0.95rem;
+}
+
+h4 {
+    font-size: 0.9rem;
+    font-style: italic;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+/* ============================================================================
+ * LISTS
+ * ============================================================================ */
+ul,
+ol {
+    margin: 1rem 0;
+    padding-left: 2rem;
+}
+
+li {
+    margin: 0.25rem 0;
+}
+
+/* ============================================================================
+ * CODE
+ * ============================================================================ */
+code {
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    font-size: 0.9em;
+    font-family: var(--font-mono);
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1rem;
+    margin: 1rem 0;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+pre code {
+    background: none;
+    padding: 0;
+}
+
+/* ============================================================================
+ * TABLES
+ * ============================================================================ */
+table {
+    margin: 1rem 0;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    width: auto;
+}
+
+th,
+td {
+    border: 1px solid var(--border);
+    padding: 0.4rem 0.8rem;
+    text-align: left;
+}
+
+th {
+    font-weight: bold;
+    background: var(--code-bg);
+}
+
+/* ============================================================================
+ * BLOCKQUOTES
+ * ============================================================================ */
+blockquote {
+    margin: 1rem 0;
+    padding-left: 1rem;
+    border-left: 3px solid var(--border);
+    color: var(--fg-dim);
+}
+
+blockquote p {
+    margin: 0.5rem 0;
+}
+
+/* ============================================================================
+ * OTHER ELEMENTS
+ * ============================================================================ */
+hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2rem 0;
+}
+
+a {
+    color: var(--link);
+}
+
+a:hover {
+    color: var(--link-hover);
+}
+
+dl {
+    margin: 1rem 0;
+}
+
+dt {
+    font-weight: bold;
+    margin-top: 0.75rem;
+}
+
+dd {
+    margin-left: 2rem;
+    margin-bottom: 0.5rem;
+}
+
+/* ============================================================================
+ * FOOTER
+ * ============================================================================ */
+footer {
+    display: flex;
+    justify-content: space-between;
+    color: var(--fg-dim);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.5rem;
+    margin-top: 3rem;
+}
+
+/* ============================================================================
+ * RESPONSIVE: TABLETS (< 900px)
+ * Sidebar becomes narrower
+ * ============================================================================ */
+@media (max-width: 900px) {
+    :root {
+        --sidebar-width: 180px;
+    }
+
+    .content {
+        padding: 1rem 1.5rem;
+    }
+}
+
+/* ============================================================================
+ * RESPONSIVE: MOBILE (< 700px)
+ * Sidebar moves to top, becomes horizontal nav
+ * ============================================================================ */
+@media (max-width: 700px) {
+    .layout {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        position: static;
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 1rem;
+    }
+
+    .sidebar-header {
+        display: inline;
+        padding: 0;
+        margin: 0;
+        border: none;
+    }
+
+    .sidebar-section {
+        display: inline;
+        margin: 0;
+    }
+
+    .sidebar-title {
+        display: none;
+    }
+
+    .sidebar ul {
+        display: inline;
+    }
+
+    .sidebar li {
+        display: inline;
+    }
+
+    .sidebar a {
+        display: inline;
+        padding: 0.25rem 0.5rem;
+    }
+
+    .sidebar a.current {
+        border-left: none;
+        padding-left: 0.5rem;
+        text-decoration: underline;
+    }
+
+    .content {
+        margin-left: 0;
+        width: 100%;
+        max-width: 100%;
+        padding: 1rem;
+    }
+}
+
+/* ============================================================================
+ * PRINT STYLES
+ * ============================================================================ */
+@media print {
+    .sidebar {
+        display: none;
+    }
+
+    .content {
+        margin-left: 0;
+        max-width: none;
+        width: 100%;
+    }
+
+    body {
+        font-size: 11pt;
+        color: #000;
+        background: #fff;
+    }
+
+    a {
+        color: inherit;
+        text-decoration: none;
+    }
+
+    pre,
+    code {
+        background: #f0f0f0;
+    }
+
+    pre {
+        border: 1px solid #ccc;
+        page-break-inside: avoid;
+    }
+}
