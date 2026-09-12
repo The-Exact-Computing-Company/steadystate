@@ -163,6 +163,10 @@ pub struct Session {
     /// When the session is reaped (terminated) automatically.
     /// `None` only on records written before expiry tracking existed.
     pub expires_at: Option<std::time::SystemTime>,
+    /// Last observed activity (SSH connection, sync, tmux client).
+    /// Initialized to creation time; refreshed by the reaper from
+    /// provider signals. `None` only on pre-tracking records.
+    pub last_activity_at: Option<std::time::SystemTime>,
 }
 
 /// The request from the CLI to create a new session.
@@ -208,6 +212,9 @@ impl From<&Session> for SessionInfo {
                 t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
             }),
             repo_url: Some(session.repo_url.clone()),
+            last_activity_at: session.last_activity_at.and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+            }),
         }
     }
 }

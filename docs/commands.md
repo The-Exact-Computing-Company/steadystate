@@ -117,8 +117,11 @@ steadystate list
 steadystate list --json
 ```
 
-Shows ID, state, provider, expiry (`in 31h`, `expired`, `never`), and
-repository. `--json` dumps the raw array. Only your own sessions appear.
+Shows ID, state, provider, expiry (`in 31h`, `expired`, `never`), idle
+time (`now`, `5m`, `2h`, `—` when untracked), and repository. `--json`
+dumps the raw array. Only your own sessions appear. Sessions idle past
+the server idle timeout are terminated automatically with a
+`terminated: idle for ...` message.
 
 ## steadystate down
 

@@ -125,6 +125,7 @@ async fn create_session(
                 host_public_key: None,
                 expires_at: None,
                 repo_url: None,
+                last_activity_at: None,
             }),
         );
     }
@@ -153,6 +154,9 @@ async fn create_session(
         magic_link: None,
         host_public_key: None,
         expires_at: Some(expires_at),
+        // Creation counts as activity: provision-but-never-join sessions
+        // idle out instead of living to full lifetime.
+        last_activity_at: Some(now),
     };
 
     let session_info = SessionInfo::from(&session);
@@ -390,6 +394,7 @@ mod tests {
             magic_link: Some("steadystate://collab/sess?ssh=x".to_string()),
             host_public_key: Some("ssh-ed25519 AAAA".to_string()),
             expires_at: None,
+            last_activity_at: None,
         });
     }
 

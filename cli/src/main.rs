@@ -281,6 +281,30 @@ fn short_repo_name(repo_url: Option<&String>) -> &str {
         .unwrap_or("-")
 }
 
+/// Render last-activity epoch seconds as idle text (`5m`, `2h`, `—`).
+fn format_idle(last_activity_at: Option<u64>) -> String {
+    match last_activity_at {
+        None => "—".to_string(),
+        Some(t) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // Clock skew (activity in the future) reads as just-now.
+            let idle = now.saturating_sub(t);
+            if idle < 60 {
+                "now".to_string()
+            } else if idle < 3600 {
+                format!("{}m", idle / 60)
+            } else if idle < 86_400 {
+                format!("{}h", idle / 3600)
+            } else {
+                format!("{}d", idle / 86_400)
+            }
+        }
+    }
+}
+
 async fn down(client: &Client, target: String) -> Result<()> {
     let id = session_id_from_target(&target)?;
 
@@ -330,16 +354,17 @@ async fn list_sessions(client: &Client, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<10} {:<12} {:<8} {:<10} {}",
-        "ID", "STATE", "PROVIDER", "EXPIRES", "REPO"
+        "{:<10} {:<12} {:<8} {:<10} {:<8} {}",
+        "ID", "STATE", "PROVIDER", "EXPIRES", "IDLE", "REPO"
     );
     for s in &sessions {
         println!(
-            "{:<10} {:<12} {:<8} {:<10} {}",
+            "{:<10} {:<12} {:<8} {:<10} {:<8} {}",
             s.id.chars().take(8).collect::<String>(),
             s.state.as_str(),
             s.compute_provider.as_deref().unwrap_or("-"),
             format_expiry(s.expires_at),
+            format_idle(s.last_activity_at),
             short_repo_name(s.repo_url.as_ref()),
         );
     }
@@ -1152,5 +1177,19 @@ mod tests {
             "proj"
         );
         assert_eq!(short_repo_name(None), "-");
+    }
+
+    #[test]
+    fn test_format_idle() {
+        assert_eq!(format_idle(None), "—");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(format_idle(Some(now)), "now");
+        assert_eq!(format_idle(Some(now + 60)), "now");
+        assert_eq!(format_idle(Some(now - 300)), "5m");
+        assert_eq!(format_idle(Some(now - 7200)), "2h");
+        assert_eq!(format_idle(Some(now - 90000)), "1d");
     }
 } 

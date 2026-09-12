@@ -26,6 +26,9 @@ pub const DEFAULT_SESSION_TTL_SECS: u64 = 48 * 3600;
 pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 7 * 24 * 3600;
 /// Max live (Provisioning/Running) sessions per user. 0 = unlimited.
 pub const DEFAULT_MAX_SESSIONS_PER_USER: usize = 5;
+/// Idle timeout: Running sessions with no observed activity older than this
+/// are reaped. 0 disables idle reaping (lifetime expiry still applies).
+pub const DEFAULT_IDLE_TTL_SECS: u64 = 2 * 3600;
 const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 8;
 
 // --- Centralized Configuration ---
@@ -48,6 +51,7 @@ pub struct Config {
     pub default_session_ttl_secs: u64,
     pub max_session_ttl_secs: u64,
     pub max_sessions_per_user: usize,
+    pub idle_ttl_secs: u64,
 
     // Compute
     pub noenv_flake_path: String,
@@ -78,6 +82,8 @@ impl Config {
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_SESSION_TTL_SECS),
             max_sessions_per_user: std::env::var("STEADYSTATE_MAX_SESSIONS_PER_USER")
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_SESSIONS_PER_USER),
+            idle_ttl_secs: std::env::var("STEADYSTATE_IDLE_TTL_SECS")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_IDLE_TTL_SECS),
             
             noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
                 .context("NOENV_FLAKE_PATH must be set")?,

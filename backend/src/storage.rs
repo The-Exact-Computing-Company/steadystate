@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     endpoint         TEXT,
     magic_link       TEXT,
     host_public_key  TEXT,
-    expires_at       INTEGER
+    expires_at       INTEGER,
+    last_activity_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     token      TEXT PRIMARY KEY,
@@ -84,15 +85,20 @@ fn state_from_str(s: &str) -> SessionState {
 impl Storage {
     fn new(conn: rusqlite::Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA).context("init storage schema")?;
-        // Migration for databases created before expiry tracking existed.
-        // Fails with "duplicate column" on new DBs — that error is expected
-        // and ignored; any other error is surfaced.
-        match conn.execute("ALTER TABLE sessions ADD COLUMN expires_at INTEGER", []) {
-            Ok(_) => tracing::info!("Migrated sessions table: added expires_at"),
-            Err(e) => {
-                let msg = e.to_string();
-                if !msg.contains("duplicate column") {
-                    return Err(e).context("migrate sessions table");
+        // Migrations for databases created before these columns existed.
+        // "duplicate column" on new DBs is expected and ignored; any other
+        // error is surfaced.
+        for column in ["expires_at", "last_activity_at"] {
+            match conn.execute(
+                &format!("ALTER TABLE sessions ADD COLUMN {} INTEGER", column),
+                [],
+            ) {
+                Ok(_) => tracing::info!("Migrated sessions table: added {}", column),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains("duplicate column") {
+                        return Err(e).context("migrate sessions table");
+                    }
                 }
             }
         }
@@ -128,8 +134,9 @@ impl Storage {
             r#"INSERT INTO sessions
                (id, state, repo_url, branch, environment, compute_provider,
                 creator_login, created_at, updated_at,
-                error_message, endpoint, magic_link, host_public_key, expires_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                error_message, endpoint, magic_link, host_public_key, expires_at,
+                last_activity_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                ON CONFLICT(id) DO UPDATE SET
                  state=excluded.state, repo_url=excluded.repo_url,
                  branch=excluded.branch, environment=excluded.environment,
@@ -139,7 +146,8 @@ impl Storage {
                  error_message=excluded.error_message, endpoint=excluded.endpoint,
                  magic_link=excluded.magic_link,
                  host_public_key=excluded.host_public_key,
-                 expires_at=excluded.expires_at"#,
+                 expires_at=excluded.expires_at,
+                 last_activity_at=excluded.last_activity_at"#,
             rusqlite::params![
                 s.id,
                 state_to_str(&s.state),
@@ -155,6 +163,7 @@ impl Storage {
                 s.magic_link,
                 s.host_public_key,
                 s.expires_at.map(unix_secs),
+                s.last_activity_at.map(unix_secs),
             ],
         )
         .context("save session")?;
@@ -166,11 +175,13 @@ impl Storage {
         let mut stmt = conn.prepare(
             r#"SELECT id, state, repo_url, branch, environment, compute_provider,
                       creator_login, created_at, updated_at,
-                      error_message, endpoint, magic_link, host_public_key, expires_at
+                      error_message, endpoint, magic_link, host_public_key, expires_at,
+                      last_activity_at
                FROM sessions"#,
         )?;
         let rows = stmt.query_map([], |row| {
             let expires_raw: Option<i64> = row.get(13)?;
+            let activity_raw: Option<i64> = row.get(14)?;
             Ok(Session {
                 id: row.get(0)?,
                 state: state_from_str(&row.get::<_, String>(1)?),
@@ -186,6 +197,7 @@ impl Storage {
                 magic_link: row.get(11)?,
                 host_public_key: row.get(12)?,
                 expires_at: expires_raw.map(system_time),
+                last_activity_at: activity_raw.map(system_time),
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().context("load sessions")
@@ -268,6 +280,7 @@ mod tests {
             magic_link: Some("steadystate://collab/abc".to_string()),
             host_public_key: Some("ssh-ed25519 AAAA".to_string()),
             expires_at: Some(now + std::time::Duration::from_secs(3600)),
+            last_activity_at: Some(now),
         }
     }
 
@@ -284,6 +297,7 @@ mod tests {
         assert_eq!(loaded[0].creator_login, "alice");
         assert_eq!(loaded[0].magic_link.as_deref(), Some("steadystate://collab/abc"));
         assert!(loaded[0].expires_at.is_some());
+        assert!(loaded[0].last_activity_at.is_some());
 
         // Upsert updates state.
         s.state = SessionState::Terminated;
@@ -324,8 +338,10 @@ mod tests {
         let loaded = db.load_sessions().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "legacy-1");
-        // Pre-expiry rows load with no expiry (treated as non-expiring legacy).
+        // Pre-expiry rows load with no expiry/activity (legacy: never reaped,
+        // activity falls back to creation time).
         assert_eq!(loaded[0].expires_at, None);
+        assert_eq!(loaded[0].last_activity_at, None);
 
         // And new writes to the migrated table carry expiry.
         db.save_session(&test_session("new-1")).unwrap();

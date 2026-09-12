@@ -492,6 +492,30 @@ impl ComputeProvider for HetznerComputeProvider {
             Ok(SessionHealth::Unknown)
         }
     }
+
+    async fn last_activity(&self, session: &Session) -> Result<Option<std::time::SystemTime>> {
+        // Workspace layout mirrors remote_setup(): no stored path, so
+        // reconstruct it deterministically (same formula as setup).
+        let known = self.sessions.get(&session.id).map(|s| s.ip.clone());
+        match known {
+            Some(ip) => {
+                let ex = self.admin_executor(&ip);
+                let root = format!(
+                    "/home/{}/.steadystate/sessions/{}",
+                    ssh_session_user(),
+                    session.id
+                );
+                Ok(crate::compute::common::activity::latest_activity(
+                    &ex,
+                    PathBuf::from(&root).as_path(),
+                    &session.id,
+                )
+                .await)
+            }
+            // No live handle (unknown or post-restart session): unobservable.
+            None => Ok(None),
+        }
+    }
 }
 
 // Keep Arc constructor helper for state registration.

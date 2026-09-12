@@ -51,6 +51,7 @@ async fn test_integration_nix_check() {
         magic_link: None,
         host_public_key: None,
         expires_at: None,
+        last_activity_at: None,
     };
 
     let request = SessionRequest {

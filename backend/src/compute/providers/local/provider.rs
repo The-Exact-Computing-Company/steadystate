@@ -797,7 +797,7 @@ impl ComputeProvider for LocalComputeProvider {
             let output = self.executor
                 .exec_shell(&format!("kill -0 {}", local_session.pid))
                 .await?;
-                
+
             if output.exit_status.success() {
                 Ok(SessionHealth::Healthy)
             } else {
@@ -807,6 +807,24 @@ impl ComputeProvider for LocalComputeProvider {
             }
         } else {
             Ok(SessionHealth::Unknown)
+        }
+    }
+
+    async fn last_activity(&self, session: &Session) -> Result<Option<std::time::SystemTime>> {
+        let root = self
+            .state
+            .live_sessions
+            .get(&session.id)
+            .map(|s| s.workspace_root.clone());
+        match root {
+            Some(r) => Ok(crate::compute::common::activity::latest_activity(
+                self.executor.as_ref(),
+                r.as_path(),
+                &session.id,
+            )
+            .await),
+            // No live handle (e.g. after a backend restart): unobservable.
+            None => Ok(None),
         }
     }
 }

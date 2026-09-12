@@ -248,6 +248,20 @@ export STEADYSTATE_MAX_SESSIONS_PER_USER=5
 
 **Default:** `5`
 
+### STEADYSTATE_IDLE_TTL_SECS
+
+Idle timeout: `Running` sessions with no observed activity (SSH connection,
+sync, attached tmux client) older than this are terminated with a
+`terminated: idle for ...` message. Creation counts as activity, and
+unobservable sessions (e.g. after a backend restart) fall back to creation
+time. `0` disables idle reaping (lifetime expiry still applies).
+
+```
+export STEADYSTATE_IDLE_TTL_SECS=7200
+```
+
+**Default:** `7200` (2h)
+
 ### RATE_LIMIT_TOKEN_PER_MIN / RATE_LIMIT_AUTH_PER_MIN / RATE_LIMIT_DEFAULT_PER_MIN
 
 Per-IP rate limits (requests/minute) for `POST /auth/token`, the device

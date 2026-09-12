@@ -77,6 +77,15 @@ pub trait ComputeProvider: Send + Sync + std::fmt::Debug {
     
     /// Terminate a session and clean up resources
     async fn terminate_session(&self, session: &Session) -> Result<()>;
+
+    /// Last observed activity for idle reaping (SSH connection, sync, or
+    /// attached tmux client), or `None` when unobservable (e.g. no live
+    /// handle after a backend restart). Best-effort: errors inside are
+    /// swallowed by the reaper, which falls back to creation time.
+    /// The default (no signals) keeps the trait backward compatible.
+    async fn last_activity(&self, _session: &Session) -> Result<Option<std::time::SystemTime>> {
+        Ok(None)
+    }
     
     /// Check if a session is still running and healthy
     async fn health_check(&self, _session: &Session) -> Result<SessionHealth> {

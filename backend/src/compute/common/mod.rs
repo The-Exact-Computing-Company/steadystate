@@ -9,3 +9,4 @@ pub mod nix;
 pub mod python;
 pub mod tproject;
 pub mod provider_config;
+pub mod activity;

@@ -17,6 +17,10 @@ pub struct SessionInfo {
     /// before it was exposed (populated going forward).
     #[serde(default)]
     pub repo_url: Option<String>,
+    /// Last observed activity as Unix epoch seconds (SSH connection,
+    /// sync, or tmux client). Absent on pre-tracking records.
+    #[serde(default)]
+    pub last_activity_at: Option<u64>,
 }
 
 impl SessionInfo {
@@ -49,6 +53,7 @@ mod tests {
             message: None,
             expires_at: Some(9_999_999),
             repo_url: Some("https://github.com/user/repo".to_string()),
+            last_activity_at: Some(9_999_000),
         };
         let red = full.redacted();
         assert_eq!(red.magic_link, None);
@@ -59,6 +64,7 @@ mod tests {
         assert_eq!(red.state, SessionState::Running);
         assert_eq!(red.expires_at, Some(9_999_999));
         assert_eq!(red.compute_provider.as_deref(), Some("local"));
+        assert_eq!(red.last_activity_at, Some(9_999_000));
     }
 }
 
