@@ -85,7 +85,6 @@ mod tests {
                 provider: { "login": login, "access_token": token }
             })),
             allowed_users: None,
-            public: false,
             mode: None,
             ttl_secs: None,
         }

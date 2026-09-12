@@ -278,7 +278,32 @@ export RATE_LIMIT_DEFAULT_PER_MIN=120
 
 Over-limit responses are `429` with a JSON `{"error": ...}` body and a
 `Retry-After` header. Keys are peer IPs: behind a reverse proxy every
-client shares the proxy's IP unless the proxy setup is adjusted.
+client shares the proxy's IP.
+
+### RATE_LIMIT_TRUST_FORWARDED
+
+Key rate limits on the `Forwarded` / `X-Forwarded-For` / `X-Real-IP`
+headers instead of the peer address, restoring per-client buckets behind
+a reverse proxy. **Only enable this when a trusted proxy in front of the
+backend strips or overwrites those headers on client traffic** —
+otherwise clients can spoof header-based keys and sidestep the limits.
+
+```
+export RATE_LIMIT_TRUST_FORWARDED=1
+```
+
+**Default:** Unset (peer-IP keying)
+
+### OIDC_ALLOW_HTTP
+
+Permits an `http://` OIDC issuer (which would send the client secret in
+cleartext). Only for trusted test IdPs on closed networks.
+
+```
+export OIDC_ALLOW_HTTP=1
+```
+
+**Default:** Unset (`http://` issuers are rejected)
 
 ### RUST_LOG
 

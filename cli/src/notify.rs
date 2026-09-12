@@ -11,18 +11,29 @@ use std::io::{Write, stdout};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Restores the terminal when dropped — covers both normal returns and
+/// panic unwinds, so a dashboard crash can never leave raw mode/alternate
+/// screen active (an unusable terminal after `steadystate watch`).
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = stdout();
+        let _ = execute!(stdout, cursor::Show, LeaveAlternateScreen);
+    }
+}
+
 pub fn watch() -> Result<()> {
     // Setup TUI
     enable_raw_mode()?;
+    let guard = TerminalGuard;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
 
-    // Ensure cleanup on panic/exit
+    // Run the dashboard; the guard restores the terminal on return or panic.
     let result = run_dashboard(&mut stdout);
-
-    // Cleanup
-    execute!(stdout, cursor::Show, LeaveAlternateScreen)?;
-    disable_raw_mode()?;
+    drop(guard);
 
     result
 }

@@ -12,9 +12,13 @@
 // Any tier can be disabled by setting its env var to 0 (useful in tests).
 // Limits are approximate token-bucket tiers, not exact fixed windows.
 //
-// NOTE: keys are peer IPs (ConnectInfo). Behind a reverse proxy every
-// client shares the proxy's IP — run with TRUSTED-PROXY handling or
-// accept shared buckets (documented in configuration.md).
+// NOTE on keying: by default, keys are peer IPs (ConnectInfo). Behind a
+// reverse proxy every client shares the proxy's IP unless you set
+// `RATE_LIMIT_TRUST_FORWARDED`, which switches to the `Forwarded` /
+// `X-Forwarded-For` / `X-Real-IP` headers. ONLY enable that when a trusted
+// proxy in front of the backend strips or overwrites those headers on
+// client traffic — otherwise clients can spoof header-based keys and
+// sidestep the per-IP limits entirely.
 
 use std::sync::Arc;
 
@@ -34,6 +38,18 @@ fn env_per_min(name: &str, def: u64) -> u64 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(def)
+}
+
+/// Whether to key rate limits on proxy-forwarded client IPs instead of the
+/// peer address. Only safe behind a proxy that controls those headers.
+pub fn trust_forwarded() -> bool {
+    matches!(
+        std::env::var("RATE_LIMIT_TRUST_FORWARDED")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
 }
 
 pub fn token_per_min() -> u64 {
@@ -80,16 +96,31 @@ fn limit(router: Router<Arc<AppState>>, per_min: u64) -> Router<Arc<AppState>> {
     // One token every 60/per_min seconds, bucket capacity = per_min.
     let period_ms = (60_000 / per_min).max(1);
     let burst = per_min.min(u32::MAX as u64) as u32;
-    let config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_millisecond(period_ms)
-            .burst_size(burst.max(1))
-            .key_extractor(PeerIpKeyExtractor)
-            .error_handler(json_error_handler)
-            .finish()
-            .expect("non-zero governor period and burst"),
-    );
-    router.layer(tower_governor::GovernorLayer { config })
+
+    if trust_forwarded() {
+        use tower_governor::key_extractor::SmartIpKeyExtractor;
+        let config = Arc::new(
+            GovernorConfigBuilder::default()
+                .key_extractor(SmartIpKeyExtractor)
+                .per_millisecond(period_ms)
+                .burst_size(burst.max(1))
+                .error_handler(json_error_handler)
+                .finish()
+                .expect("non-zero governor period and burst"),
+        );
+        router.layer(tower_governor::GovernorLayer { config })
+    } else {
+        let config = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_millisecond(period_ms)
+                .burst_size(burst.max(1))
+                .key_extractor(PeerIpKeyExtractor)
+                .error_handler(json_error_handler)
+                .finish()
+                .expect("non-zero governor period and burst"),
+        );
+        router.layer(tower_governor::GovernorLayer { config })
+    }
 }
 
 /// Strict tier for POST /auth/token (env `RATE_LIMIT_TOKEN_PER_MIN`).

@@ -78,9 +78,6 @@ enum Commands {
         /// Allow specific GitHub users to connect. Defaults to all repository collaborators. Use "none" to restrict to host only.
         #[arg(long)]
         allow: Vec<String>,
-        /// Make the session public (anyone with the link can connect)
-        #[arg(long)]
-        public: bool,
         /// Environment to load (e.g. "noenv")
         #[arg(long)]
         env: Option<String>,
@@ -445,7 +442,6 @@ struct UpArgs {
     repo: String,
     json: bool,
     allow: Vec<String>,
-    public: bool,
     env: Option<String>,
     mode: Option<String>,
     provider: Option<String>,
@@ -554,7 +550,6 @@ async fn up(client: &Client, args: UpArgs) -> Result<()> {
         repo,
         json,
         allow,
-        public,
         env,
         mode,
         provider,
@@ -654,7 +649,6 @@ async fn up(client: &Client, args: UpArgs) -> Result<()> {
     let payload = serde_json::json!({
         "repo_url": repo,
         "allowed_users": if allow.is_empty() { None } else { Some(allow.clone()) },
-        "public": public,
         "environment": env_val,
         "mode": mode_val,
         "provider": provider_val,
@@ -1188,7 +1182,6 @@ async fn main() -> Result<()> {
             repo,
             json,
             allow,
-            public,
             env,
             mode,
             provider,
@@ -1201,7 +1194,6 @@ async fn main() -> Result<()> {
                     repo,
                     json,
                     allow,
-                    public,
                     env,
                     mode,
                     provider,

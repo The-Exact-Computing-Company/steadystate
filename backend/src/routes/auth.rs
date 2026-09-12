@@ -666,6 +666,16 @@ mod tests {
 
     /// Spin up a mock OIDC issuer (discovery + token + userinfo).
     async fn mock_oidc_issuer() -> String {
+        mock_oidc_issuer_with(serde_json::json!({
+            "sub": "sso-123",
+            "preferred_username": "corpuser",
+            "email": "corpuser@example.com",
+        }))
+        .await
+    }
+
+    /// Mock issuer with a custom userinfo payload (for iss/aud tests).
+    async fn mock_oidc_issuer_with(userinfo: serde_json::Value) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock oidc");
@@ -695,12 +705,9 @@ mod tests {
             )
             .route(
                 "/userinfo",
-                axum::routing::get(|| async {
-                    axum::Json(serde_json::json!({
-                        "sub": "sso-123",
-                        "preferred_username": "corpuser",
-                        "email": "corpuser@example.com",
-                    }))
+                axum::routing::get(move || {
+                    let userinfo = userinfo.clone();
+                    async move { axum::Json(userinfo) }
                 }),
             );
         tokio::spawn(async move {
@@ -834,6 +841,118 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    /// Start a login against an issuer whose userinfo carries extra claims,
+    /// then attempt completion. Returns the start output for the assertions.
+    async fn start_against(userinfo: serde_json::Value) -> (OidcStartOut, Arc<AppState>) {
+        let base = mock_oidc_issuer_with(userinfo).await;
+        let env = test_state_with_oidc(&base).await;
+        let state = env.state.clone();
+        let out = oidc_start(
+            State(state.clone()),
+            Json(OidcStartIn {
+                code_challenge: "c".to_string(),
+                redirect_uri: "http://127.0.0.1:9999/callback".to_string(),
+            }),
+        )
+        .await
+        .expect("oidc start")
+        .0;
+        (out, state)
+    }
+
+    #[tokio::test]
+    async fn oidc_rejects_aud_mismatch() {
+        // Token minted for a different client of the same IdP: reject.
+        let (out, state) = start_against(serde_json::json!({
+            "sub": "sso-123",
+            "preferred_username": "corpuser",
+            "aud": "someone-elses-client",
+        }))
+        .await;
+
+        let err = oidc_complete(
+            State(state),
+            Json(OidcCompleteIn {
+                key: out.key,
+                code: "auth-code-xyz".to_string(),
+                verifier: "verifier".to_string(),
+                state: extract_state(&out.auth_url),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn oidc_rejects_iss_mismatch() {
+        let (out, state) = start_against(serde_json::json!({
+            "sub": "sso-123",
+            "preferred_username": "corpuser",
+            "iss": "https://evil.example.com",
+        }))
+        .await;
+
+        let err = oidc_complete(
+            State(state),
+            Json(OidcCompleteIn {
+                key: out.key,
+                code: "auth-code-xyz".to_string(),
+                verifier: "verifier".to_string(),
+                state: extract_state(&out.auth_url),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn oidc_accepts_matching_aud_array() {
+        // aud as an array containing our client id is fine.
+        let base = mock_oidc_issuer_with(serde_json::json!({
+            "sub": "sso-123",
+            "preferred_username": "corpuser",
+            "aud": ["other", "test-cid"],
+        }))
+        .await;
+        let env = test_state_with_oidc(&base).await;
+        let state = env.state.clone();
+
+        let out = oidc_start(
+            State(state.clone()),
+            Json(OidcStartIn {
+                code_challenge: "c".to_string(),
+                redirect_uri: "http://127.0.0.1:9999/callback".to_string(),
+            }),
+        )
+        .await
+        .expect("oidc start")
+        .0;
+
+        let done = oidc_complete(
+            State(state),
+            Json(OidcCompleteIn {
+                key: out.key,
+                code: "auth-code-xyz".to_string(),
+                verifier: "verifier".to_string(),
+                state: extract_state(&out.auth_url),
+            }),
+        )
+        .await
+        .expect("complete with array aud containing our client");
+        assert_eq!(done.0.login.as_deref(), Some("corpuser"));
+    }
+
+    fn extract_state(auth_url: &str) -> String {
+        url::Url::parse(auth_url)
+            .expect("parse auth url")
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.to_string())
+            .expect("state in auth url")
     }
 
     #[tokio::test]

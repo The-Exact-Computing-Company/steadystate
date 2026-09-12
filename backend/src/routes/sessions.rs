@@ -687,7 +687,6 @@ mod tests {
             provider: None,
             provider_config: None,
             allowed_users: None,
-            public: false,
             mode: Some("pair".to_string()),
             ttl_secs,
         }

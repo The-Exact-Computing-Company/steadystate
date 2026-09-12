@@ -241,6 +241,44 @@ impl OidcConfig {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
+
+        // When the IdP includes iss/aud in the userinfo response, verify
+        // they match our configuration. This rejects tokens minted for a
+        // different client (`aud`) or a different issuer at the same host.
+        // (Optional per OIDC spec, so absence is fine; full ID-token/JWKS
+        // validation is the stronger alternative, deliberately not done to
+        // avoid a crypto dependency — see docs.)
+        if let Some(iss) = str_claim("iss")
+            && iss.trim_end_matches('/') != self.issuer.trim_end_matches('/')
+        {
+            return Err(anyhow!(
+                "OIDC userinfo issuer mismatch: got {:?}, expected {:?}",
+                iss,
+                self.issuer
+            ));
+        }
+        match claims.get("aud") {
+            None => {}
+            // String or array of strings; the client id must be among them.
+            Some(aud)
+                if aud.as_str() != Some(self.client_id.as_str())
+                    && aud
+                        .as_array()
+                        .map(|a| {
+                            !a.iter()
+                                .any(|v| v.as_str() == Some(self.client_id.as_str()))
+                        })
+                        .unwrap_or(true) =>
+            {
+                return Err(anyhow!(
+                    "OIDC userinfo audience mismatch: {:?} does not include client {:?}",
+                    aud,
+                    self.client_id
+                ));
+            }
+            Some(_) => {}
+        }
+
         let login = str_claim(&self.login_claim)
             .or_else(|| str_claim("preferred_username"))
             .or_else(|| str_claim("email"))

@@ -37,7 +37,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 - `--provider`: optional. `local` (default) or `hetzner` (provisions a Hetzner Cloud server; backend needs `HCLOUD_TOKEN`).
 - `--forge-token`: optional PAT for collaborator lookup + clone auth (needed for SSO logins; `FORGE_TOKEN` env fallback).
 - `--ttl`: optional lifetime (`12h`, `90m`, `2d`, …). Clamped to the server max; default 48h. Expired sessions are reaped automatically.
-- `--allow`: comma-separated GitHub usernames allowed to join (default: repo collaborators). `--public`: anyone with the link can connect.
+- `--allow`: comma-separated GitHub usernames allowed to join (default: repo collaborators).
 
 ```bash
 steadystate up --env=auto --mode=collab https://github.com/user/repo

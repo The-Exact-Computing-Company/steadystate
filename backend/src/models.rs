@@ -189,8 +189,6 @@ pub struct SessionRequest {
     pub provider: Option<String>,
     pub provider_config: Option<serde_json::Value>,
     pub allowed_users: Option<Vec<String>>,
-    #[serde(default)]
-    pub public: bool,
     pub mode: Option<String>,
     /// Requested lifetime in seconds. Clamped to the server max;
     /// defaults to the server default when absent.
@@ -204,18 +202,6 @@ pub struct ExtendIn {
     /// `None` uses the server default TTL. Explicit values are clamped so
     /// the session never outlives the server max; `Some(0)` is rejected.
     pub ttl_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MagicLink {
-    pub mode: String,
-    pub session_id: String,
-    pub username: String,
-    pub hostname: String,
-    pub port: Option<u16>,
-    pub token: Option<String>,
-    pub fingerprint: Option<String>,
-    pub upterm_url: Option<String>,
 }
 
 impl From<&Session> for SessionInfo {
