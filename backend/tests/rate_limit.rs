@@ -36,6 +36,7 @@ async fn serve_with_limits(vars: &[(&str, &str)]) -> TestApp {
         "STEADYSTATE_DB_PATH",
         "HCLOUD_TOKEN",
         "ENABLE_FAKE_AUTH",
+        "GITLAB_URL",
         "RATE_LIMIT_TOKEN_PER_MIN",
         "RATE_LIMIT_AUTH_PER_MIN",
         "RATE_LIMIT_DEFAULT_PER_MIN",
@@ -79,9 +80,35 @@ async fn serve_with_limits(vars: &[(&str, &str)]) -> TestApp {
     }
 }
 
+/// Local GitLab stand-in that rejects every PAT with 401. Keeps the
+/// `/auth/token` test hermetic: without this, `GITLAB_URL` defaults to
+/// gitlab.com and the result depends on whether CI has network access
+/// (401 when reachable, 502 when the sandbox blocks it).
+async fn mock_gitlab_401() -> String {
+    let app = axum::Router::new().route(
+        "/api/v4/user",
+        axum::routing::get(|| async {
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({ "message": "401 Unauthorized" })),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock gitlab");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve mock gitlab");
+    });
+    base
+}
+
 #[tokio::test]
 async fn token_tier_returns_429_with_json_and_retry_after() {
+    let gitlab = mock_gitlab_401().await;
     let app = serve_with_limits(&[
+        ("GITLAB_URL", &gitlab),
         ("RATE_LIMIT_TOKEN_PER_MIN", "2"),
         ("RATE_LIMIT_AUTH_PER_MIN", "0"),
         ("RATE_LIMIT_DEFAULT_PER_MIN", "0"),
@@ -89,8 +116,7 @@ async fn token_tier_returns_429_with_json_and_retry_after() {
     .await;
     let client = reqwest::Client::new();
 
-    // Bogus PAT: GitLab validation fails -> 401 (no network needed;
-    // any validation error maps to Unauthorized).
+    // Bogus PAT: the mock GitLab rejects it -> 401, deterministically.
     let mut statuses = Vec::new();
     for _ in 0..3 {
         let resp = client
