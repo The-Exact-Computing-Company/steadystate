@@ -44,11 +44,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start interactive login (device flow)
+    /// Start interactive login (device flow, or PAT for providers without one)
     Login {
         /// Authentication provider (e.g., github, gitlab, orchid, fake)
         #[arg(long, default_value = "github")]
         provider: String,
+        /// PAT for providers without a device flow (gitlab). Falls back to
+        /// GITLAB_TOKEN env, then an interactive hidden prompt.
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Show current logged-in user (if any)
     Whoami {
@@ -129,7 +133,7 @@ async fn whoami(json_output: bool) -> Result<()> {
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("Logged in as: {}", sess.login);
+                println!("Logged in as: {} (via {})", sess.login, sess.provider_or_default());
                 if let Some(exp) = sess.jwt_exp {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -288,6 +292,13 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
             session.login
         ))?;
 
+    let session_provider = session.provider_or_default().to_string();
+    let mut provider_creds = serde_json::Map::new();
+    provider_creds.insert("login".to_string(), serde_json::Value::String(session.login.clone()));
+    provider_creds.insert("access_token".to_string(), serde_json::Value::String(access_token));
+    let mut provider_config = serde_json::Map::new();
+    provider_config.insert(session_provider, serde_json::Value::Object(provider_creds));
+
     let payload = serde_json::json!({
         "repo_url": repo,
         "allowed_users": if allow.is_empty() { None } else { Some(allow.clone()) },
@@ -295,12 +306,7 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         "environment": env_val,
         "mode": mode_val,
         "provider": provider_val,
-        "provider_config": {
-            "github": {
-                "login": session.login,
-                "access_token": access_token
-            }
-        }
+        "provider_config": provider_config,
     });
 
     let resp: UpResponse = request_with_auth(
@@ -759,8 +765,22 @@ async fn main() -> Result<()> {
     let client = builder.build().context("create http client")?;
 
     match cmd {
-        Commands::Login { provider } => {
-            if let Err(e) = device_login(&client, &provider).await.context(
+        Commands::Login { provider, token } => {
+            // GitLab has no OAuth device flow: authenticate with a PAT.
+            let login_result = if provider == "gitlab" {
+                match auth::resolve_pat(token, "GITLAB_TOKEN", "GitLab Personal Access Token (read_user scope): ") {
+                    Ok(pat) => auth::token_login(&client, &provider, &pat).await,
+                    Err(e) => Err(e),
+                }
+            } else if token.is_some() {
+                Err(anyhow::anyhow!(
+                    "--token is only used with --provider=gitlab; '{}' uses the device flow",
+                    provider
+                ))
+            } else {
+                device_login(&client, &provider).await
+            };
+            if let Err(e) = login_result.context(
                 "Failed to reach backend. Check network connectivity and the STEADYSTATE_BACKEND environment variable.",
             ) {
                 error!("login failed: {:#}", e);

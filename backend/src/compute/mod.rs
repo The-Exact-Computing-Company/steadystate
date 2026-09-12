@@ -1,7 +1,5 @@
 // backend/src/compute/mod.rs
 
-use crate::models::{Session, SessionRequest};
-
 pub mod traits;
 pub mod types;
 pub mod error;

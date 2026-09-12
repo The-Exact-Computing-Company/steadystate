@@ -48,7 +48,7 @@ pub struct RefreshRecord {
 
 pub type DeviceStartResponse = DeviceFlowResponse;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct PollOut {
     pub status: Option<String>,
     pub jwt: Option<String>,
@@ -82,6 +82,13 @@ pub struct RefreshOut {
 #[derive(Deserialize)]
 pub struct RevokeIn {
     pub refresh_token: String,
+}
+
+/// PAT login request (providers without a device flow, e.g. GitLab).
+#[derive(Deserialize)]
+pub struct TokenIn {
+    pub provider: Option<String>,
+    pub token: String,
 }
 
 #[derive(Serialize)]

@@ -19,21 +19,6 @@ impl<'a> GitOps<'a> {
         depth: Option<u32>,
         branch: Option<&str>,
     ) -> Result<()> {
-        let mut args = vec!["clone"];
-        
-        if let Some(d) = depth {
-            args.push("--depth");
-            // We need to keep the string alive, so we can't just push &d.to_string()
-            // But wait, args is Vec<&str>. We can't push a temporary string reference.
-            // We need to construct the command differently or change the signature of exec.
-            // The trait exec takes &[&str].
-            // Let's format the depth argument separately if needed, but here we are constructing a Vec of &str.
-            // We can't store the String in the Vec<&str> if the String is temporary.
-        }
-        
-        // To handle the lifetime issue with args, we'll construct the command string or use a different approach.
-        // Actually, let's just use a Vec<String> for building args, then convert to Vec<&str>.
-        
         let mut cmd_args = vec!["clone".to_string()];
         
         if let Some(d) = depth {

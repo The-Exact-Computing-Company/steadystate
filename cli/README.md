@@ -20,7 +20,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 
 | Command | Description |
 | --- | --- |
-| `steadystate login` | Start the OAuth device flow and store the resulting session. |
+| `steadystate login [--provider=github] [--token ...]` | Start the OAuth device flow and store the resulting session. GitLab uses a PAT: `--token`, `GITLAB_TOKEN`, or hidden prompt (`read_user` scope). |
 | `steadystate whoami` | Show the currently authenticated user. Add `--json` for machine-readable output. |
 | `steadystate refresh` | Force-refresh the JWT using the stored refresh token. |
 | `steadystate logout` | Revoke the refresh token (if possible) and clear local session files. |

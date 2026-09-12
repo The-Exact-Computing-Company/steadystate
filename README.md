@@ -147,7 +147,7 @@ SteadyState supports two distinct modes for collaboration:
 ### Authentication
 
 * [x] GitHub OAuth Device Flow
-* [ ] GitLab
+* [x] GitLab PAT login (`POST /auth/token`, `GITLAB_URL` configurable)
 * [ ] Orchid
 * [ ] Enterprise SSO
 

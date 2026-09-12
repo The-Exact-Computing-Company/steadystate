@@ -56,19 +56,6 @@ impl HetznerComputeProvider {
         Err(anyhow!("timed out waiting for ssh {}:{}", ip, port))
     }
 
-    fn extract_github(request: &SessionRequest) -> (Option<String>, Option<String>) {
-        if let Some(cfg) = &request.provider_config {
-            if let Some(gh) = cfg.get("github") {
-                #[derive(serde::Deserialize)]
-                struct Gh { login: String, access_token: String }
-                if let Ok(g) = serde_json::from_value::<Gh>(gh.clone()) {
-                    return (Some(g.login), Some(g.access_token));
-                }
-            }
-        }
-        (None, None)
-    }
-
     /// Resolve the session mode, mirroring the local provider:
     /// explicit `collab` stays collab, `pair`/absent means pair.
     fn resolve_mode(mode: Option<&str>) -> Result<&'static str> {
@@ -122,17 +109,13 @@ impl HetznerComputeProvider {
         }
 
         // Token-inject origin for passwordless push, same as local setups.
-        if let (_, Some(token)) = Self::extract_github(request) {
-            if request.repo_url.starts_with("https://") {
-                if let Ok(mut url) = url::Url::parse(&request.repo_url) {
-                    let _ = url.set_username("x-access-token");
-                    let _ = url.set_password(Some(&token));
-                    let git = GitOps::new(ex);
-                    if let Err(e) = git.set_remote_url(&PathBuf::from(&repo_path), "origin", url.as_str()).await {
-                        tracing::warn!("Failed to configure remote git auth: {}", e);
-                    }
-                }
-            }
+        if let Some(auth) = crate::compute::common::provider_config::extract_forge_config(request).as_ref() {
+            crate::compute::common::provider_config::inject_token_auth(
+                ex,
+                PathBuf::from(&repo_path).as_path(),
+                &request.repo_url,
+                auth,
+            ).await;
         }
 
         Ok((root, repo_path, env_resolved))
@@ -142,13 +125,14 @@ impl HetznerComputeProvider {
         &self,
         request: &SessionRequest,
     ) -> Vec<crate::compute::common::ssh_keys::AuthorizedKey> {
-        let (creator_login, github_token) = Self::extract_github(request);
+        let forge_auth = crate::compute::common::provider_config::extract_forge_config(request);
+        let creator_login = forge_auth.as_ref().and_then(|f| f.login.clone());
         self.keys
             .build_authorized_keys_for_repo(
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
                 Some(&request.repo_url),
-                github_token.as_deref(),
+                forge_auth.as_ref(),
             )
             .await
     }

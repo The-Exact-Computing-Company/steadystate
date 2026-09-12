@@ -11,16 +11,30 @@ pub struct Session {
     pub login: String,
     pub jwt: String,
     pub jwt_exp: Option<u64>, // epoch seconds
+    /// Auth provider id ("github", "gitlab", ...). Absent in sessions
+    /// written before provider tracking existed — treated as "github".
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 impl Session {
     pub fn new(login: String, jwt: String) -> Self {
+        Self::with_provider(login, jwt, None)
+    }
+
+    pub fn with_provider(login: String, jwt: String, provider: Option<String>) -> Self {
         let jwt_exp = extract_exp_from_jwt(&jwt);
         Self {
             login,
             jwt,
             jwt_exp,
+            provider,
         }
+    }
+
+    /// Provider id, defaulting to "github" for legacy session files.
+    pub fn provider_or_default(&self) -> &str {
+        self.provider.as_deref().unwrap_or("github")
     }
 
     pub fn is_near_expiry(&self, buffer_secs: u64) -> bool {
@@ -128,8 +142,9 @@ async fn test_is_near_expiry_true_when_within_buffer() {
 
     let exp = now + 30; // expires in 30 seconds
     let session = Session {
-        login: "u".into(),
-        jwt: "t".into(),
+            login: "u".into(),
+            jwt: "t".into(),
+            provider: None,
         jwt_exp: Some(exp),
     };
 
@@ -145,8 +160,9 @@ async fn test_is_near_expiry_false_when_outside_buffer() {
 
     let exp = now + 300; // expires in 5 minutes
     let session = Session {
-        login: "u".into(),
-        jwt: "t".into(),
+            login: "u".into(),
+            jwt: "t".into(),
+            provider: None,
         jwt_exp: Some(exp),
     };
 
@@ -156,8 +172,9 @@ async fn test_is_near_expiry_false_when_outside_buffer() {
 #[tokio::test]
 async fn test_is_near_expiry_none_expiry_means_false() {
     let session = Session {
-        login: "u".into(),
-        jwt: "t".into(),
+            login: "u".into(),
+            jwt: "t".into(),
+            provider: None,
         jwt_exp: None,
     };
 
@@ -173,8 +190,9 @@ async fn test_is_near_expiry_exact_boundary() {
 
     let exp = now + 60;
     let session = Session {
-        login: "u".into(),
-        jwt: "t".into(),
+            login: "u".into(),
+            jwt: "t".into(),
+            provider: None,
         jwt_exp: Some(exp),
     };
 
@@ -192,6 +210,7 @@ async fn test_is_near_expiry_exact_boundary() {
         let session = Session {
             login: "test_user".into(),
             jwt: "fake_jwt".into(),
+            provider: None,
             jwt_exp: Some(42),
         };
         
@@ -211,5 +230,26 @@ async fn test_is_near_expiry_exact_boundary() {
         let ctx = TestContext::new();
         // Pass the temp directory path to ensure we operate in the isolated test environment.
         remove_session(Some(&ctx.path)).await.unwrap();
+    }
+
+    #[test]
+    fn test_provider_defaults_to_github() {
+        let legacy = Session {
+            login: "u".into(),
+            jwt: "t".into(),
+            jwt_exp: None,
+            provider: None,
+        };
+        assert_eq!(legacy.provider_or_default(), "github");
+
+        let gl = Session::with_provider("u".into(), "t".into(), Some("gitlab".into()));
+        assert_eq!(gl.provider_or_default(), "gitlab");
+
+        // Legacy JSON without the provider key still parses.
+        let parsed: Session = serde_json::from_str(
+            r#"{"login":"u","jwt":"t","jwt_exp":null}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.provider_or_default(), "github");
     }
 }

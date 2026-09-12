@@ -179,6 +179,17 @@ export HCLOUD_SSH_IDENTITY="$HOME/.ssh/id_ed25519"
 
 **Defaults:** `cx23` / `ubuntu-24.04` / `nbg1` / unset / unset
 
+### GITLAB_URL
+
+GitLab instance base URL for PAT login and session forge operations
+(SSH keys, project members).
+
+```
+export GITLAB_URL="https://git.example.com"
+```
+
+**Default:** `https://gitlab.com`
+
 ### RUST_LOG
 
 Control logging verbosity.

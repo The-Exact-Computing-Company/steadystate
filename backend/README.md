@@ -20,7 +20,8 @@ coming later) and manages **ephemeral SSH-accessible sessions** in the cloud.
 ## Features
 
 * **GitHub OAuth (Device Flow)** authentication
-* **Modular authentication provider architecture** (future: GitLab, Orchid, etc.)
+* **GitLab PAT login** authentication (`POST /auth/token`, `GITLAB_URL` configurable)
+* **Modular authentication provider architecture** (GitLab, Orchid stubbed for future: GitLab device flow does not exist, hence PAT)
 * **JWT + Refresh token** issuing and verification
 * **Axum-based REST API**, written in Rust
 * **Nix-based dev environment** for reproducible builds
@@ -115,6 +116,27 @@ curl -H "Authorization: Bearer <jwt>" http://localhost:8080/auth/me
 
 ---
 
+## GitLab PAT login (manual)
+
+GitLab has no OAuth device flow, so login uses a Personal Access Token
+(`read_user` scope; add `read_api` for collaborator lookup):
+
+```bash
+curl -X POST http://localhost:8080/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "gitlab", "token": "glpat-xxxx"}'
+```
+
+Response shape matches a completed device poll (`jwt`, `refresh_token`, `login`).
+For self-managed instances, set `GITLAB_URL` (e.g. `https://git.example.com`).
+
+Sessions work the same afterwards: the CLI sends
+`provider_config: {"gitlab": {...}}`, clones are token-injected with the
+`oauth2` user, SSH keys come from `{base}/{user}.keys`, and collaborators
+from the Projects members API.
+
+---
+
 ## Development
 
 ### Requirements
@@ -127,6 +149,7 @@ curl -H "Authorization: Bearer <jwt>" http://localhost:8080/auth/me
 | ---------------------- | ------------------------------------------------------------------ |
 | `GITHUB_CLIENT_ID`     | OAuth client ID for your GitHub app                                |
 | `GITHUB_CLIENT_SECRET` | OAuth client secret                                                |
+| `GITLAB_URL`           | GitLab instance base URL for PAT login (default `https://gitlab.com`) |
 | `JWT_SECRET`           | Symmetric signing key for JWTs                                     |
 | `PORT`                 | Optional, defaults to `8080`                                       |
 | `STEADYSTATE_PROVIDER` | Default compute provider (`local`); set to `hetzner` if configured |

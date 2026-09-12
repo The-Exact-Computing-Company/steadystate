@@ -127,19 +127,21 @@ async fn create_session(
     state.persist_session(&session_id);
     tracing::info!("Session {} inserted into map, total sessions: {}", session_id, state.sessions.len());
 
-    // --- Inject GitHub token if available ---
-    if claims.provider == "github" {
-        if let Some(token) = state
-            .provider_tokens
-            .get(&("github".to_string(), claims.sub.clone()))
-        {
-            request.provider_config = Some(serde_json::json!({
-                "github": {
-                    "login": claims.sub,
-                    "access_token": token.value().clone(),
-                }
-            }));
-        }
+    // --- Inject the caller's forge token (github PAT/OAuth or gitlab PAT) ---
+    // Keyed by the JWT's provider claim, so any auth provider works here.
+    if let Some(token) = state
+        .provider_tokens
+        .get(&(claims.provider.clone(), claims.sub.clone()))
+    {
+        let mut creds = serde_json::Map::new();
+        creds.insert("login".to_string(), serde_json::Value::String(claims.sub.clone()));
+        creds.insert(
+            "access_token".to_string(),
+            serde_json::Value::String(token.value().clone()),
+        );
+        let mut outer = serde_json::Map::new();
+        outer.insert(claims.provider.clone(), serde_json::Value::Object(creds));
+        request.provider_config = Some(serde_json::Value::Object(outer));
     }
 
     // state is cheap to clone now

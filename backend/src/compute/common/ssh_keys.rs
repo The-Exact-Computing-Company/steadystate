@@ -1,7 +1,9 @@
 use reqwest::Client;
 use std::collections::HashSet;
 use anyhow::{Result, anyhow, Context};
-use crate::compute::common::github::{self, RepoInfo};
+use crate::compute::common::forge::{ForgeAuth, ForgeRepo};
+use crate::compute::common::github;
+use crate::compute::common::gitlab_forge;
 
 #[derive(Debug, Clone)]
 pub struct AuthorizedKey {
@@ -77,18 +79,23 @@ impl SshKeyManager {
     }
 
     /// Build authorized_keys entries for a repository session
-    /// 
+    ///
     /// This fetches SSH keys for:
     /// 1. The session creator
     /// 2. Explicitly allowed users (if provided)
-    /// 3. All repository collaborators (if repo_url and token provided)
+    /// 3. All repository collaborators/members (if repo_url and a token are provided)
     /// 4. Local SSH keys of the user running the backend
+    ///
+    /// GitHub and GitLab forges are dispatched on the repository host
+    /// (GitLab paths support nested subgroups). When no repo URL is given,
+    /// keys are fetched from the auth provider's forge (`auth`), defaulting
+    /// to GitHub for backwards compatibility.
     pub async fn build_authorized_keys_for_repo(
         &self,
         creator: Option<&str>,
         allowed_users: Option<&[String]>,
         repo_url: Option<&str>,
-        github_token: Option<&str>,
+        auth: Option<&ForgeAuth>,
     ) -> Vec<AuthorizedKey> {
         let mut seen_keys = HashSet::new();
         let mut result = Vec::new();
@@ -104,70 +111,36 @@ impl SshKeyManager {
             usernames.extend(users.iter().cloned());
         }
         
-        // 3. Fetch repository collaborators (including upstream if fork)
-        if let (Some(url), Some(token)) = (repo_url, github_token) {
-            match RepoInfo::from_url(url) {
-                Ok(repo_info) => {
-                    tracing::info!(
-                        "Fetching repo details for {}/{}",
-                        repo_info.owner,
-                        repo_info.repo
-                    );
-                    
-                    // First fetch repo details to check for fork
-                    match github::fetch_repo_details(
-                        &self.http_client,
-                        &repo_info.owner,
-                        &repo_info.repo,
-                        Some(token),
-                    ).await {
-                        Ok(repo_details) => {
-                            // Fetch collaborators for this repo
-                            self.fetch_and_add_collaborators(
-                                &repo_info.owner,
-                                &repo_info.repo,
-                                token,
-                                &mut usernames
-                            ).await;
-                            
-                            // If it's a fork, fetch from parent
-                            if let Some(parent) = repo_details.parent {
-                                tracing::info!(
-                                    "Repository is a fork of {}/{}. Fetching upstream collaborators.",
-                                    parent.owner.login,
-                                    parent.name
-                                );
-                                self.fetch_and_add_collaborators(
-                                    &parent.owner.login,
-                                    &parent.name,
-                                    token,
-                                    &mut usernames
-                                ).await;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to fetch repo details: {}", e);
-                            // Fallback to just fetching for this repo
-                             self.fetch_and_add_collaborators(
-                                &repo_info.owner,
-                                &repo_info.repo,
-                                token,
-                                &mut usernames
-                            ).await;
-                        }
-                    }
+        // 3. Fetch repository collaborators/members (including upstream if fork)
+        // Dispatch on forge: github.com keeps the GitHub API flow, anything
+        // else goes through the GitLab Projects API when the auth provider
+        // is gitlab (or the repo host matches the configured GitLab base).
+        if let Some(url) = repo_url {
+            let token = auth.and_then(|a| a.token.as_deref());
+            match ForgeRepo::from_url(url) {
+                Ok(repo) if repo.is_github() => {
+                    self.fetch_github_collaborators_flow(url, token, &mut usernames).await;
+                }
+                Ok(repo) => {
+                    self.fetch_gitlab_members_flow(&repo, token, &mut usernames).await;
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse repo URL '{}': {}", url, e);
                 }
             }
         }
-        
+
+        let gitlab_mode = auth.map(|a| a.provider == "gitlab").unwrap_or(false)
+            || repo_url
+                .and_then(|u| ForgeRepo::from_url(u).ok())
+                .map(|r| !r.is_github())
+                .unwrap_or(false);
+
         // 4. Fetch SSH keys for all users
         tracing::info!("Fetching SSH keys for {} users: {:?}", usernames.len(), usernames);
-        
+
         for username in usernames {
-            match self.fetch_github_keys(&username).await {
+            match self.fetch_user_keys(&username, gitlab_mode, auth).await {
                 Ok(keys) => {
                     tracing::debug!("Found {} keys for {}", keys.len(), username);
                     for key in keys {
@@ -211,14 +184,145 @@ impl SshKeyManager {
         result
     }
 
-    /// Build authorized_keys entries for multiple users
-    pub async fn build_authorized_keys(
+    /// Fetch SSH keys for one user, trying the session forge first and
+    /// falling back to the other forge (usernames may exist on both;
+    /// a 404 on the first is cheap and harmless).
+    async fn fetch_user_keys(
         &self,
-        creator: Option<&str>,
-        allowed_users: Option<&[String]>,
-        github_token: Option<&str>,
-    ) -> Vec<AuthorizedKey> {
-        self.build_authorized_keys_for_repo(creator, allowed_users, None, github_token).await
+        username: &str,
+        gitlab_mode: bool,
+        auth: Option<&ForgeAuth>,
+    ) -> Result<Vec<String>> {
+        if gitlab_mode {
+            let base = gitlab_forge::base_url();
+            match gitlab_forge::fetch_user_keys(&self.http_client, &base, username).await {
+                Ok(keys) if !keys.is_empty() => return Ok(keys),
+                Ok(_) => {}
+                Err(e) => tracing::debug!("GitLab .keys miss for {}: {}", username, e),
+            }
+            if let Some(token) = auth.and_then(|a| a.token.as_deref()) {
+                if let Ok(keys) = gitlab_forge::fetch_user_keys_api(&self.http_client, &base, username, token).await {
+                    if !keys.is_empty() {
+                        return Ok(keys);
+                    }
+                }
+            }
+            self.fetch_github_keys(username).await
+        } else {
+            match self.fetch_github_keys(username).await {
+                Ok(keys) if !keys.is_empty() => Ok(keys),
+                _ => {
+                    let base = gitlab_forge::base_url();
+                    gitlab_forge::fetch_user_keys(&self.http_client, &base, username).await
+                }
+            }
+        }
+    }
+
+    /// GitHub collaborator flow (repo + upstream parent on forks).
+    async fn fetch_github_collaborators_flow(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        usernames: &mut Vec<String>,
+    ) {
+        let Some(repo) = ForgeRepo::from_url(url).ok().and_then(|r| {
+            let (owner, repo) = r.owner_repo()?;
+            Some((owner, repo))
+        }) else {
+            tracing::warn!("Failed to parse GitHub repo URL '{}'", url);
+            return;
+        };
+        let (owner, repo) = repo;
+        tracing::info!("Fetching repo details for {}/{}", owner, repo);
+
+        let Some(t) = token else {
+            tracing::debug!("No token: skipping GitHub collaborator lookup");
+            return;
+        };
+
+        // First fetch repo details to check for fork
+        match github::fetch_repo_details(
+            &self.http_client,
+            &owner,
+            &repo,
+            Some(t),
+        ).await {
+            Ok(repo_details) => {
+                // Fetch collaborators for this repo
+                self.fetch_and_add_collaborators(
+                    &owner,
+                    &repo,
+                    t,
+                    usernames
+                ).await;
+
+                // If it's a fork, fetch from parent
+                if let Some(parent) = repo_details.parent {
+                    tracing::info!(
+                        "Repository is a fork of {}/{}. Fetching upstream collaborators.",
+                        parent.owner.login,
+                        parent.name
+                    );
+                    self.fetch_and_add_collaborators(
+                        &parent.owner.login,
+                        &parent.name,
+                        t,
+                        usernames
+                    ).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch repo details: {}", e);
+                // Fallback to just fetching for this repo
+                 self.fetch_and_add_collaborators(
+                    &owner,
+                    &repo,
+                    t,
+                    usernames
+                ).await;
+            }
+        }
+    }
+
+    /// GitLab members flow (project + upstream parent on forks).
+    /// Needs a token with `read_api` scope; without one, only the
+    /// creator/--allow users get keys (same degraded mode as GitHub).
+    async fn fetch_gitlab_members_flow(
+        &self,
+        repo: &ForgeRepo,
+        token: Option<&str>,
+        usernames: &mut Vec<String>,
+    ) {
+        let Some(t) = token else {
+            tracing::debug!("No token: skipping GitLab members lookup");
+            return;
+        };
+        let base = gitlab_forge::base_for_repo(&repo.host);
+        let mut paths = vec![repo.gitlab_encoded_path()];
+        // Traverse fork parents best-effort.
+        if let Ok(details) = gitlab_forge::fetch_project(&self.http_client, &base, &paths[0], Some(t)).await {
+            let mut parent = details.forked_from_project.as_deref();
+            while let Some(p) = parent {
+                paths.push(urlencoding::encode(&p.path_with_namespace).into_owned());
+                parent = p.forked_from_project.as_deref();
+            }
+        }
+        for path in paths {
+            match gitlab_forge::fetch_project_members(&self.http_client, &base, &path, t).await {
+                Ok(members) => {
+                    tracing::info!("Found {} members for GitLab project {}", members.len(), path);
+                    for m in members {
+                        if !usernames.contains(&m.username) {
+                            usernames.push(m.username);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch GitLab members for {}: {}", path, e);
+                }
+            }
+        }
     }
 
     async fn fetch_and_add_collaborators(

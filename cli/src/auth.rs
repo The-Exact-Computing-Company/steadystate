@@ -120,7 +120,7 @@ pub async fn device_login(client: &Client, provider: &str) -> Result<()> {
                                 store_access_token(&login, &token, None).await?;
                             }
 
-                            let session = Session::new(login.clone(), jwt.clone());
+                            let session = Session::with_provider(login.clone(), jwt.clone(), Some(provider.to_string()));
                             write_session(&session, None).await?;
                             println!("✅ Logged in as {}", login);
                             return Ok(());
@@ -170,6 +170,60 @@ pub async fn device_login(client: &Client, provider: &str) -> Result<()> {
     }
 }
 
+/// PAT login for providers without a device flow (GitLab).
+/// Posts the token to POST /auth/token and stores the resulting session
+/// exactly like the device flow does.
+pub async fn token_login(client: &Client, provider: &str, token: &str) -> Result<()> {
+    if token.trim().is_empty() {
+        anyhow::bail!("Empty token. Create one at your GitLab profile → Access Tokens (needs read_user scope; read_api for collaborator lookup).");
+    }
+    let url = format!("{}/auth/token", &*BACKEND_URL);
+    let resp = send_with_retries(|| {
+        client.post(&url).json(&serde_json::json!({
+            "provider": provider,
+            "token": token.trim(),
+        }))
+    })
+    .await
+    .context("token login request failed")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("token login failed ({}): {}", status, body);
+    }
+
+    let out: PollResponse = resp.json().await.context("parse token login response")?;
+    let jwt = out.jwt.context("server did not return jwt")?;
+    let refresh = out.refresh_token.context("no refresh token returned")?;
+    let login = out.login.context("no login returned")?;
+
+    store_refresh_token(&login, &refresh, None).await?;
+    let session = Session::with_provider(login.clone(), jwt, Some(provider.to_string()));
+    write_session(&session, None).await?;
+    println!("✅ Logged in as {} (via {})", login, provider);
+    Ok(())
+}
+
+/// Resolve a PAT from `--token`, `GITLAB_TOKEN`, or an interactive hidden prompt.
+pub fn resolve_pat(flag: Option<String>, env_var: &str, prompt: &str) -> Result<String> {
+    if let Some(t) = flag {
+        return Ok(t);
+    }
+    if let Ok(t) = std::env::var(env_var) {
+        if !t.trim().is_empty() {
+            return Ok(t);
+        }
+    }
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        anyhow::bail!(
+            "No token provided. Pass --token, set {} or run interactively.",
+            env_var
+        );
+    }
+    rpassword::prompt_password(prompt).context("read token from terminal")
+}
+
 // =======================================================================
 // REFACTORED AUTHENTICATION LOGIC
 // =======================================================================
@@ -181,13 +235,16 @@ pub struct RefreshResponse {
 
 /// Refreshes JWT using stored refresh token.
 pub async fn perform_refresh(client: &Client, login_override: Option<String>, override_dir: Option<&PathBuf>) -> Result<RefreshResponse> {
+    // Load the cached session when available so provider attribution
+    // (github vs gitlab) survives refreshes.
+    let cached = read_session(override_dir).await.ok();
     let username = match login_override {
         Some(login) => login,
         None => {
-            read_session(override_dir)
-                .await
+            cached
+                .as_ref()
+                .map(|s| s.login.clone())
                 .context("No active session found. Run 'steadystate login' first.")?
-                .login
         }
     };
 
@@ -220,7 +277,8 @@ pub async fn perform_refresh(client: &Client, login_override: Option<String>, ov
 
     let refresh_resp: RefreshResponse = resp.json().await.context("parse refresh response")?;
 
-    let new_session = Session::new(username, refresh_resp.jwt.clone());
+    let provider = cached.as_ref().and_then(|s| s.provider.clone());
+    let new_session = Session::with_provider(username, refresh_resp.jwt.clone(), provider);
     write_session(&new_session, override_dir).await?;
 
     Ok(refresh_resp)
@@ -652,5 +710,28 @@ mod tests {
         assert!(err_msg.contains("No refresh token found"));
 
         let _ = crate::session::remove_session(Some(&ctx.path)).await;
+    }
+
+    #[test]
+    fn test_resolve_pat_flag_wins() {
+        let out = resolve_pat(Some("flag-token".to_string()), "STEADYSTATE_TEST_PAT_A", "prompt: ").unwrap();
+        assert_eq!(out, "flag-token");
+    }
+
+    #[test]
+    fn test_resolve_pat_env_fallback() {
+        // SAFETY: unique var name, no other test touches it.
+        unsafe { std::env::set_var("STEADYSTATE_TEST_PAT_B", "env-token") };
+        let out = resolve_pat(None, "STEADYSTATE_TEST_PAT_B", "prompt: ").unwrap();
+        unsafe { std::env::remove_var("STEADYSTATE_TEST_PAT_B") };
+        assert_eq!(out, "env-token");
+    }
+
+    #[test]
+    fn test_resolve_pat_errors_without_input() {
+        // In the test harness stdin is not a terminal, so this must fail
+        // instead of blocking on a prompt.
+        let err = resolve_pat(None, "STEADYSTATE_TEST_PAT_MISSING", "prompt: ").unwrap_err();
+        assert!(format!("{:#}", err).contains("STEADYSTATE_TEST_PAT_MISSING"));
     }
     }

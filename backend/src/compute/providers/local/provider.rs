@@ -4,11 +4,10 @@ use std::collections::HashMap;
 use anyhow::{Result, anyhow, Context};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::compute::{
     traits::{ComputeProvider, ProviderCapabilities, SessionHealth, RemoteExecutor},
-    types::{SessionStartResult, ResourceUsage},
+    types::SessionStartResult,
     common::{git_ops::GitOps, ssh_keys::SshKeyManager, sshd::{self, SshdConfig, SshdLogLevel}, scripts},
     providers::local::executor::LocalExecutor,
 };
@@ -243,21 +242,18 @@ impl LocalComputeProvider {
         );
         git.checkout_new_branch(&canonical, &branch_name).await?;
         
-        // Extract GitHub config
-        let (creator_login, github_token) = self.extract_github_config(request);
+        // Extract forge auth (github PAT/OAuth token or gitlab PAT)
+        let forge_auth = crate::compute::common::provider_config::extract_forge_config(request);
+        let creator_login = forge_auth.as_ref().and_then(|f| f.login.clone());
 
         // Configure auth if token is present
-        if let Some(token) = &github_token {
-            if request.repo_url.starts_with("https://") {
-                if let Ok(mut url) = url::Url::parse(&request.repo_url) {
-                    let _ = url.set_username("x-access-token");
-                    let _ = url.set_password(Some(token));
-                    
-                    if let Err(e) = git.set_remote_url(&workspace.repo_path, "origin", url.as_str()).await {
-                        tracing::warn!("Failed to configure git auth for repo: {}", e);
-                    }
-                }
-            }
+        if let Some(auth) = forge_auth.as_ref() {
+            crate::compute::common::provider_config::inject_token_auth(
+                self.executor.as_ref(),
+                &workspace.repo_path,
+                &request.repo_url,
+                auth,
+            ).await;
         }
 
         // Setup SSH
@@ -266,7 +262,7 @@ impl LocalComputeProvider {
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
                 Some(&request.repo_url),
-                github_token.as_deref(),
+                forge_auth.as_ref(),
             )
             .await;
             
@@ -325,8 +321,9 @@ impl LocalComputeProvider {
         let git = GitOps::new(self.executor.as_ref());
         git.clone(&request.repo_url, &workspace.repo_path, Some(1), None).await?;
 
-        let (creator_login, github_token) = self.extract_github_config(request);
-        
+        let forge_auth = crate::compute::common::provider_config::extract_forge_config(request);
+        let creator_login = forge_auth.as_ref().and_then(|f| f.login.clone());
+
         // Setup environment - fetch flake if needed
         let flake_path = self.setup_environment(
             workspace, 
@@ -334,16 +331,13 @@ impl LocalComputeProvider {
         ).await?;
 
         // Configure git auth if token present
-        if let Some(token) = &github_token {
-            if request.repo_url.starts_with("https://") {
-                if let Ok(mut url) = url::Url::parse(&request.repo_url) {
-                    let _ = url.set_username("x-access-token");
-                    let _ = url.set_password(Some(token));
-                    if let Err(e) = git.set_remote_url(&workspace.repo_path, "origin", url.as_str()).await {
-                        tracing::warn!("Failed to configure git auth: {}", e);
-                    }
-                }
-            }
+        if let Some(auth) = forge_auth.as_ref() {
+            crate::compute::common::provider_config::inject_token_auth(
+                self.executor.as_ref(),
+                &workspace.repo_path,
+                &request.repo_url,
+                auth,
+            ).await;
         }
 
         // Build authorized keys - same as collab mode
@@ -352,7 +346,7 @@ impl LocalComputeProvider {
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
                 Some(&request.repo_url),
-                github_token.as_deref(),
+                forge_auth.as_ref(),
             )
             .await;
 
@@ -421,7 +415,7 @@ impl LocalComputeProvider {
         &self,
         workspace: &WorkspaceInfo,
         authorized_keys: &[crate::compute::common::ssh_keys::AuthorizedKey],
-        session_id: &str,
+        _session_id: &str,
     ) -> Result<(u32, String, String)> {
         let ssh_dir = workspace.root.join("ssh");
         self.executor.mkdir_p(&ssh_dir, 0o700).await?;
@@ -740,22 +734,6 @@ impl LocalComputeProvider {
         // Drop the listener to free the port so sshd can bind to it
         drop(listener);
         Ok(port)
-    }
-
-    fn extract_github_config(&self, request: &SessionRequest) -> (Option<String>, Option<String>) {
-        if let Some(cfg) = &request.provider_config {
-             if let Some(gh_val) = cfg.get("github") {
-                #[derive(serde::Deserialize)]
-                struct GitHubConfig {
-                    login: String,
-                    access_token: String,
-                }
-                if let Ok(gh) = serde_json::from_value::<GitHubConfig>(gh_val.clone()) {
-                    return (Some(gh.login), Some(gh.access_token));
-                }
-             }
-        }
-        (None, None)
     }
 }
 

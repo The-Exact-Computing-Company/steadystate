@@ -14,6 +14,19 @@ steadystate login
 
 Opens a device authorization flow. You will be prompted to visit github.com/login/device and enter a code. No browser redirect is required, making this suitable for headless servers and SSH sessions.
 
+For GitLab (no device flow exists), authenticate with a Personal Access Token:
+
+```
+steadystate login --provider=gitlab
+steadystate login --provider=gitlab --token glpat-xxxx
+GITLAB_TOKEN=glpat-xxxx steadystate login --provider=gitlab
+```
+
+Without `--token`/`GITLAB_TOKEN`, the CLI prompts for the token with hidden
+input. The token needs `read_user` scope (`read_api` additionally for
+collaborator lookup in sessions). Which GitLab instance to talk to is a
+backend setting (`GITLAB_URL`, default `https://gitlab.com`).
+
 **Exit Status:**
 - 0 on success
 - 1 on authentication failure or timeout

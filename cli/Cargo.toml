@@ -27,6 +27,9 @@ steadystate-common = { path = "../packages/common" }
 # Secure credential storage
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native"] }
 
+# Hidden password/PAT prompts
+rpassword = "7"
+
 # Platform directories (config, cache, etc.)
 dirs = "6.0"
 
