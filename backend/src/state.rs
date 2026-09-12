@@ -56,7 +56,6 @@ pub struct Config {
     pub idle_ttl_secs: u64,
 
     // Compute
-    pub noenv_flake_path: String,
     pub default_compute_provider: String,
 
     // Storage
@@ -101,8 +100,6 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(DEFAULT_IDLE_TTL_SECS),
 
-            noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
-                .context("NOENV_FLAKE_PATH must be set")?,
             default_compute_provider: std::env::var("STEADYSTATE_PROVIDER")
                 .unwrap_or_else(|_| "local".to_string()),
 
@@ -186,9 +183,8 @@ impl AppState {
                         .join(".steadystate")
                         .join("sessions")
                 }),
-            flake_path: config.noenv_flake_path.clone().into(),
         };
-        let local_provider = Arc::new(LocalComputeProvider::new(provider_config, http.clone()));
+        let local_provider = Arc::new(LocalComputeProvider::new(provider_config));
         compute_providers.insert(local_provider.id().to_string(), local_provider);
 
         // Initialize hetzner provider if configured (HCLOUD_TOKEN present).

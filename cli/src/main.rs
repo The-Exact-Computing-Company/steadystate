@@ -395,15 +395,8 @@ struct UpArgs {
     forge_token: Option<String>,
 }
 
-const ENV_HELP: &str = "\
-Valid --env options:
-  --env=noenv                 Minimal environment (ne, neovim, git)
-  --env=python                Python + uv (auto-detects version)
-  --env=flake                 Use repository's flake.nix
-  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)
-  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)
-  --env=legacy-nix            Use default.nix (nix-shell)
-  --env=legacy-nix[filename]  Use specified nix file (nix-shell)";
+const ENV_HELP: &str = "Environment to load (only 'tproject' is supported now).
+  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)";
 
 const MODE_HELP: &str = "\
 Valid --mode options:
@@ -515,16 +508,9 @@ async fn up(client: &Client, args: UpArgs) -> Result<()> {
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
 
-    // Validate --env (required).
+    // Validate --env (required, must be "tproject").
     let env_val = env.ok_or_else(|| anyhow::anyhow!("--env flag is required.\n{}", ENV_HELP))?;
-    let is_valid = env_val == "noenv"
-        || env_val == "python"
-        || env_val == "flake"
-        || env_val == "tproject"
-        || env_val == "auto"
-        || env_val == "legacy-nix"
-        || (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
-    if !is_valid {
+    if env_val != "tproject" {
         anyhow::bail!("Invalid --env option: {}\n{}", env_val, ENV_HELP);
     }
 

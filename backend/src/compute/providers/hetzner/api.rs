@@ -284,11 +284,10 @@ mod tests {
             let caps = p.capabilities();
             assert!(caps.supports_collab_mode);
             assert!(caps.supports_pair_mode);
-            assert!(
-                caps.supported_environments
-                    .contains(&"tproject".to_string())
-            );
-            assert!(caps.supported_environments.contains(&"auto".to_string()));
+assert!(
+            caps.supported_environments
+                .contains(&"tproject".to_string())
+        );
         })
         .await;
     }

@@ -11,16 +11,11 @@ async fn test_integration_nix_check() {
     // It checks if `nix` is installed (or tries to install it, which might fail in CI if not privileged/configured).
     // We assume the environment has nix or we can at least run the check.
 
-    // We need a dummy flake path.
-    let flake_path = PathBuf::from("/tmp/dummy-flake");
     let session_root = PathBuf::from("/tmp/steadystate-sessions");
 
-    let config = LocalProviderConfig {
-        session_root,
-        flake_path,
-    };
+    let config = LocalProviderConfig { session_root };
 
-    let provider = LocalComputeProvider::new(config, reqwest::Client::new());
+    let provider = LocalComputeProvider::new(config);
 
     // We can't easily call private methods like ensure_nix_installed directly unless we expose them or use start_session.
     // Using start_session involves cloning and upterm, which is heavy.

@@ -24,13 +24,11 @@ pub struct LocalComputeProvider {
     ssh_key_manager: SshKeyManager,
     state: Arc<LocalProviderState>,
     config: LocalProviderConfig,
-    http_client: reqwest::Client,
 }
 
 #[derive(Debug, Clone)]
 pub struct LocalProviderConfig {
     pub session_root: PathBuf,
-    pub flake_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -51,28 +49,22 @@ struct WorkspaceInfo {
 }
 
 impl LocalComputeProvider {
-    pub fn new(config: LocalProviderConfig, http_client: reqwest::Client) -> Self {
+    pub fn new(config: LocalProviderConfig) -> Self {
         Self {
             executor: Arc::new(LocalExecutor),
             ssh_key_manager: SshKeyManager::new(),
             state: Arc::new(LocalProviderState::default()),
             config,
-            http_client,
         }
     }
 
     /// For testing with mock executor
-    pub fn with_executor(
-        config: LocalProviderConfig,
-        executor: Arc<dyn RemoteExecutor>,
-        http_client: reqwest::Client,
-    ) -> Self {
+    pub fn with_executor(config: LocalProviderConfig, executor: Arc<dyn RemoteExecutor>) -> Self {
         Self {
             executor,
             ssh_key_manager: SshKeyManager::new(),
             state: Arc::new(LocalProviderState::default()),
             config,
-            http_client,
         }
     }
 
@@ -90,138 +82,45 @@ impl LocalComputeProvider {
         })
     }
 
+    /// Set up the session environment. SteadyState supports exactly one
+    /// environment model: T projects defined by `tproject.toml`. The
+    /// repository must contain one; we ensure Nix + `t` are present, run
+    /// `t update` to regenerate `flake.nix`/`flake.lock` from it, and the
+    /// wrappers then enter the dev shell with `nix develop "$WORKTREE"`.
     async fn setup_environment(
         &self,
         workspace: &WorkspaceInfo,
         environment: Option<&str>,
-    ) -> Result<String> {
-        use crate::compute::common::python::{detect_python_version, generate_python_flake};
-        use crate::compute::common::tproject::{ensure_nix, has_tproject, t_update};
-        const NOENV_FLAKE_URL: &str = "https://raw.githubusercontent.com/The-Exact-Computing-Company/steadystate/main/backend/flakes/noenv";
-
-        // Auto-detect: prefer tproject.toml over flake.nix over legacy-nix.
-        // Order matters: tlang projects declare tproject.toml as source of truth
-        // and flake.nix is generated from it via `t update`.
-        let resolved: Option<String> = match environment {
-            None | Some("auto") => {
-                if has_tproject(self.executor.as_ref(), &workspace.repo_path).await? {
-                    Some("tproject".to_string())
-                } else if self
-                    .executor
-                    .exists(&workspace.repo_path.join("flake.nix"))
-                    .await?
-                {
-                    Some("flake".to_string())
-                } else if self
-                    .executor
-                    .exists(&workspace.repo_path.join("shell.nix"))
-                    .await?
-                    || self
-                        .executor
-                        .exists(&workspace.repo_path.join("default.nix"))
-                        .await?
-                {
-                    Some("legacy-nix".to_string())
-                } else {
-                    None
-                }
-            }
-            Some(e) => Some(e.to_string()),
+    ) -> Result<()> {
+        use crate::compute::common::tproject::{
+            check_min_version, ensure_nix, has_tproject, t_update,
         };
 
-        match resolved.as_deref() {
-            Some("noenv") => {
-                // Create flake directory in session workspace
-                let flake_dest = workspace.root.join("flake");
-                self.executor.mkdir_p(&flake_dest, 0o755).await?;
-
-                // Fetch flake.nix from GitHub
-                let flake_nix = self
-                    .http_client
-                    .get(format!("{}/flake.nix", NOENV_FLAKE_URL))
-                    .send()
-                    .await
-                    .context("Failed to fetch noenv flake.nix")?
-                    .error_for_status()
-                    .context("GitHub returned error for flake.nix")?
-                    .bytes()
-                    .await?;
-                self.executor
-                    .write_file(&flake_dest.join("flake.nix"), &flake_nix, 0o644)
-                    .await?;
-
-                // Fetch flake.lock from GitHub
-                let flake_lock = self
-                    .http_client
-                    .get(format!("{}/flake.lock", NOENV_FLAKE_URL))
-                    .send()
-                    .await
-                    .context("Failed to fetch noenv flake.lock")?
-                    .error_for_status()
-                    .context("GitHub returned error for flake.lock")?
-                    .bytes()
-                    .await?;
-                self.executor
-                    .write_file(&flake_dest.join("flake.lock"), &flake_lock, 0o644)
-                    .await?;
-
-                // Return path to bake into wrapper
-                Ok(flake_dest.to_string_lossy().to_string())
-            }
-            Some("python") => {
-                // Detect Python version from repo files
-                let python_version =
-                    detect_python_version(self.executor.as_ref(), &workspace.repo_path).await?;
-
-                // Generate flake with detected version
-                let flake_content = generate_python_flake(python_version);
-
-                let flake_dest = workspace.root.join("flake");
-                self.executor.mkdir_p(&flake_dest, 0o755).await?;
-                self.executor
-                    .write_file(
-                        &flake_dest.join("flake.nix"),
-                        flake_content.as_bytes(),
-                        0o644,
-                    )
-                    .await?;
-
-                tracing::info!(
-                    "Generated Python flake with {} for session",
-                    python_version.nix_attr()
-                );
-
-                Ok(flake_dest.to_string_lossy().to_string())
-            }
-            Some("flake") | Some("legacy-nix") => {
-                // Use repo's own flake - path resolved at runtime via $WORKTREE
-                Ok("$WORKTREE".to_string())
-            }
-            Some(e) if e.starts_with("legacy-nix[") && e.ends_with(']') => {
-                // Explicit nix file, e.g. legacy-nix[custom.nix] - resolved via $WORKTREE at runtime.
-                Ok("$WORKTREE".to_string())
-            }
-            Some("tproject") => {
-                // T-lang project: ensure nix, run `t update` to regenerate
-                // flake.nix from tproject.toml, then use repo flake via $WORKTREE.
-                ensure_nix(self.executor.as_ref()).await?;
-                t_update(self.executor.as_ref(), &workspace.repo_path).await?;
-                // Non-fatal: warns if installed `t` predates [t].min_version.
-                let _ = crate::compute::common::tproject::check_min_version(
-                    self.executor.as_ref(),
-                    &workspace.repo_path,
-                )
-                .await;
-                tracing::info!(
-                    "tproject.toml detected: ran `t update`, using nix develop on $WORKTREE"
-                );
-                Ok("$WORKTREE".to_string())
-            }
-            _ => {
-                // No environment
-                Ok(String::new())
-            }
+        if let Some(env) = environment
+            && env != "tproject"
+        {
+            return Err(anyhow!(
+                "Unsupported environment '{}': SteadyState only supports T projects via tproject.toml",
+                env
+            ));
         }
+
+        if !has_tproject(self.executor.as_ref(), &workspace.repo_path).await? {
+            return Err(anyhow!(
+                "Repository has no tproject.toml. SteadyState environments are T projects; \
+                 create one with `t init --project` and commit it."
+            ));
+        }
+
+        ensure_nix(self.executor.as_ref()).await?;
+        t_update(self.executor.as_ref(), &workspace.repo_path).await?;
+        // Non-fatal: warns if the installed `t` predates [t].min_version.
+        let _ =
+            check_min_version(self.executor.as_ref(), &workspace.repo_path).await;
+        tracing::info!(
+            "tproject.toml found: ran `t update`; wrappers will `nix develop` the worktree"
+        );
+        Ok(())
     }
 
     async fn setup_collab_mode(
@@ -236,9 +135,8 @@ impl LocalComputeProvider {
         git.clone(&request.repo_url, &workspace.repo_path, Some(1), None)
             .await?;
 
-        // Setup environment - fetch flake if needed, get path to bake into wrapper
-        let flake_path = self
-            .setup_environment(workspace, request.environment.as_deref())
+        // Validate + prepare the T project environment (requires tproject.toml).
+        self.setup_environment(workspace, request.environment.as_deref())
             .await?;
 
         // Create canonical repo
@@ -294,8 +192,6 @@ impl LocalComputeProvider {
                 session_id,
                 &branch_name,
                 &request.repo_url,
-                request.environment.as_deref(),
-                &flake_path,
             )
             .await?;
 
@@ -356,9 +252,8 @@ impl LocalComputeProvider {
         let forge_auth = crate::compute::common::provider_config::extract_forge_config(request);
         let creator_login = forge_auth.as_ref().and_then(|f| f.login.clone());
 
-        // Setup environment - fetch flake if needed
-        let flake_path = self
-            .setup_environment(workspace, request.environment.as_deref())
+        // Validate + prepare the T project environment (requires tproject.toml).
+        self.setup_environment(workspace, request.environment.as_deref())
             .await?;
 
         // Configure git auth if token present
@@ -384,13 +279,7 @@ impl LocalComputeProvider {
             .await;
 
         // Install pair-mode scripts
-        self.install_pair_scripts(
-            workspace,
-            session_id,
-            request.environment.as_deref(),
-            &flake_path,
-        )
-        .await?;
+        self.install_pair_scripts(workspace, session_id).await?;
 
         // Launch SSHD - reuse the same infrastructure as collab!
         let (pid, ssh_invite, host_key) = self
@@ -424,8 +313,6 @@ impl LocalComputeProvider {
         &self,
         workspace: &WorkspaceInfo,
         session_id: &str,
-        environment: Option<&str>,
-        flake_path: &str,
     ) -> Result<()> {
         let bin_dir = workspace.root.join("bin");
         self.executor.mkdir_p(&bin_dir, 0o755).await?;
@@ -439,8 +326,6 @@ impl LocalComputeProvider {
             let mut vars = HashMap::new();
             vars.insert("session_root", workspace.root.to_str().unwrap());
             vars.insert("session_id", session_id);
-            vars.insert("environment", environment.unwrap_or("none"));
-            vars.insert("flake_path", flake_path);
             vars
         });
 
@@ -626,7 +511,6 @@ impl LocalComputeProvider {
 
     // Wrapper params mirror the session setup inputs; grouping them into a
     // struct would only shuffle the same fields around.
-    #[allow(clippy::too_many_arguments)]
     async fn launch_sshd(
         &self,
         workspace: &WorkspaceInfo,
@@ -634,8 +518,6 @@ impl LocalComputeProvider {
         session_id: &str,
         branch_name: &str,
         repo_url: &str,
-        environment: Option<&str>,
-        flake_path: &str,
     ) -> Result<(u32, String, String)> {
         let ssh_dir = workspace.root.join("ssh");
         self.executor.mkdir_p(&ssh_dir, 0o700).await?;
@@ -677,9 +559,6 @@ impl LocalComputeProvider {
             vars.insert("session_id", session_id);
             vars.insert("repo_name", &repo_name);
             vars.insert("branch_name", branch_name);
-            // Bake environment config into wrapper
-            vars.insert("environment", environment.unwrap_or("none"));
-            vars.insert("flake_path", flake_path);
             vars
         });
         self.executor
@@ -866,14 +745,7 @@ impl ComputeProvider for LocalComputeProvider {
             supports_persistent_storage: false,
             supports_snapshots: false,
             max_session_duration: None,
-            supported_environments: vec![
-                "flake".into(),
-                "noenv".into(),
-                "legacy-nix".into(),
-                "python".into(),
-                "tproject".into(),
-                "auto".into(),
-            ],
+            supported_environments: vec!["tproject".into()],
         }
     }
 

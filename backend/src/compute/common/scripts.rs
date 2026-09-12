@@ -112,115 +112,44 @@ export CANONICAL_REPO="$REPO_ROOT/canonical"
 cd "$WORKTREE" || exit 1
 
 # ============================================================================
-# ENVIRONMENT ACTIVATION (with suppressed output)
+# ENVIRONMENT ACTIVATION (T projects only)
 # ============================================================================
 
+# SteadyState environments are T projects. `flake.nix` was regenerated from
+# tproject.toml via `t update` at provision time; refresh it defensively
+# (cheap when up to date) and run everything inside `nix develop`.
 run_in_env() {
-    # This function runs a command inside the nix environment
-    # Used after environment is built
-    case "{{environment}}" in
-        noenv|python)
-            nix develop "{{flake_path}}" --command "$@"
-            ;;
-        tproject|auto)
-            # tlang project: flake.nix was regenerated via `t update` at provision time.
-            # Re-run `t update` defensively (cheap if up to date), then enter dev shell.
-            if [ -f "$WORKTREE/tproject.toml" ]; then
-                (cd "$WORKTREE" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >/dev/null 2>&1 || true
-            fi
-            if [ -f "$WORKTREE/flake.nix" ]; then
-                nix develop "$WORKTREE" --command "$@"
-            else
-                "$@"
-            fi
-            ;;
-        flake)
-            if [ -f "$WORKTREE/flake.nix" ]; then
-                nix develop "$WORKTREE" --command "$@"
-            else
-                "$@"
-            fi
-            ;;
-        legacy-nix)
-            if [ -f "$WORKTREE/shell.nix" ]; then
-                nix-shell "$WORKTREE/shell.nix" --command "$*"
-            elif [ -f "$WORKTREE/default.nix" ]; then
-                nix-shell "$WORKTREE/default.nix" --command "$*"
-            else
-                "$@"
-            fi
-            ;;
-        *)
-            "$@"
-            ;;
-    esac
+    if [ -f "$WORKTREE/tproject.toml" ]; then
+        (cd "$WORKTREE" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >/dev/null 2>&1 || true
+    fi
+    if [ -f "$WORKTREE/flake.nix" ]; then
+        nix develop "$WORKTREE" --command "$@"
+    else
+        "$@"
+    fi
 }
 
-# Build environment if needed (suppress output)
-case "{{environment}}" in
-    tproject|auto)
-        print_progress "Setting up tlang environment (t update)..."
-        if [ -f "$WORKTREE/tproject.toml" ]; then
-            if ! (cd "$WORKTREE" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >> "$LOG_FILE" 2>&1; then
-                print_error "Failed to run t update"
-                echo "See $LOG_FILE for details"
-                exit 1
-            fi
-        fi
-        if [ -f "$WORKTREE/flake.nix" ]; then
-            print_progress "Building environment..."
-            if ! nix develop "$WORKTREE" --command true >> "$LOG_FILE" 2>&1; then
-                print_error "Failed to build environment"
-                echo "See $LOG_FILE for details"
-                exit 1
-            fi
-            print_done "Environment ready"
-        fi
-        ;;
-    noenv|python)
-        print_progress "Building environment..."
-        
-        # Build the environment silently, capturing output
-        if ! nix develop "{{flake_path}}" --command true >> "$LOG_FILE" 2>&1; then
-            print_error "Failed to build environment"
-            echo "See $LOG_FILE for details"
-            echo ""
-            echo "You can try manually with: nix develop {{flake_path}}"
-            exit 1
-        fi
-        
-        print_done "Environment ready"
-        ;;
-    flake)
-        if [ -f "$WORKTREE/flake.nix" ]; then
-            print_progress "Building environment..."
-            
-            if ! nix develop "$WORKTREE" --command true >> "$LOG_FILE" 2>&1; then
-                print_error "Failed to build environment"
-                echo "See $LOG_FILE for details"
-                exit 1
-            fi
-            
-            print_done "Environment ready"
-        fi
-        ;;
-    legacy-nix)
-        if [ -f "$WORKTREE/shell.nix" ] || [ -f "$WORKTREE/default.nix" ]; then
-            print_progress "Building environment..."
-            
-            NIX_FILE="$WORKTREE/shell.nix"
-            [ -f "$NIX_FILE" ] || NIX_FILE="$WORKTREE/default.nix"
-            
-            if ! nix-shell "$NIX_FILE" --command true >> "$LOG_FILE" 2>&1; then
-                print_error "Failed to build environment"
-                echo "See $LOG_FILE for details"
-                exit 1
-            fi
-            
-            print_done "Environment ready"
-        fi
-        ;;
-esac
+print_progress "Setting up T environment (t update)..."
+
+if [ ! -f "$WORKTREE/tproject.toml" ]; then
+    print_error "Repository has no tproject.toml"
+    echo "SteadyState environments are T projects; add a tproject.toml and commit it."
+    exit 1
+fi
+
+if ! (cd "$WORKTREE" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >> "$LOG_FILE" 2>&1; then
+    print_error "Failed to run t update"
+    echo "See $LOG_FILE for details"
+    exit 1
+fi
+
+print_progress "Building environment..."
+if ! nix develop "$WORKTREE" --command true >> "$LOG_FILE" 2>&1; then
+    print_error "Failed to build environment"
+    echo "See $LOG_FILE for details"
+    exit 1
+fi
+print_done "Environment ready"
 
 echo ""
 
@@ -304,52 +233,22 @@ SESSION_ROOT="{{session_root}}"
 SESSION_ID="{{session_id}}"
 REPO_PATH="$SESSION_ROOT/repo"
 TMUX_SESSION="pair-${SESSION_ID:0:8}"  # Use first 8 chars of session ID
-ENVIRONMENT="{{environment}}"
-FLAKE_PATH="{{flake_path}}"
 
 # Log activity
 echo "$(date -Iseconds) pair-connect user=$1" >> "$SESSION_ROOT/activity-log"
 
 cd "$REPO_PATH" || exit 1
 
-# Function to start/attach tmux with optional nix environment
-start_tmux() {
-    # -A: attach if exists, create if not
-    # -s: session name
-    exec tmux new-session -A -s "$TMUX_SESSION" "$@"
-}
-
-case "$ENVIRONMENT" in
-    tproject|auto)
-        # tlang project: ensure flake is fresh, then enter dev shell with shared tmux
-        if [ -f "$REPO_PATH/tproject.toml" ]; then
-            (cd "$REPO_PATH" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >/dev/null 2>&1 || true
-        fi
-        if [ -f "$REPO_PATH/flake.nix" ]; then
-            exec nix develop "$REPO_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
-        else
-            exec nix develop "$FLAKE_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
-        fi
-        ;;
-    noenv|python)
-        # Wrap tmux in nix develop
-        exec nix develop "$FLAKE_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
-        ;;
-    flake)
-        exec nix develop "$REPO_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
-        ;;
-    legacy-nix)
-        if [ -f "$REPO_PATH/shell.nix" ]; then
-            exec nix-shell "$REPO_PATH/shell.nix" --command "tmux new-session -A -s $TMUX_SESSION"
-        else
-            exec nix-shell "$REPO_PATH/default.nix" --command "tmux new-session -A -s $TMUX_SESSION"
-        fi
-        ;;
-    *)
-        # No environment, just tmux
-        start_tmux
-        ;;
-esac
+# SteadyState pair sessions are T projects: refresh the generated flake and
+# attach everyone to one shared tmux session inside the dev shell.
+if [ -f "$REPO_PATH/tproject.toml" ]; then
+    (cd "$REPO_PATH" && (t update || nix shell --accept-flake-config github:b-rodrigues/tlang -c t update)) >/dev/null 2>&1 || true
+fi
+if [ -f "$REPO_PATH/flake.nix" ]; then
+    exec nix develop "$REPO_PATH" --command tmux new-session -A -s "$TMUX_SESSION"
+else
+    exec tmux new-session -A -s "$TMUX_SESSION"
+fi
 "#,
     )
 }

@@ -82,16 +82,15 @@ impl HetznerComputeProvider {
         }
     }
 
-    /// Shared preamble: workspace dirs, shallow clone, env resolution
-    /// (including `t update` for tlang projects), and optional GitHub
-    /// token injection for passwordless push.
-    /// Returns `(root, repo_path, env_resolved)`.
+    /// Shared preamble: workspace dirs, shallow clone, T-project validation
+    /// (`tproject.toml` + `t update`), and optional forge token injection for
+    /// passwordless push. Returns `(root, repo_path)`.
     async fn remote_preamble(
         &self,
         ex: &dyn RemoteExecutor,
         session_id: &str,
         request: &SessionRequest,
-    ) -> Result<(String, String, String)> {
+    ) -> Result<(String, String)> {
         let root = format!(
             "/home/{}/.steadystate/sessions/{}",
             ssh_session_user(),
@@ -118,30 +117,28 @@ impl HetznerComputeProvider {
             return Err(anyhow!("remote clone failed: {}", clone_out.stderr));
         }
 
-        let env_req = request.environment.as_deref().unwrap_or("auto");
-        let env_resolved: String = if env_req == "auto" {
-            if ex
-                .exists(PathBuf::from(&repo_path).join("tproject.toml").as_path())
-                .await?
-            {
-                "tproject".to_string()
-            } else if ex
-                .exists(PathBuf::from(&repo_path).join("flake.nix").as_path())
-                .await?
-            {
-                "flake".to_string()
-            } else {
-                "noenv".to_string()
-            }
-        } else {
-            env_req.to_string()
-        };
-
-        if env_resolved == "tproject" {
-            tproject::ensure_nix(ex).await?;
-            tproject::t_update(ex, PathBuf::from(&repo_path).as_path()).await?;
-            let _ = tproject::check_min_version(ex, PathBuf::from(&repo_path).as_path()).await;
+        // SteadyState supports exactly one environment model: T projects
+        // defined by tproject.toml. Reject anything else up front.
+        if let Some(env) = request.environment.as_deref()
+            && env != "tproject"
+        {
+            return Err(anyhow!(
+                "Unsupported environment '{}': SteadyState only supports T projects via tproject.toml",
+                env
+            ));
         }
+        if !ex
+            .exists(PathBuf::from(&repo_path).join("tproject.toml").as_path())
+            .await?
+        {
+            return Err(anyhow!(
+                "Repository has no tproject.toml. SteadyState environments are T projects; \
+                 create one with `t init --project` and commit it."
+            ));
+        }
+        tproject::ensure_nix(ex).await?;
+        tproject::t_update(ex, PathBuf::from(&repo_path).as_path()).await?;
+        let _ = tproject::check_min_version(ex, PathBuf::from(&repo_path).as_path()).await;
 
         // Token-inject origin for passwordless push, same as local setups.
         if let Some(auth) =
@@ -156,7 +153,7 @@ impl HetznerComputeProvider {
             .await;
         }
 
-        Ok((root, repo_path, env_resolved))
+        Ok((root, repo_path))
     }
 
     async fn remote_authorized_keys(
@@ -201,7 +198,7 @@ impl HetznerComputeProvider {
         session_id: &str,
         request: &SessionRequest,
     ) -> Result<SessionStartResult> {
-        let (root, repo_path, env_resolved) = self.remote_preamble(ex, session_id, request).await?;
+        let (root, repo_path) = self.remote_preamble(ex, session_id, request).await?;
 
         let git = GitOps::new(ex);
         let canonical = format!("{}/canonical", root);
@@ -248,8 +245,6 @@ impl HetznerComputeProvider {
             vars.insert("session_id", session_id);
             vars.insert("branch_name", branch_name.as_str());
             vars.insert("repo_name", repo_name.as_str());
-            vars.insert("environment", env_resolved.as_str());
-            vars.insert("flake_path", "$WORKTREE");
             template.render(&vars)
         };
         ex.write_file(
@@ -291,59 +286,6 @@ impl HetznerComputeProvider {
         })
     }
 
-    /// Materialize `{root}/flake` on the remote host for `noenv`/`python`,
-    /// mirroring the local provider's `setup_environment`. Returns the
-    /// flake path to bake into wrappers.
-    async fn remote_env_flake(
-        ex: &dyn RemoteExecutor,
-        root: &str,
-        repo_path: &str,
-        env_resolved: &str,
-    ) -> Result<String> {
-        const NOENV_FLAKE_URL: &str = "https://raw.githubusercontent.com/The-Exact-Computing-Company/steadystate/main/backend/flakes/noenv";
-
-        match env_resolved {
-            "noenv" => {
-                let flake_dest = format!("{}/flake", root);
-                ex.mkdir_p(PathBuf::from(&flake_dest).as_path(), 0o755)
-                    .await?;
-                // Remote host has curl (installed by cloud-init).
-                for file in ["flake.nix", "flake.lock"] {
-                    let dest = format!("{}/{}", flake_dest, file);
-                    let out = ex
-                        .exec_shell(&format!(
-                            "curl -fsSL {}/{} -o '{}'",
-                            NOENV_FLAKE_URL, file, dest,
-                        ))
-                        .await?;
-                    if !out.exit_status.success() {
-                        return Err(anyhow!("failed to fetch noenv {}: {}", file, out.stderr));
-                    }
-                }
-                Ok(flake_dest)
-            }
-            "python" => {
-                use crate::compute::common::python::{
-                    detect_python_version, generate_python_flake,
-                };
-                let version = detect_python_version(ex, PathBuf::from(repo_path).as_path()).await?;
-                let content = generate_python_flake(version);
-                let flake_dest = format!("{}/flake", root);
-                ex.mkdir_p(PathBuf::from(&flake_dest).as_path(), 0o755)
-                    .await?;
-                ex.write_file(
-                    PathBuf::from(format!("{}/flake.nix", flake_dest)).as_path(),
-                    content.as_bytes(),
-                    0o644,
-                )
-                .await?;
-                tracing::info!("Generated remote Python flake with {}", version.nix_attr());
-                Ok(flake_dest)
-            }
-            _ => Ok("$REPO".to_string()),
-        }
-    }
-
     /// Pair mode: everyone shares one repo checkout inside a shared tmux
     /// session (via `pair-wrapper` as the SSH forced command). No canonical
     /// repo, no branches — mirrors the local pair flow.
@@ -354,7 +296,7 @@ impl HetznerComputeProvider {
         session_id: &str,
         request: &SessionRequest,
     ) -> Result<SessionStartResult> {
-        let (root, repo_path, env_resolved) = self.remote_preamble(ex, session_id, request).await?;
+        let (root, _repo_path) = self.remote_preamble(ex, session_id, request).await?;
 
         let authorized_keys = self.remote_authorized_keys(request).await;
 
@@ -367,16 +309,11 @@ impl HetznerComputeProvider {
         )
         .await?;
 
-        // Bake the env flake path into the wrapper (materializes {root}/flake
-        // for noenv/python; other envs resolve at runtime against the checkout).
-        let flake_path = Self::remote_env_flake(ex, &root, &repo_path, &env_resolved).await?;
         let template = scripts::pair_wrapper_script();
         let wrapper = {
             let mut vars: HashMap<&str, &str> = HashMap::new();
             vars.insert("session_root", root.as_str());
             vars.insert("session_id", session_id);
-            vars.insert("environment", env_resolved.as_str());
-            vars.insert("flake_path", flake_path.as_str());
             template.render(&vars)
         };
         ex.write_file(
@@ -582,14 +519,7 @@ impl ComputeProvider for HetznerComputeProvider {
             supports_persistent_storage: false,
             supports_snapshots: false,
             max_session_duration: None,
-            supported_environments: vec![
-                "tproject".into(),
-                "auto".into(),
-                "flake".into(),
-                "noenv".into(),
-                "python".into(),
-                "legacy-nix".into(),
-            ],
+            supported_environments: vec!["tproject".into()],
         }
     }
 
@@ -744,14 +674,11 @@ mod tests {
         let mut vars: HashMap<&str, &str> = HashMap::new();
         vars.insert("session_root", "/home/steady/.steadystate/sessions/abc");
         vars.insert("session_id", "abc123");
-        vars.insert("environment", "tproject");
-        vars.insert("flake_path", "$REPO");
         let out = template.render(&vars);
         assert!(!out.contains("{{session_root}}"));
         assert!(!out.contains("{{session_id}}"));
-        assert!(!out.contains("{{environment}}"));
-        assert!(!out.contains("{{flake_path}}"));
         assert!(out.contains("tmux new-session -A"));
+        assert!(out.contains("tproject.toml"));
         // TMUX_SESSION is composed at runtime: pair-${SESSION_ID:0:8}.
         assert!(out.contains("SESSION_ID=\"abc123\""));
         assert!(out.contains("pair-${SESSION_ID:0:8}"));

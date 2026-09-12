@@ -9,7 +9,7 @@ pub struct ProviderCapabilities {
     pub supports_persistent_storage: bool,
     pub supports_snapshots: bool,
     pub max_session_duration: Option<Duration>,
-    pub supported_environments: Vec<String>, // "flake", "noenv", "legacy-nix", "python", "tproject", "auto"
+    pub supported_environments: Vec<String>, // "tproject"
 }
 
 /// Health status of a running session
