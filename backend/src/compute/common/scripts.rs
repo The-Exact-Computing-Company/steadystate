@@ -11,7 +11,7 @@ impl ScriptTemplate {
             template: template.to_string(),
         }
     }
-    
+
     pub fn render(&self, vars: &HashMap<&str, &str>) -> String {
         let mut result = self.template.clone();
         for (key, value) in vars {
@@ -23,7 +23,8 @@ impl ScriptTemplate {
 
 /// Generate the collab mode wrapper script
 pub fn collab_wrapper_script() -> ScriptTemplate {
-    ScriptTemplate::new(r#"#!/usr/bin/env bash
+    ScriptTemplate::new(
+        r#"#!/usr/bin/env bash
 set -e
 
 USER_ID="$1"
@@ -234,12 +235,14 @@ else
     # Interactive session - launch dashboard
     run_in_env steadystate dash
 fi
-"#)
+"#,
+    )
 }
 
 /// Generate the sync script
 pub fn sync_script() -> ScriptTemplate {
-    ScriptTemplate::new(r#"#!/bin/bash
+    ScriptTemplate::new(
+        r#"#!/bin/bash
 set -e
 
 USER_ID="${STEADYSTATE_USERNAME:-${USER:-unknown}}"
@@ -286,11 +289,13 @@ fi
 log_activity "synced"
 echo ""
 echo "✓ Sync complete!"
-"#)
+"#,
+    )
 }
 
 pub fn pair_wrapper_script() -> ScriptTemplate {
-    ScriptTemplate::new(r#"#!/usr/bin/env bash
+    ScriptTemplate::new(
+        r#"#!/usr/bin/env bash
 # Pair mode wrapper - attaches all users to shared tmux session
 
 set -e
@@ -345,5 +350,6 @@ case "$ENVIRONMENT" in
         start_tmux
         ;;
 esac
-"#)
+"#,
+    )
 }

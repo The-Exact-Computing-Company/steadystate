@@ -1,12 +1,12 @@
 #![cfg(not(target_os = "macos"))]
 
+use serde_json::json;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Output};
 use std::time::Duration;
 use tempfile::TempDir;
-use serde_json::json;
 
 // Copied helpers to avoid dependency issues and allow modification
 mod helpers {
@@ -31,12 +31,10 @@ mod helpers {
                         body
                     )
                 }
-                MockResponse::Ok => {
-                    "HTTP/1.1 200 OK\r\n\
+                MockResponse::Ok => "HTTP/1.1 200 OK\r\n\
                      Connection: close\r\n\
                      Content-Length: 0\r\n\r\n"
-                        .to_string()
-                }
+                    .to_string(),
             }
         }
     }
@@ -82,7 +80,11 @@ mod helpers {
         }
 
         pub fn create_future_session(&self) {
-            let exp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
+            let exp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600;
             self.create_session("tester", "test-jwt", Some(exp));
         }
 
@@ -108,7 +110,9 @@ mod helpers {
             let mut reqs = Vec::new();
             for response in responses {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut buf = vec![0; 1024];
                 if let Ok(n) = stream.read(&mut buf) {
                     reqs.push(String::from_utf8_lossy(&buf[..n]).to_string());
@@ -133,7 +137,7 @@ fn logout_with_no_keyring_removes_fallback_file() {
     harness.set_fallback_token("token-in-file");
 
     let output = harness.run_cli_no_keyring(&["logout"]);
-    
+
     if !output.status.success() {
         eprintln!("STDOUT: {}", String::from_utf8_lossy(&output.stdout));
         eprintln!("STDERR: {}", String::from_utf8_lossy(&output.stderr));
@@ -150,7 +154,7 @@ fn logout_with_no_keyring_removes_fallback_file() {
 fn refresh_with_no_keyring_uses_fallback_file() {
     let script = vec![MockResponse::Json(json!({ "jwt": "new-jwt" }))];
     let mut harness = TestHarness::new(script);
-    // Create session but with expired JWT to force refresh? 
+    // Create session but with expired JWT to force refresh?
     // Or just run `refresh` command explicitly.
     harness.create_future_session();
     harness.set_fallback_token("file-refresh-token");

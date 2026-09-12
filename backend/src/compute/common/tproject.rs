@@ -1,12 +1,11 @@
-use std::path::Path;
-use anyhow::Result;
 use crate::compute::traits::RemoteExecutor;
+use anyhow::Result;
+use std::path::Path;
 
 /// Default flake providing the `t` binary.
 /// Override with `TLANG_FLAKE_URL`.
 pub fn tlang_flake_url() -> String {
-    std::env::var("TLANG_FLAKE_URL")
-        .unwrap_or_else(|_| "github:b-rodrigues/tlang".to_string())
+    std::env::var("TLANG_FLAKE_URL").unwrap_or_else(|_| "github:b-rodrigues/tlang".to_string())
 }
 
 /// True if the repo contains a `tproject.toml`.
@@ -24,14 +23,13 @@ pub fn parse_min_version(content: &str) -> Option<String> {
             in_t_section = t == "[t]";
             continue;
         }
-        if in_t_section && t.starts_with("min_version") {
-            if let Some((_, v)) = t.split_once('=') {
+        if in_t_section && t.starts_with("min_version")
+            && let Some((_, v)) = t.split_once('=') {
                 let v = v.trim().trim_matches(|c| c == '"' || c == '\'').trim();
                 if !v.is_empty() {
                     return Some(v.to_string());
                 }
             }
-        }
     }
     None
 }
@@ -50,10 +48,7 @@ pub async fn ensure_nix(executor: &dyn RemoteExecutor) -> Result<()> {
 /// Command prefix that guarantees `t` is available via `nix shell`.
 /// Returns e.g. `nix shell --accept-flake-config github:b-rodrigues/tlang -c t`.
 pub fn t_shell_prefix() -> String {
-    format!(
-        "nix shell --accept-flake-config {} -c t",
-        tlang_flake_url()
-    )
+    format!("nix shell --accept-flake-config {} -c t", tlang_flake_url())
 }
 
 /// Parse the first `X.Y[.Z]` numeric version found in `s`.
@@ -109,21 +104,28 @@ pub async fn check_min_version(executor: &dyn RemoteExecutor, repo_path: &Path) 
     let script = format!("t --version || {} --version", t_shell_prefix());
     let out = executor.exec_shell(&script).await?;
     if !out.exit_status.success() {
-        tracing::warn!("Could not determine `t` version; project requires >= {}", min_s);
+        tracing::warn!(
+            "Could not determine `t` version; project requires >= {}",
+            min_s
+        );
         return Ok(());
     }
     match parse_version(&out.stdout) {
         Some(installed) if installed < min_v => {
             tracing::warn!(
                 "`t` version {:?} is older than project minimum {} — `t update` output may differ",
-                installed, min_s
+                installed,
+                min_s
             );
         }
         Some(installed) => {
             tracing::info!("`t` version {:?} satisfies minimum {}", installed, min_s);
         }
         None => {
-            tracing::warn!("Unparseable `t --version` output; project requires >= {}", min_s);
+            tracing::warn!(
+                "Unparseable `t --version` output; project requires >= {}",
+                min_s
+            );
         }
     }
     Ok(())
@@ -144,7 +146,12 @@ pub async fn t_update(executor: &dyn RemoteExecutor, repo_path: &Path) -> Result
     if out.exit_status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!("`t update` failed in {}: {}\n{}", dir, out.stdout, out.stderr))
+        Err(anyhow::anyhow!(
+            "`t update` failed in {}: {}\n{}",
+            dir,
+            out.stdout,
+            out.stderr
+        ))
     }
 }
 

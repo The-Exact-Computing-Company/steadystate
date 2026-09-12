@@ -7,11 +7,11 @@
 // --provider=gitlab` posts the PAT to POST /auth/token instead, which
 // validates it here and mints SteadyState JWT + refresh tokens.
 
-use std::sync::Arc;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
 
 use crate::auth::provider::{
     AuthProvider, AuthProviderDyn, AuthProviderFactory, DevicePollOutcome, UserIdentity,

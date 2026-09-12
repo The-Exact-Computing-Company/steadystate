@@ -1,4 +1,4 @@
-use anyhow::{Result, Context, anyhow};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,8 @@ pub struct HetznerConfig {
 impl HetznerConfig {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            token: std::env::var("HCLOUD_TOKEN").context("HCLOUD_TOKEN must be set for hetzner provider")?,
+            token: std::env::var("HCLOUD_TOKEN")
+                .context("HCLOUD_TOKEN must be set for hetzner provider")?,
             server_type: std::env::var("HCLOUD_SERVER_TYPE").unwrap_or_else(|_| "cx23".to_string()),
             image: std::env::var("HCLOUD_IMAGE").unwrap_or_else(|_| "ubuntu-24.04".to_string()),
             location: std::env::var("HCLOUD_LOCATION").unwrap_or_else(|_| "nbg1".to_string()),
@@ -100,9 +101,17 @@ impl HetznerApi {
             location: &cfg.location,
             ssh_keys: cfg.ssh_key_name.clone().map(|k| vec![k]),
             user_data,
-            labels: Some([("steadystate".to_string(), "session".to_string())].into_iter().collect()),
+            labels: Some(
+                [("steadystate".to_string(), "session".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
         };
-        let resp = self.req(reqwest::Method::POST, "/servers").json(&body).send().await?;
+        let resp = self
+            .req(reqwest::Method::POST, "/servers")
+            .json(&body)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let txt = resp.text().await.unwrap_or_default();
             return Err(anyhow!("hcloud create server failed: {}", txt));
@@ -112,7 +121,10 @@ impl HetznerApi {
     }
 
     pub async fn get_server(&self, id: u64) -> Result<HServer> {
-        let resp = self.req(reqwest::Method::GET, &format!("/servers/{}", id)).send().await?;
+        let resp = self
+            .req(reqwest::Method::GET, &format!("/servers/{}", id))
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let txt = resp.text().await.unwrap_or_default();
             return Err(anyhow!("hcloud get server failed: {}", txt));
@@ -122,7 +134,10 @@ impl HetznerApi {
     }
 
     pub async fn delete_server(&self, id: u64) -> Result<()> {
-        let resp = self.req(reqwest::Method::DELETE, &format!("/servers/{}", id)).send().await?;
+        let resp = self
+            .req(reqwest::Method::DELETE, &format!("/servers/{}", id))
+            .send()
+            .await?;
         if resp.status().is_success() {
             Ok(())
         } else {
@@ -140,7 +155,10 @@ impl HetznerApi {
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
-        Err(anyhow!("timed out waiting for hcloud server {} to be running", id))
+        Err(anyhow!(
+            "timed out waiting for hcloud server {} to be running",
+            id
+        ))
     }
 }
 
@@ -163,17 +181,17 @@ runcmd:
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::provider::HetznerComputeProvider;
+    use super::*;
     use crate::compute::ComputeProvider;
     use crate::state::lock_test_env;
 
-    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
-        let _guard = lock_test_env();
+    async fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = lock_test_env().await;
         let mut saved = Vec::new();
         for (k, v) in vars {
             saved.push((k.to_string(), std::env::var(k).ok()));
-            // SAFETY: tests in this module are serialized by ENV_LOCK.
+            // SAFETY: serialized by the shared test-env lock.
             unsafe {
                 match v {
                     Some(val) => std::env::set_var(k, val),
@@ -183,7 +201,7 @@ mod tests {
         }
         f();
         for (k, old) in saved {
-            // SAFETY: still holding ENV_LOCK.
+            // SAFETY: still holding the shared lock.
             unsafe {
                 match old {
                     Some(val) => std::env::set_var(&k, val),
@@ -193,16 +211,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_config_requires_token() {
+    #[tokio::test]
+    async fn test_config_requires_token() {
         with_env(&[("HCLOUD_TOKEN", None)], || {
             assert!(HetznerConfig::from_env().is_err());
             assert!(!HetznerConfig::available());
-        });
+        })
+        .await;
     }
 
-    #[test]
-    fn test_config_defaults() {
+    #[tokio::test]
+    async fn test_config_defaults() {
         with_env(
             &[
                 ("HCLOUD_TOKEN", Some("test-token")),
@@ -220,11 +239,12 @@ mod tests {
                 assert!(cfg.ssh_key_name.is_none());
                 assert!(HetznerConfig::available());
             },
-        );
+        )
+        .await;
     }
 
-    #[test]
-    fn test_config_overrides() {
+    #[tokio::test]
+    async fn test_config_overrides() {
         with_env(
             &[
                 ("HCLOUD_TOKEN", Some("tok")),
@@ -240,7 +260,8 @@ mod tests {
                 assert_eq!(cfg.location, "fsn1");
                 assert_eq!(cfg.ssh_key_name.as_deref(), Some("my-key"));
             },
-        );
+        )
+        .await;
     }
 
     #[test]
@@ -255,16 +276,20 @@ mod tests {
         assert!(script.contains("|| true"));
     }
 
-    #[test]
-    fn test_provider_identity_and_capabilities() {
+    #[tokio::test]
+    async fn test_provider_identity_and_capabilities() {
         with_env(&[("HCLOUD_TOKEN", Some("test-token"))], || {
             let p = HetznerComputeProvider::from_env(reqwest::Client::new()).unwrap();
             assert_eq!(p.id(), "hetzner");
             let caps = p.capabilities();
             assert!(caps.supports_collab_mode);
             assert!(caps.supports_pair_mode);
-            assert!(caps.supported_environments.contains(&"tproject".to_string()));
+            assert!(
+                caps.supported_environments
+                    .contains(&"tproject".to_string())
+            );
             assert!(caps.supported_environments.contains(&"auto".to_string()));
-        });
+        })
+        .await;
     }
 }

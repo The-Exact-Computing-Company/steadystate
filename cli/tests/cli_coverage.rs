@@ -87,11 +87,20 @@ fn up_prints_human_output_on_success() {
     harness.create_future_session();
     harness.set_keyring_password("tester_access", "access-token-123");
 
-    let (output, reqs) = harness.run_cli_and_assert_success(&["up", "https://example.com/repo.git", "--env=noenv", "--mode=pair"]);
-    
+    let (output, reqs) = harness.run_cli_and_assert_success(&[
+        "up",
+        "https://example.com/repo.git",
+        "--env=noenv",
+        "--mode=pair",
+    ]);
+
     assert_eq!(reqs.len(), 1);
     assert!(reqs[0].starts_with("POST /sessions"));
-    assert!(reqs[0].to_lowercase().contains("authorization: bearer test-jwt"));
+    assert!(
+        reqs[0]
+            .to_lowercase()
+            .contains("authorization: bearer test-jwt")
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("✅ Session created: session-123"));
@@ -108,11 +117,21 @@ fn up_prints_json_on_success() {
     harness.create_future_session();
     harness.set_keyring_password("tester_access", "access-token-123");
 
-    let (output, reqs) = harness.run_cli_and_assert_success(&["up", "https://example.com/repo.git", "--env=noenv", "--json", "--mode=pair"]);
+    let (output, reqs) = harness.run_cli_and_assert_success(&[
+        "up",
+        "https://example.com/repo.git",
+        "--env=noenv",
+        "--json",
+        "--mode=pair",
+    ]);
 
     assert_eq!(reqs.len(), 1);
     assert!(reqs[0].starts_with("POST /sessions"));
-    assert!(reqs[0].to_lowercase().contains("authorization: bearer test-jwt"));
+    assert!(
+        reqs[0]
+            .to_lowercase()
+            .contains("authorization: bearer test-jwt")
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("parse json");
@@ -129,7 +148,11 @@ fn down_sends_delete_with_bearer() {
     let (output, reqs) = harness.run_cli_and_assert_success(&["down", "session-abc"]);
     assert_eq!(reqs.len(), 1);
     assert!(reqs[0].starts_with("DELETE /sessions/session-abc"));
-    assert!(reqs[0].to_lowercase().contains("authorization: bearer test-jwt"));
+    assert!(
+        reqs[0]
+            .to_lowercase()
+            .contains("authorization: bearer test-jwt")
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Session session-abc termination requested."));
@@ -168,7 +191,11 @@ fn list_prints_table() {
     let (output, reqs) = harness.run_cli_and_assert_success(&["list"]);
     assert_eq!(reqs.len(), 1);
     assert!(reqs[0].starts_with("GET /sessions "));
-    assert!(reqs[0].to_lowercase().contains("authorization: bearer test-jwt"));
+    assert!(
+        reqs[0]
+            .to_lowercase()
+            .contains("authorization: bearer test-jwt")
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("STATE"));

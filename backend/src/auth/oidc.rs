@@ -16,12 +16,12 @@
 // not browser-reachable. Identity comes from the userinfo endpoint, so no
 // ID-token JWT validation (and no new crypto dependencies) is needed.
 
-use std::sync::Arc;
-use std::time::Duration;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::auth::provider::{
     AuthProvider, AuthProviderDyn, AuthProviderFactory, DevicePollOutcome, UserIdentity,
@@ -73,12 +73,17 @@ pub fn expand_issuer_preset(raw: &str) -> anyhow::Result<String> {
         if tenant.is_empty() {
             return Err(anyhow!("entra preset needs a tenant, e.g. entra:common"));
         }
-        return Ok(format!("https://login.microsoftonline.com/{}/v2.0", tenant.trim_end_matches('/')));
+        return Ok(format!(
+            "https://login.microsoftonline.com/{}/v2.0",
+            tenant.trim_end_matches('/')
+        ));
     }
     if let Some(domain) = raw.strip_prefix("okta:") {
         let domain = domain.trim().trim_end_matches('/');
         if domain.is_empty() {
-            return Err(anyhow!("okta preset needs a domain, e.g. okta:example.okta.com"));
+            return Err(anyhow!(
+                "okta preset needs a domain, e.g. okta:example.okta.com"
+            ));
         }
         return Ok(format!("https://{}", domain));
     }
@@ -108,18 +113,22 @@ impl OidcConfig {
     /// Resolve from env and run OIDC discovery. Fails fast with a clear
     /// error so misconfiguration surfaces at provider build, not at login.
     pub async fn from_env(http: &Client) -> anyhow::Result<Self> {
-        let raw_issuer = std::env::var("OIDC_ISSUER")
-            .context("OIDC_ISSUER is not configured on the server")?;
+        let raw_issuer =
+            std::env::var("OIDC_ISSUER").context("OIDC_ISSUER is not configured on the server")?;
         let issuer = expand_issuer_preset(&raw_issuer)?;
         let client_id = std::env::var("OIDC_CLIENT_ID")
             .context("OIDC_CLIENT_ID is not configured on the server")?;
         let client_secret = std::env::var("OIDC_CLIENT_SECRET")
             .context("OIDC_CLIENT_SECRET is not configured on the server")?;
-        let scopes = std::env::var("OIDC_SCOPES").unwrap_or_else(|_| "openid profile email".to_string());
+        let scopes =
+            std::env::var("OIDC_SCOPES").unwrap_or_else(|_| "openid profile email".to_string());
         let login_claim =
             std::env::var("OIDC_LOGIN_CLAIM").unwrap_or_else(|_| "preferred_username".to_string());
 
-        let discovery_url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            issuer.trim_end_matches('/')
+        );
         let doc: DiscoveryDoc = http
             .get(&discovery_url)
             .header("User-Agent", "steadystate-backend/0.1")

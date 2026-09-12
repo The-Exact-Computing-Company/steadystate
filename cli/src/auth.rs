@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use indicatif::{ProgressBar, ProgressStyle};
 use jwt_simple::prelude::*;
 use keyring::Entry;
 use reqwest::Client;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use tokio::{select, signal, time};
 use tracing::{info, warn};
 
@@ -14,8 +14,8 @@ use crate::config::{
     BACKEND_URL, DEVICE_POLL_MAX_INTERVAL_SECS, DEVICE_POLL_REQUEST_TIMEOUT_SECS,
     JWT_REFRESH_BUFFER_SECS, MAX_NETWORK_RETRIES, RETRY_DELAY_MS, SERVICE_NAME,
 };
-use crate::session::{read_session, remove_session, write_session, Session};
-use steadystate_common::types::{SessionInfo, SessionState, DeviceFlowResponse};
+use crate::session::{Session, read_session, remove_session, write_session};
+use steadystate_common::types::{DeviceFlowResponse, SessionInfo};
 
 type DeviceResponse = DeviceFlowResponse;
 
@@ -175,7 +175,9 @@ pub async fn device_login(client: &Client, provider: &str) -> Result<()> {
 /// exactly like the device flow does.
 pub async fn token_login(client: &Client, provider: &str, token: &str) -> Result<()> {
     if token.trim().is_empty() {
-        anyhow::bail!("Empty token. Create one at your GitLab profile → Access Tokens (needs read_user scope; read_api for collaborator lookup).");
+        anyhow::bail!(
+            "Empty token. Create one at your GitLab profile → Access Tokens (needs read_user scope; read_api for collaborator lookup)."
+        );
     }
     let url = format!("{}/auth/token", &*BACKEND_URL);
     let resp = send_with_retries(|| {
@@ -210,11 +212,10 @@ pub fn resolve_pat(flag: Option<String>, env_var: &str, prompt: &str) -> Result<
     if let Some(t) = flag {
         return Ok(t);
     }
-    if let Ok(t) = std::env::var(env_var) {
-        if !t.trim().is_empty() {
+    if let Ok(t) = std::env::var(env_var)
+        && !t.trim().is_empty() {
             return Ok(t);
         }
-    }
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         anyhow::bail!(
             "No token provided. Pass --token, set {} or run interactively.",
@@ -246,9 +247,17 @@ pub fn pkce_pair() -> (String, String) {
 /// (pasted from the browser) or a bare `?code=..&state=..` query string.
 pub fn parse_callback_target(target: &str) -> Result<(String, String)> {
     let params = callback_params(target)?;
-    let code = params.get("code").filter(|s| !s.is_empty()).cloned()
-        .ok_or_else(|| anyhow::anyhow!("Redirect has no ?code= parameter (access denied or IdP error?)"))?;
-    let state = params.get("state").filter(|s| !s.is_empty()).cloned()
+    let code = params
+        .get("code")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!("Redirect has no ?code= parameter (access denied or IdP error?)")
+        })?;
+    let state = params
+        .get("state")
+        .filter(|s| !s.is_empty())
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("Redirect has no ?state= parameter"))?;
     Ok((code, state))
 }
@@ -263,7 +272,9 @@ pub fn callback_params(target: &str) -> Result<std::collections::HashMap<String,
     } else {
         anyhow::bail!("No query string in redirect target");
     };
-    Ok(url::form_urlencoded::parse(query.as_bytes()).into_owned().collect())
+    Ok(url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect())
 }
 
 #[derive(Deserialize)]
@@ -302,7 +313,11 @@ pub async fn oidc_login(client: &Client, no_browser: bool) -> Result<()> {
         anyhow::bail!("OIDC is not configured on this backend (OIDC_ISSUER/ID/SECRET).");
     }
     if !resp.status().is_success() {
-        anyhow::bail!("OIDC start failed ({}): {}", resp.status(), resp.text().await.unwrap_or_default());
+        anyhow::bail!(
+            "OIDC start failed ({}): {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     let start: OidcStartOut = resp.json().await.context("parse OIDC start response")?;
 
@@ -314,11 +329,10 @@ pub async fn oidc_login(client: &Client, no_browser: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Backend returned an authorization URL without ?state="))?;
 
     println!("Open this URL in your browser:\n\n  {}\n", start.auth_url);
-    if !no_browser {
-        if let Err(e) = open::that(&start.auth_url) {
+    if !no_browser
+        && let Err(e) = open::that(&start.auth_url) {
             warn!("open browser failed: {}", e);
         }
-    }
 
     let (code, echo_state) = if no_browser {
         println!("After approving, paste the full localhost redirect URL here:");
@@ -375,7 +389,11 @@ pub async fn oidc_login(client: &Client, no_browser: bool) -> Result<()> {
     .await
     .context("OIDC complete request failed")?;
     if !resp.status().is_success() {
-        anyhow::bail!("OIDC complete failed ({}): {}", resp.status(), resp.text().await.unwrap_or_default());
+        anyhow::bail!(
+            "OIDC complete failed ({}): {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     let out: PollResponse = resp.json().await.context("parse OIDC complete response")?;
     let jwt = out.jwt.context("server did not return jwt")?;
@@ -399,18 +417,20 @@ pub struct RefreshResponse {
 }
 
 /// Refreshes JWT using stored refresh token.
-pub async fn perform_refresh(client: &Client, login_override: Option<String>, override_dir: Option<&PathBuf>) -> Result<RefreshResponse> {
+pub async fn perform_refresh(
+    client: &Client,
+    login_override: Option<String>,
+    override_dir: Option<&PathBuf>,
+) -> Result<RefreshResponse> {
     // Load the cached session when available so provider attribution
     // (github vs gitlab) survives refreshes.
     let cached = read_session(override_dir).await.ok();
     let username = match login_override {
         Some(login) => login,
-        None => {
-            cached
-                .as_ref()
-                .map(|s| s.login.clone())
-                .context("No active session found. Run 'steadystate login' first.")?
-        }
+        None => cached
+            .as_ref()
+            .map(|s| s.login.clone())
+            .context("No active session found. Run 'steadystate login' first.")?,
     };
 
     let refresh = get_refresh_token(&username, override_dir)
@@ -488,7 +508,8 @@ where
     if resp.status().as_u16() == 401 {
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!(
-            "Your session has expired or been revoked. Run `steadystate login` again.\nServer says: {}", body
+            "Your session has expired or been revoked. Run `steadystate login` again.\nServer says: {}",
+            body
         );
     }
 
@@ -499,10 +520,10 @@ where
     }
 
     // Step 5: Parse and return
-    Ok(resp
+    resp
         .json::<T>()
         .await
-        .context("Failed to parse server response")?)
+        .context("Failed to parse server response")
 }
 
 // =======================================================================
@@ -534,7 +555,9 @@ pub fn extract_exp_from_jwt(jwt: &str) -> Option<u64> {
 
 /// Helper to check for mock keyring environment variable
 fn get_mock_keyring_path(username: &str) -> Option<PathBuf> {
-    std::env::var("STEADYSTATE_KEYRING_DIR").ok().map(|d| PathBuf::from(d).join(format!("{}.keyring", username)))
+    std::env::var("STEADYSTATE_KEYRING_DIR")
+        .ok()
+        .map(|d| PathBuf::from(d).join(format!("{}.keyring", username)))
 }
 
 const KEYRING_TIMEOUT_MS: u64 = 2000;
@@ -546,11 +569,15 @@ async fn get_fallback_token_path(override_dir: Option<&PathBuf>) -> Result<PathB
 }
 
 /// Stores refresh token in the OS keychain (with timeout) or fallback file.
-pub async fn store_refresh_token(username: &str, token: &str, override_dir: Option<&PathBuf>) -> Result<()> {
+pub async fn store_refresh_token(
+    username: &str,
+    token: &str,
+    override_dir: Option<&PathBuf>,
+) -> Result<()> {
     if token.is_empty() {
         return Err(anyhow!("refresh token cannot be empty"));
     }
-    
+
     // Check for mock keyring first
     if let Some(path) = get_mock_keyring_path(username) {
         return std::fs::write(path, token).context("failed to write mock keyring");
@@ -563,15 +590,25 @@ pub async fn store_refresh_token(username: &str, token: &str, override_dir: Opti
         let token_val = token.to_string();
 
         // Try keyring with timeout
-        let keyring_result = time::timeout(Duration::from_millis(KEYRING_TIMEOUT_MS), tokio::task::spawn_blocking(move || {
-            let entry = Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
-            entry.set_password(&token_val).context("keyring set_password failed")
-        })).await;
+        let keyring_result = time::timeout(
+            Duration::from_millis(KEYRING_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                let entry =
+                    Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
+                entry
+                    .set_password(&token_val)
+                    .context("keyring set_password failed")
+            }),
+        )
+        .await;
 
         match keyring_result {
             Ok(Ok(Ok(_))) => return Ok(()),
             Ok(Ok(Err(e))) => warn!("Keyring error: {}. Falling back to file storage.", e),
-            Ok(Err(e)) => warn!("Keyring task join error: {}. Falling back to file storage.", e),
+            Ok(Err(e)) => warn!(
+                "Keyring task join error: {}. Falling back to file storage.",
+                e
+            ),
             Err(_) => warn!("Keyring operation timed out. Falling back to file storage."),
         }
     } else {
@@ -580,12 +617,16 @@ pub async fn store_refresh_token(username: &str, token: &str, override_dir: Opti
 
     // Fallback: Write to file
     let path = get_fallback_token_path(override_dir).await?;
-    tokio::fs::write(&path, token).await.context("failed to write fallback token file")?;
-    
+    tokio::fs::write(&path, token)
+        .await
+        .context("failed to write fallback token file")?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await {
+        if let Err(e) =
+            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await
+        {
             warn!("Failed to set strict permissions on token file: {}", e);
         }
     }
@@ -594,11 +635,16 @@ pub async fn store_refresh_token(username: &str, token: &str, override_dir: Opti
 }
 
 /// Retrieves refresh token from keychain (with timeout) or fallback file.
-pub async fn get_refresh_token(username: &str, override_dir: Option<&PathBuf>) -> Result<Option<String>> {
+pub async fn get_refresh_token(
+    username: &str,
+    override_dir: Option<&PathBuf>,
+) -> Result<Option<String>> {
     // Check for mock keyring first
     if let Some(path) = get_mock_keyring_path(username) {
         if path.exists() {
-            return std::fs::read_to_string(path).map(Some).context("failed to read mock keyring");
+            return std::fs::read_to_string(path)
+                .map(Some)
+                .context("failed to read mock keyring");
         } else {
             return Ok(None);
         }
@@ -610,22 +656,27 @@ pub async fn get_refresh_token(username: &str, override_dir: Option<&PathBuf>) -
         let username = username.to_string();
 
         // Try keyring with timeout
-        let keyring_result = time::timeout(Duration::from_millis(KEYRING_TIMEOUT_MS), tokio::task::spawn_blocking(move || {
-            let entry = Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
-            match entry.get_password() {
-                Ok(tok) => Ok(Some(tok)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(e).context("keyring get_password failed"),
-            }
-        })).await;
+        let keyring_result = time::timeout(
+            Duration::from_millis(KEYRING_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                let entry =
+                    Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
+                match entry.get_password() {
+                    Ok(tok) => Ok(Some(tok)),
+                    Err(keyring::Error::NoEntry) => Ok(None),
+                    Err(e) => Err(e).context("keyring get_password failed"),
+                }
+            }),
+        )
+        .await;
 
         match keyring_result {
             Ok(Ok(Ok(Some(token)))) => return Ok(Some(token)),
             Ok(Ok(Ok(None))) => {
-                // Keyring worked but no token. Check fallback file just in case? 
+                // Keyring worked but no token. Check fallback file just in case?
                 // Usually if we use keyring we stick to it, but if user switched envs...
                 // Let's check fallback file if keyring is empty.
-            }, 
+            }
             Ok(Ok(Err(e))) => warn!("Keyring error: {}. Checking fallback file.", e),
             Ok(Err(e)) => warn!("Keyring task join error: {}. Checking fallback file.", e),
             Err(_) => warn!("Keyring operation timed out. Checking fallback file."),
@@ -635,9 +686,11 @@ pub async fn get_refresh_token(username: &str, override_dir: Option<&PathBuf>) -
     // Fallback: Read from file
     let path = get_fallback_token_path(override_dir).await?;
     if path.exists() {
-        let token = tokio::fs::read_to_string(path).await.context("failed to read fallback token file")?;
+        let token = tokio::fs::read_to_string(path)
+            .await
+            .context("failed to read fallback token file")?;
         if !token.trim().is_empty() {
-             return Ok(Some(token));
+            return Ok(Some(token));
         }
     }
 
@@ -660,17 +713,23 @@ pub async fn delete_refresh_token(username: &str, override_dir: Option<&PathBuf>
         let username = username.to_string();
 
         // Try keyring with timeout
-        let _ = time::timeout(Duration::from_millis(KEYRING_TIMEOUT_MS), tokio::task::spawn_blocking(move || {
-            if let Ok(entry) = Entry::new(SERVICE_NAME, &username) {
-                let _ = entry.delete_credential();
-            }
-        })).await;
+        let _ = time::timeout(
+            Duration::from_millis(KEYRING_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                if let Ok(entry) = Entry::new(SERVICE_NAME, &username) {
+                    let _ = entry.delete_credential();
+                }
+            }),
+        )
+        .await;
     }
 
     // Always try to delete fallback file too
     let path = get_fallback_token_path(override_dir).await?;
     if path.exists() {
-        tokio::fs::remove_file(path).await.context("failed to delete fallback token file")?;
+        tokio::fs::remove_file(path)
+            .await
+            .context("failed to delete fallback token file")?;
     }
 
     Ok(())
@@ -683,11 +742,15 @@ async fn get_access_token_path(override_dir: Option<&PathBuf>) -> Result<PathBuf
 }
 
 /// Stores access token in the OS keychain (with timeout) or fallback file.
-pub async fn store_access_token(username: &str, token: &str, override_dir: Option<&PathBuf>) -> Result<()> {
+pub async fn store_access_token(
+    username: &str,
+    token: &str,
+    override_dir: Option<&PathBuf>,
+) -> Result<()> {
     if token.is_empty() {
         return Err(anyhow!("access token cannot be empty"));
     }
-    
+
     // Check for mock keyring first
     if let Some(path) = get_mock_keyring_path(&format!("{}_access", username)) {
         return std::fs::write(path, token).context("failed to write mock keyring");
@@ -700,27 +763,41 @@ pub async fn store_access_token(username: &str, token: &str, override_dir: Optio
         let token_val = token.to_string();
 
         // Try keyring with timeout
-        let keyring_result = time::timeout(Duration::from_millis(KEYRING_TIMEOUT_MS), tokio::task::spawn_blocking(move || {
-            let entry = Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
-            entry.set_password(&token_val).context("keyring set_password failed")
-        })).await;
+        let keyring_result = time::timeout(
+            Duration::from_millis(KEYRING_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                let entry =
+                    Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
+                entry
+                    .set_password(&token_val)
+                    .context("keyring set_password failed")
+            }),
+        )
+        .await;
 
         match keyring_result {
             Ok(Ok(Ok(_))) => return Ok(()),
             Ok(Ok(Err(e))) => warn!("Keyring error: {}. Falling back to file storage.", e),
-            Ok(Err(e)) => warn!("Keyring task join error: {}. Falling back to file storage.", e),
+            Ok(Err(e)) => warn!(
+                "Keyring task join error: {}. Falling back to file storage.",
+                e
+            ),
             Err(_) => warn!("Keyring operation timed out. Falling back to file storage."),
         }
     }
 
     // Fallback: Write to file
     let path = get_access_token_path(override_dir).await?;
-    tokio::fs::write(&path, token).await.context("failed to write access token file")?;
-    
+    tokio::fs::write(&path, token)
+        .await
+        .context("failed to write access token file")?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await {
+        if let Err(e) =
+            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await
+        {
             warn!("Failed to set strict permissions on token file: {}", e);
         }
     }
@@ -729,11 +806,16 @@ pub async fn store_access_token(username: &str, token: &str, override_dir: Optio
 }
 
 /// Retrieves access token from keychain (with timeout) or fallback file.
-pub async fn get_access_token(username: &str, override_dir: Option<&PathBuf>) -> Result<Option<String>> {
+pub async fn get_access_token(
+    username: &str,
+    override_dir: Option<&PathBuf>,
+) -> Result<Option<String>> {
     // Check for mock keyring first
     if let Some(path) = get_mock_keyring_path(&format!("{}_access", username)) {
         if path.exists() {
-            return std::fs::read_to_string(path).map(Some).context("failed to read mock keyring");
+            return std::fs::read_to_string(path)
+                .map(Some)
+                .context("failed to read mock keyring");
         } else {
             return Ok(None);
         }
@@ -745,18 +827,23 @@ pub async fn get_access_token(username: &str, override_dir: Option<&PathBuf>) ->
         let username = format!("{}_access", username);
 
         // Try keyring with timeout
-        let keyring_result = time::timeout(Duration::from_millis(KEYRING_TIMEOUT_MS), tokio::task::spawn_blocking(move || {
-            let entry = Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
-            match entry.get_password() {
-                Ok(tok) => Ok(Some(tok)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(e).context("keyring get_password failed"),
-            }
-        })).await;
+        let keyring_result = time::timeout(
+            Duration::from_millis(KEYRING_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                let entry =
+                    Entry::new(SERVICE_NAME, &username).context("keyring entry creation failed")?;
+                match entry.get_password() {
+                    Ok(tok) => Ok(Some(tok)),
+                    Err(keyring::Error::NoEntry) => Ok(None),
+                    Err(e) => Err(e).context("keyring get_password failed"),
+                }
+            }),
+        )
+        .await;
 
         match keyring_result {
             Ok(Ok(Ok(Some(token)))) => return Ok(Some(token)),
-            Ok(Ok(Ok(None))) => {}, 
+            Ok(Ok(Ok(None))) => {}
             Ok(Ok(Err(e))) => warn!("Keyring error: {}. Checking fallback file.", e),
             Ok(Err(e)) => warn!("Keyring task join error: {}. Checking fallback file.", e),
             Err(_) => warn!("Keyring operation timed out. Checking fallback file."),
@@ -766,9 +853,11 @@ pub async fn get_access_token(username: &str, override_dir: Option<&PathBuf>) ->
     // Fallback: Read from file
     let path = get_access_token_path(override_dir).await?;
     if path.exists() {
-        let token = tokio::fs::read_to_string(path).await.context("failed to read access token file")?;
+        let token = tokio::fs::read_to_string(path)
+            .await
+            .context("failed to read access token file")?;
         if !token.trim().is_empty() {
-             return Ok(Some(token));
+            return Ok(Some(token));
         }
     }
 
@@ -791,17 +880,23 @@ pub async fn delete_access_token(username: &str, override_dir: Option<&PathBuf>)
         let username = format!("{}_access", username);
 
         // Try keyring with timeout
-        let _ = time::timeout(Duration::from_millis(KEYRING_TIMEOUT_MS), tokio::task::spawn_blocking(move || {
-            if let Ok(entry) = Entry::new(SERVICE_NAME, &username) {
-                let _ = entry.delete_credential();
-            }
-        })).await;
+        let _ = time::timeout(
+            Duration::from_millis(KEYRING_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                if let Ok(entry) = Entry::new(SERVICE_NAME, &username) {
+                    let _ = entry.delete_credential();
+                }
+            }),
+        )
+        .await;
     }
 
     // Always try to delete fallback file too
     let path = get_access_token_path(override_dir).await?;
     if path.exists() {
-        tokio::fs::remove_file(path).await.context("failed to delete access token file")?;
+        tokio::fs::remove_file(path)
+            .await
+            .context("failed to delete access token file")?;
     }
 
     Ok(())
@@ -827,13 +922,16 @@ where
             Err(err) => return Err(err.into()),
         }
     }
-    Err(anyhow::anyhow!("Max retries ({}) exceeded", MAX_NETWORK_RETRIES))
+    Err(anyhow::anyhow!(
+        "Max retries ({}) exceeded",
+        MAX_NETWORK_RETRIES
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     struct TestContext {
         _dir: TempDir,
@@ -879,7 +977,12 @@ mod tests {
 
     #[test]
     fn test_resolve_pat_flag_wins() {
-        let out = resolve_pat(Some("flag-token".to_string()), "STEADYSTATE_TEST_PAT_A", "prompt: ").unwrap();
+        let out = resolve_pat(
+            Some("flag-token".to_string()),
+            "STEADYSTATE_TEST_PAT_A",
+            "prompt: ",
+        )
+        .unwrap();
         assert_eq!(out, "flag-token");
     }
 
@@ -916,10 +1019,8 @@ mod tests {
 
     #[test]
     fn test_parse_callback_target() {
-        let (code, state) = parse_callback_target(
-            "http://127.0.0.1:54321/callback?code=abc123&state=xyz",
-        )
-        .unwrap();
+        let (code, state) =
+            parse_callback_target("http://127.0.0.1:54321/callback?code=abc123&state=xyz").unwrap();
         assert_eq!((code.as_str(), state.as_str()), ("abc123", "xyz"));
 
         // Bare query strings (SSH-pasted redirects) work too.
@@ -934,11 +1035,10 @@ mod tests {
     #[test]
     fn test_callback_params_state_without_code() {
         // The backend's authorization URL carries state but no code yet.
-        let params = callback_params(
-            "https://sso.example.com/authorize?response_type=code&state=st4te",
-        )
-        .unwrap();
+        let params =
+            callback_params("https://sso.example.com/authorize?response_type=code&state=st4te")
+                .unwrap();
         assert_eq!(params.get("state").map(String::as_str), Some("st4te"));
         assert!(!params.contains_key("code"));
     }
-    }
+}

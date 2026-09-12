@@ -1,21 +1,17 @@
 // backend/src/routes/auth.rs
 
-use std::sync::Arc;
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use serde_json::json;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::jwt::CustomClaims;
-use crate::{
-    auth::provider::DevicePollOutcome,
-    models::*,
-    state::AppState,
-};
+use crate::{auth::provider::DevicePollOutcome, models::*, state::AppState};
 
 pub fn router() -> Router<Arc<AppState>> {
     // Per-route rate-limit tiers (see rate_limit.rs). Merging preserves layers.
@@ -52,20 +48,29 @@ pub async fn device_start(
 ) -> Result<Json<DeviceStartResponse>, (StatusCode, Json<serde_json::Value>)> {
     let provider_id = ProviderId::from(q.provider.as_deref().unwrap_or("github"));
 
-    let provider = state.get_or_create_provider(&provider_id).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))))?;
+    let provider = state
+        .get_or_create_provider(&provider_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
-    let start = provider.start_device_flow().await
-        .map_err(internal)?;
+    let start = provider.start_device_flow().await.map_err(internal)?;
 
-    state.device_pending.insert(start.device_code.clone(), PendingDevice {
-        provider: q.provider.unwrap_or("github".into()).into(),
-        device_code: start.device_code.clone(),
-        user_code: start.user_code.clone(),
-        verification_uri: start.verification_uri.clone(),
-        interval: start.interval,
-        created_at: now(),
-    });
+    state.device_pending.insert(
+        start.device_code.clone(),
+        PendingDevice {
+            provider: q.provider.unwrap_or("github".into()).into(),
+            device_code: start.device_code.clone(),
+            user_code: start.user_code.clone(),
+            verification_uri: start.verification_uri.clone(),
+            interval: start.interval,
+            created_at: now(),
+        },
+    );
 
     Ok(Json(start))
 }
@@ -93,7 +98,7 @@ pub async fn poll(
                 login: None,
                 provider_access_token: None,
                 error: Some("invalid_device_code".into()),
-            }))
+            }));
         }
     };
     let provider_id = pending.provider.clone();
@@ -101,11 +106,19 @@ pub async fn poll(
 
     let provider = match state.get_or_create_provider(&provider_id).await {
         Ok(p) => p,
-        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            ));
+        }
     };
 
     match provider.poll_device_flow(&q.device_code).await {
-        Ok(DevicePollOutcome::Complete { identity, provider_access_token }) => {
+        Ok(DevicePollOutcome::Complete {
+            identity,
+            provider_access_token,
+        }) => {
             info!(
                 "device flow complete for {} via {}",
                 identity.login,
@@ -123,7 +136,7 @@ pub async fn poll(
             if let Some(ref token) = provider_access_token {
                 state.provider_tokens.insert(
                     (identity.provider.clone(), identity.login.clone()),
-                    token.clone()
+                    token.clone(),
                 );
                 if let Err(e) = state.save_tokens() {
                     warn!("Failed to persist tokens: {}", e);
@@ -143,20 +156,24 @@ pub async fn poll(
             info!("poll pending for provider '{}'", provider_id.as_str());
             Ok(Json(PollOut {
                 status: Some("pending".into()),
-                jwt: None, refresh_token: None, login: None,
+                jwt: None,
+                refresh_token: None,
+                login: None,
                 provider_access_token: None,
                 error: None,
             }))
-        },
+        }
         Ok(DevicePollOutcome::SlowDown) => {
             info!("poll slow_down for provider '{}'", provider_id.as_str());
             Ok(Json(PollOut {
                 status: Some("pending".into()),
-                jwt: None, refresh_token: None, login: None,
+                jwt: None,
+                refresh_token: None,
+                login: None,
                 provider_access_token: None,
                 error: Some("slow_down".into()),
             }))
-        },
+        }
         Err(e) => {
             warn!("poll error for provider '{}': {}", provider_id.as_str(), e);
             Ok(Json(PollOut {
@@ -170,7 +187,6 @@ pub async fn poll(
         }
     }
 }
-
 
 /// PAT login for providers without an OAuth device flow (GitLab).
 ///
@@ -190,18 +206,27 @@ pub async fn token_login(
     if provider_name != "gitlab" {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("provider '{}' uses the device flow; use POST /auth/device instead", provider_name) })),
+            Json(
+                json!({ "error": format!("provider '{}' uses the device flow; use POST /auth/device instead", provider_name) }),
+            ),
         ));
     }
 
-    let validated = validate_gitlab_token(&state, &inp.token).await
-        .map_err(|e| (StatusCode::UNAUTHORIZED, Json(json!({ "error": e.to_string() }))))?;
+    let validated = validate_gitlab_token(&state, &inp.token)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     let jwt = state
         .jwt
         .sign(&validated.login, "gitlab")
         .map_err(internal)?;
-    let refresh_token = state.issue_refresh_token(validated.login.clone(), ProviderId::from("gitlab"));
+    let refresh_token =
+        state.issue_refresh_token(validated.login.clone(), ProviderId::from("gitlab"));
 
     state.provider_tokens.insert(
         ("gitlab".to_string(), validated.login.clone()),
@@ -245,7 +270,10 @@ pub async fn oidc_start(
     Json(inp): Json<OidcStartIn>,
 ) -> Result<Json<OidcStartOut>, (StatusCode, Json<serde_json::Value>)> {
     if inp.code_challenge.trim().is_empty() || inp.redirect_uri.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "code_challenge and redirect_uri are required" }))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "code_challenge and redirect_uri are required" })),
+        ));
     }
     // Localhost (or explicit loopback) callbacks only — the verifier never
     // leaves the user's machine, so a public redirect URL would leak codes.
@@ -253,7 +281,10 @@ pub async fn oidc_start(
         || inp.redirect_uri.starts_with("http://localhost:")
         || inp.redirect_uri.starts_with("http://[::1]:");
     if !uri_ok {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "redirect_uri must be a localhost URL" }))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "redirect_uri must be a localhost URL" })),
+        ));
     }
 
     let cfg = state.oidc().await.map_err(|e| {
@@ -297,9 +328,17 @@ pub async fn oidc_complete(
         .oidc_pending
         .remove(&inp.key)
         .map(|(_, p)| p)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown or expired login key; restart login" }))))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "unknown or expired login key; restart login" })),
+            )
+        })?;
     if now().saturating_sub(pending.created_at) > crate::auth::oidc::OIDC_PENDING_TTL_SECS {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "login expired; restart login" }))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "login expired; restart login" })),
+        ));
     }
 
     let cfg = state.oidc().await.map_err(internal)?;
@@ -312,17 +351,29 @@ pub async fn oidc_complete(
     let access_token = cfg
         .exchange_code(&state.http, &inp.code, &inp.verifier, &redirect_uri)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
     let identity = cfg
         .fetch_identity(&state.http, &access_token)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+        })?;
 
     let jwt = state.jwt.sign(&identity.login, "oidc").map_err(internal)?;
-    let refresh_token =
-        state.issue_refresh_token(identity.login.clone(), ProviderId::from("oidc"));
+    let refresh_token = state.issue_refresh_token(identity.login.clone(), ProviderId::from("oidc"));
 
-    info!("OIDC login complete for {} via {}", identity.login, cfg.issuer);
+    info!(
+        "OIDC login complete for {} via {}",
+        identity.login, cfg.issuer
+    );
     Ok(Json(PollOut {
         status: Some("complete".into()),
         jwt: Some(jwt),
@@ -349,11 +400,19 @@ pub async fn refresh(
         .refresh_store
         .get(&inp.refresh_token)
         .map(|e| e.clone())
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(json!({ "error": "invalid refresh token" }))))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "invalid refresh token" })),
+            )
+        })?;
 
     if now() >= rec.expires_at {
         state.revoke_refresh_token(&inp.refresh_token);
-        return Err((StatusCode::UNAUTHORIZED, Json(json!({ "error": "refresh expired" }))));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "refresh expired" })),
+        ));
     }
 
     let jwt = state
@@ -366,7 +425,6 @@ pub async fn refresh(
         refresh_expires_at: Some(rec.expires_at),
     }))
 }
-
 
 /// Revokes a refresh token.
 ///
@@ -385,11 +443,17 @@ pub async fn revoke(
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("System time is before UNIX EPOCH").as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("System time is before UNIX EPOCH")
+        .as_secs()
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": e.to_string() })),
+    )
 }
 
 /// Returns the current user's claims.
@@ -399,9 +463,7 @@ fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, Json<serde_json::Value>)
 ///
 /// # Returns
 /// * `200 OK` with the claims JSON.
-pub async fn me(
-    claims: CustomClaims,
-) -> Json<CustomClaims> {
+pub async fn me(claims: CustomClaims) -> Json<CustomClaims> {
     Json(claims)
 }
 
@@ -444,12 +506,17 @@ mod tests {
     }
 
     async fn test_state_with_gitlab(base: &str) -> TestEnv {
-        let guard = lock_test_env();
-        let saved: Vec<(String, Option<String>)> =
-            ["JWT_SECRET", "NOENV_FLAKE_PATH", "STEADYSTATE_DB_PATH", "GITLAB_URL", "HCLOUD_TOKEN"]
-                .iter()
-                .map(|k| (k.to_string(), std::env::var(k).ok()))
-                .collect();
+        let guard = lock_test_env().await;
+        let saved: Vec<(String, Option<String>)> = [
+            "JWT_SECRET",
+            "NOENV_FLAKE_PATH",
+            "STEADYSTATE_DB_PATH",
+            "GITLAB_URL",
+            "HCLOUD_TOKEN",
+        ]
+        .iter()
+        .map(|k| (k.to_string(), std::env::var(k).ok()))
+        .collect();
         // SAFETY: serialized by the shared test-env lock; restored on drop.
         unsafe {
             std::env::set_var("JWT_SECRET", "test-secret-for-token-tests");
@@ -459,14 +526,18 @@ mod tests {
             std::env::remove_var("HCLOUD_TOKEN");
         }
         let state = AppState::try_new().await.expect("test AppState");
-        TestEnv { state, saved, _guard: guard }
+        TestEnv {
+            state,
+            saved,
+            _guard: guard,
+        }
     }
 
     /// Holds test env overrides until the end of the test, then restores.
     struct TestEnv {
         state: Arc<AppState>,
         saved: Vec<(String, Option<String>)>,
-        _guard: std::sync::MutexGuard<'static, ()>,
+        _guard: tokio::sync::MutexGuard<'static, ()>,
     }
 
     impl Drop for TestEnv {
@@ -491,7 +562,10 @@ mod tests {
 
         let out = token_login(
             State(state.clone()),
-            Json(TokenIn { provider: Some("gitlab".to_string()), token: "glpat-xxx".to_string() }),
+            Json(TokenIn {
+                provider: Some("gitlab".to_string()),
+                token: "glpat-xxx".to_string(),
+            }),
         )
         .await
         .expect("token login")
@@ -502,7 +576,11 @@ mod tests {
         assert!(out.refresh_token.is_some());
 
         // Refresh token is usable for JWT refresh (proves persistence path).
-        let stored: Vec<_> = state.refresh_store.iter().map(|e| e.key().clone()).collect();
+        let stored: Vec<_> = state
+            .refresh_store
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
         assert_eq!(stored.len(), 1);
     }
 
@@ -514,7 +592,10 @@ mod tests {
 
         let err = token_login(
             State(state),
-            Json(TokenIn { provider: Some("github".to_string()), token: "x".to_string() }),
+            Json(TokenIn {
+                provider: Some("github".to_string()),
+                token: "x".to_string(),
+            }),
         )
         .await
         .unwrap_err();
@@ -529,7 +610,10 @@ mod tests {
 
         let err = token_login(
             State(state),
-            Json(TokenIn { provider: None, token: "bogus".to_string() }),
+            Json(TokenIn {
+                provider: None,
+                token: "bogus".to_string(),
+            }),
         )
         .await
         .unwrap_err();
@@ -582,7 +666,7 @@ mod tests {
     }
 
     async fn test_state_with_oidc(base: &str) -> TestEnv {
-        let guard = lock_test_env();
+        let guard = lock_test_env().await;
         let saved: Vec<(String, Option<String>)> = [
             "JWT_SECRET",
             "NOENV_FLAKE_PATH",
@@ -606,7 +690,11 @@ mod tests {
             std::env::set_var("OIDC_CLIENT_SECRET", "test-csecret");
         }
         let state = AppState::try_new().await.expect("test AppState");
-        TestEnv { state, saved, _guard: guard }
+        TestEnv {
+            state,
+            saved,
+            _guard: guard,
+        }
     }
 
     #[tokio::test]
@@ -627,7 +715,9 @@ mod tests {
         .0;
         assert!(!out.key.is_empty());
         assert!(out.auth_url.contains("code_challenge=challenge-abc"));
-        assert!(out.auth_url.contains("127.0.0.1%3A9999") || out.auth_url.contains("redirect_uri="));
+        assert!(
+            out.auth_url.contains("127.0.0.1%3A9999") || out.auth_url.contains("redirect_uri=")
+        );
 
         let out = oidc_complete(
             State(state.clone()),
@@ -680,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn oidc_unconfigured_is_503() {
         // No OIDC_* env at all (other than what try_new needs).
-        let _guard = lock_test_env();
+        let _guard = lock_test_env().await;
         let saved: Vec<(String, Option<String>)> = [
             "JWT_SECRET",
             "NOENV_FLAKE_PATH",

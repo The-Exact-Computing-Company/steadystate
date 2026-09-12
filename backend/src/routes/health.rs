@@ -18,6 +18,5 @@ use crate::state::AppState;
 use std::sync::Arc;
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/", get(health_check))
+    Router::new().route("/", get(health_check))
 }

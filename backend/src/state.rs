@@ -1,16 +1,18 @@
 // backend/src/state.rs
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
 use reqwest::Client;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::info;
 use uuid::Uuid;
 
 use crate::auth;
 use crate::auth::oidc::OidcPending;
 use crate::auth::provider::{AuthProviderDyn, AuthProviderFactoryDyn};
-use crate::compute::{ComputeProvider, LocalComputeProvider, LocalProviderConfig, HetznerComputeProvider};
+use crate::compute::{
+    ComputeProvider, HetznerComputeProvider, LocalComputeProvider, LocalProviderConfig,
+};
 use crate::jwt::JwtKeys;
 use crate::models::{PendingDevice, ProviderId, RefreshRecord, Session};
 use crate::storage::Storage;
@@ -42,7 +44,7 @@ pub struct Config {
     pub gitlab_client_id: Option<String>,
     #[allow(dead_code)]
     pub gitlab_client_secret: Option<String>,
-    
+
     // Timeouts & TTLs
     #[allow(dead_code)]
     pub device_poll_interval: u64,
@@ -69,22 +71,36 @@ impl Config {
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             gitlab_client_id: std::env::var("GITLAB_CLIENT_ID").ok(),
             gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
-            
+
             device_poll_interval: std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL),
             jwt_ttl_secs: std::env::var("JWT_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_JWT_TTL),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_JWT_TTL),
             refresh_ttl_secs: std::env::var("REFRESH_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_REFRESH_TTL),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_REFRESH_TTL),
             default_session_ttl_secs: std::env::var("STEADYSTATE_DEFAULT_SESSION_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_SESSION_TTL_SECS),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_SESSION_TTL_SECS),
             max_session_ttl_secs: std::env::var("STEADYSTATE_MAX_SESSION_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_SESSION_TTL_SECS),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_MAX_SESSION_TTL_SECS),
             max_sessions_per_user: std::env::var("STEADYSTATE_MAX_SESSIONS_PER_USER")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_SESSIONS_PER_USER),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_MAX_SESSIONS_PER_USER),
             idle_ttl_secs: std::env::var("STEADYSTATE_IDLE_TTL_SECS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_IDLE_TTL_SECS),
-            
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_IDLE_TTL_SECS),
+
             noenv_flake_path: std::env::var("NOENV_FLAKE_PATH")
                 .context("NOENV_FLAKE_PATH must be set")?,
             default_compute_provider: std::env::var("STEADYSTATE_PROVIDER")
@@ -128,6 +144,11 @@ pub struct AppState {
 
     // Durable backing store (SQLite). DashMaps above stay the live store.
     pub storage: Arc<Storage>,
+    /// Per-user creation mutexes: held across cap-check + insert so
+    /// concurrent creates cannot jointly exceed the per-user cap (TOCTOU).
+    /// Entries are never removed (one small mutex per user seen); the
+    /// memory cost is negligible next to a session.
+    pub creation_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AppState {
@@ -159,7 +180,12 @@ impl AppState {
         let provider_config = LocalProviderConfig {
             session_root: std::env::var("STEADYSTATE_SESSION_ROOT")
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| dirs::home_dir().expect("HOME not set").join(".steadystate").join("sessions")),
+                .unwrap_or_else(|_| {
+                    dirs::home_dir()
+                        .expect("HOME not set")
+                        .join(".steadystate")
+                        .join("sessions")
+                }),
             flake_path: config.noenv_flake_path.clone().into(),
         };
         let local_provider = Arc::new(LocalComputeProvider::new(provider_config, http.clone()));
@@ -180,16 +206,61 @@ impl AppState {
         // Live provider handles (PIDs, SSH) cannot survive a restart, so
         // resumed sessions report Unknown health until re-provisioned —
         // but their records, endpoints and magic links are preserved.
+        // Transient states cannot survive either: no provisioning or
+        // termination task exists anymore, so Provisioning/Terminating rows
+        // are failed explicitly (never silently stuck, never resurrected).
+        // Activity observations are clamped to restart time: post-restart we
+        // cannot observe anything, so every resumed session gets one full
+        // idle TTL of grace instead of being reaped on stale signals.
         let storage = Arc::new(Storage::open(&config.db_path)?);
         let sessions = SessionStore::new();
         match storage.load_sessions() {
             Ok(saved) => {
-                for s in saved {
+                let boot = std::time::SystemTime::now();
+                let mut fixed = 0;
+                for mut s in saved {
+                    let mut touched = false;
+                    if matches!(
+                        s.state,
+                        crate::models::SessionState::Provisioning
+                            | crate::models::SessionState::Terminating
+                    ) {
+                        tracing::warn!(
+                            "Session {} was {:?} across a restart; marking Failed",
+                            s.id,
+                            s.state
+                        );
+                        s.state = crate::models::SessionState::Failed;
+                        s.error_message = Some(
+                            "Backend restarted mid-transition; provisioning/termination did not complete. Retry or terminate again.".to_string(),
+                        );
+                        s.updated_at = boot;
+                        touched = true;
+                    }
+                    if s.last_activity_at.map(|a| a < boot).unwrap_or(true) {
+                        s.last_activity_at = Some(boot);
+                        touched = true;
+                    }
+                    if touched {
+                        fixed += 1;
+                        if let Err(e) = storage.save_session(&s) {
+                            tracing::warn!("Failed to persist fixed session {}: {:#}", s.id, e);
+                        }
+                    }
                     sessions.insert(s.id.clone(), s);
                 }
-                tracing::info!("Rehydrated {} session(s) from {}", sessions.len(), config.db_path.display());
+                tracing::info!(
+                    "Rehydrated {} session(s) from {} ({} transitioned)",
+                    sessions.len(),
+                    config.db_path.display(),
+                    fixed
+                );
             }
-            Err(e) => tracing::warn!("Failed to load sessions from {}: {:#}", config.db_path.display(), e),
+            Err(e) => tracing::warn!(
+                "Failed to load sessions from {}: {:#}",
+                config.db_path.display(),
+                e
+            ),
         }
         let refresh_store = Arc::new(DashMap::new());
         match storage.load_refresh() {
@@ -203,11 +274,10 @@ impl AppState {
                     }
                 }
                 // Drop expired rows so the table does not grow forever.
-                if let Ok(pruned) = storage.prune_expired_refresh(now) {
-                    if pruned > 0 {
+                if let Ok(pruned) = storage.prune_expired_refresh(now)
+                    && pruned > 0 {
                         tracing::info!("Pruned {} expired refresh token(s)", pruned);
                     }
-                }
                 tracing::info!("Rehydrated {} live refresh token(s)", live);
             }
             Err(e) => tracing::warn!("Failed to load refresh tokens: {:#}", e),
@@ -228,6 +298,7 @@ impl AppState {
             compute_providers: Arc::new(compute_providers),
             storage,
             oidc_config: Arc::new(tokio::sync::OnceCell::new()),
+            creation_locks: Arc::new(DashMap::new()),
         });
 
         // 4. Register Auth Providers
@@ -235,9 +306,10 @@ impl AppState {
 
         Ok(state)
     }
-    
+
     pub fn register_provider_factory(&self, factory: AuthProviderFactoryDyn) {
-        self.provider_factories.insert(factory.id().to_string(), factory);
+        self.provider_factories
+            .insert(factory.id().to_string(), factory);
     }
 
     pub async fn get_or_create_provider(&self, id: &ProviderId) -> Result<AuthProviderDyn> {
@@ -245,10 +317,14 @@ impl AppState {
             return Ok(provider.clone());
         }
 
-        info!("Initializing auth provider for the first time: {}", id.as_str());
-        
+        info!(
+            "Initializing auth provider for the first time: {}",
+            id.as_str()
+        );
+
         let key = id.as_str();
-        let factory = self.provider_factories
+        let factory = self
+            .provider_factories
             .get(key)
             .ok_or_else(|| anyhow!("Unknown or unsupported auth provider: '{}'", key))?
             .clone();
@@ -300,6 +376,15 @@ impl AppState {
                     && matches!(e.state, SessionState::Provisioning | SessionState::Running)
             })
             .count()
+    }
+
+    /// Lock serializing one user's session creation (cap-check + insert).
+    /// Returned guard must be held across both operations.
+    pub fn creation_lock(&self, login: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.creation_locks
+            .entry(login.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Write-through persistence for one session record.
@@ -360,13 +445,14 @@ impl AppState {
 }
 
 fn load_tokens() -> DashMap<(String, String), String> {
-
     let dash = DashMap::new();
     if let Ok(home) = std::env::var("HOME") {
-        let file_path = std::path::PathBuf::from(home).join(".steadystate").join("tokens.json");
-        if file_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(file_path) {
-                if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
+        let file_path = std::path::PathBuf::from(home)
+            .join(".steadystate")
+            .join("tokens.json");
+        if file_path.exists()
+            && let Ok(content) = std::fs::read_to_string(file_path)
+                && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
                     for (k, v) in map {
                         if let Some((provider, login)) = k.split_once(':') {
                             dash.insert((provider.to_string(), login.to_string()), v);
@@ -374,8 +460,6 @@ fn load_tokens() -> DashMap<(String, String), String> {
                     }
                     info!("Loaded {} tokens from disk", dash.len());
                 }
-            }
-        }
     }
     dash
 }
@@ -390,11 +474,12 @@ fn now() -> u64 {
 /// Process-wide lock serializing tests that mutate process environment.
 /// Env vars are global mutable state; without this, parallel tests that
 /// set/remove vars (e.g. `HCLOUD_TOKEN`, `JWT_SECRET`) race each other.
+/// A tokio mutex (not std) so holding it across `.await` is correct.
 /// Poison-tolerant: a panicking test must not cascade into the rest.
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
-pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
-    TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-} 
+pub(crate) async fn lock_test_env() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK.lock().await
+}

@@ -1,6 +1,6 @@
-use std::path::Path;
-use anyhow::Result;
 use crate::compute::traits::RemoteExecutor;
+use anyhow::Result;
+use std::path::Path;
 
 pub struct NixEnvironment {
     pub has_flake: bool,
@@ -13,7 +13,7 @@ impl NixEnvironment {
         let has_flake = executor.exists(&repo_path.join("flake.nix")).await?;
         let has_default_nix = executor.exists(&repo_path.join("default.nix")).await?;
         let has_shell_nix = executor.exists(&repo_path.join("shell.nix")).await?;
-        
+
         Ok(Self {
             has_flake,
             has_default_nix,

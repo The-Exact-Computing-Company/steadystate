@@ -3,10 +3,12 @@ use std::path::Path;
 
 /// Supported Python versions in nixpkgs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PythonVersion {
     Python39,
     Python310,
     Python311,
+    #[default]
     Python312,
     Python313,
 }
@@ -22,21 +24,21 @@ impl PythonVersion {
             Self::Python313 => "python313",
         }
     }
-    
+
     /// Parse from a version string like "3.11" or "3.11.4"
     pub fn from_version_str(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.trim().split('.').collect();
         if parts.len() < 2 {
             return None;
         }
-        
+
         let major: u8 = parts[0].parse().ok()?;
         let minor: u8 = parts[1].parse().ok()?;
-        
+
         if major != 3 {
             return None;
         }
-        
+
         match minor {
             9 => Some(Self::Python39),
             10 => Some(Self::Python310),
@@ -46,39 +48,32 @@ impl PythonVersion {
             _ => None,
         }
     }
-    
+
     /// Parse from a version specifier like ">=3.11", ">=3.10,<3.13", "~=3.11"
     /// Returns the minimum compatible version
     pub fn from_specifier(spec: &str) -> Option<Self> {
         let spec = spec.trim();
-        
+
         // Handle common patterns:
         // ">=3.11" → 3.11
         // ">=3.10,<3.13" → 3.10 (take first/minimum)
         // "==3.11.*" → 3.11
         // "~=3.11" → 3.11
         // "^3.11" → 3.11 (poetry style)
-        
+
         for pattern in [">=", "~=", "^", "=="] {
             if let Some(rest) = spec.strip_prefix(pattern) {
                 let version_part = rest.split(',').next()?;
-                let version_part = version_part
-                    .trim_end_matches(".*")
-                    .trim_end_matches('*');
+                let version_part = version_part.trim_end_matches(".*").trim_end_matches('*');
                 return Self::from_version_str(version_part);
             }
         }
-        
+
         // Try parsing as bare version
         Self::from_version_str(spec)
     }
 }
 
-impl Default for PythonVersion {
-    fn default() -> Self {
-        Self::Python312
-    }
-}
 
 /// Detect Python version from repository files
 pub async fn detect_python_version<E: crate::compute::traits::RemoteExecutor + ?Sized>(
@@ -95,7 +90,7 @@ pub async fn detect_python_version<E: crate::compute::traits::RemoteExecutor + ?
             return Ok(version);
         }
     }
-    
+
     // Priority 2: uv.lock
     let uv_lock = repo_path.join("uv.lock");
     if executor.exists(&uv_lock).await? {
@@ -106,7 +101,7 @@ pub async fn detect_python_version<E: crate::compute::traits::RemoteExecutor + ?
             return Ok(version);
         }
     }
-    
+
     // Priority 3: pyproject.toml
     let pyproject = repo_path.join("pyproject.toml");
     if executor.exists(&pyproject).await? {
@@ -117,7 +112,7 @@ pub async fn detect_python_version<E: crate::compute::traits::RemoteExecutor + ?
             return Ok(version);
         }
     }
-    
+
     // Fallback
     tracing::info!(
         "No Python version detected, using default {}",
@@ -130,30 +125,30 @@ pub async fn detect_python_version<E: crate::compute::traits::RemoteExecutor + ?
 fn parse_requires_python(content: &str) -> Option<PythonVersion> {
     for line in content.lines() {
         let line = line.trim();
-        
+
         if line.starts_with('#') {
             continue;
         }
-        
+
         // Look for: requires-python = ">=3.11"
         // Look for: requires-python = ">=3.11"
         // Look for: requires-python = ">=3.11"
-        if line.starts_with("requires-python") {
-            if let Some((_, value_part)) = line.split_once('=') {
+        if line.starts_with("requires-python")
+            && let Some((_, value_part)) = line.split_once('=') {
                 let value = value_part.trim().trim_matches(|c| c == '"' || c == '\'');
                 return PythonVersion::from_specifier(value);
             }
-        }
     }
-    
+
     None
 }
 
 /// Generate a flake.nix for Python environment
 pub fn generate_python_flake(python_version: PythonVersion) -> String {
     let python_attr = python_version.nix_attr();
-    
-    format!(r#"{{
+
+    format!(
+        r#"{{
   description = "SteadyState Python environment";
 
   inputs = {{
@@ -217,13 +212,14 @@ pub fn generate_python_flake(python_version: PythonVersion) -> String {
       }};
     }});
 }}
-"#)
+"#
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_from_version_str() {
         assert_eq!(
@@ -238,16 +234,13 @@ mod tests {
             PythonVersion::from_version_str("3.12"),
             Some(PythonVersion::Python312)
         );
-        assert_eq!(
-            PythonVersion::from_version_str("2.7"),
-            None
-        );
+        assert_eq!(PythonVersion::from_version_str("2.7"), None);
         assert_eq!(
             PythonVersion::from_version_str("3.8"),
-            None  // Too old
+            None // Too old
         );
     }
-    
+
     #[test]
     fn test_from_specifier() {
         assert_eq!(
@@ -267,7 +260,7 @@ mod tests {
             Some(PythonVersion::Python311)
         );
     }
-    
+
     #[test]
     fn test_parse_requires_python() {
         let uv_lock = r#"
@@ -281,7 +274,7 @@ name = "requests"
             parse_requires_python(uv_lock),
             Some(PythonVersion::Python311)
         );
-        
+
         let pyproject = r#"
 [project]
 name = "myproject"

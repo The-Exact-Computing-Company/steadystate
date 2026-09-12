@@ -1,15 +1,15 @@
-use anyhow::{Context, Result, anyhow};
-use tokio::process::Command;
-use std::path::{Path, PathBuf};
-use std::io::Write;
-use std::fs;
-use std::time::SystemTime;
-use serde::{Deserialize, Serialize};
 use crate::merge;
-use walkdir::WalkDir;
-use fs2::FileExt;
-use similar::TextDiff;
+use anyhow::{Context, Result};
 use crossterm::style::Stylize;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+use similar::TextDiff;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+use tokio::process::Command;
+use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize)]
 struct WorktreeMeta {
@@ -31,20 +31,27 @@ impl SyncContext {
         let repo_root_path = if Path::new(&repo_root).is_absolute() {
             Path::new(&repo_root).to_path_buf()
         } else {
-            std::env::current_dir()?.join(&repo_root).canonicalize().unwrap_or_else(|_| Path::new(&repo_root).to_path_buf())
+            std::env::current_dir()?
+                .join(&repo_root)
+                .canonicalize()
+                .unwrap_or_else(|_| Path::new(&repo_root).to_path_buf())
         };
-        
+
         let canonical_path = repo_root_path.join("canonical");
         let worktree_path = std::env::current_dir().context("Failed to get current dir")?;
         let meta_dir = worktree_path.join(".worktree");
         let meta_path = meta_dir.join("steadystate.json");
 
         if !meta_path.exists() {
-            return Err(anyhow::anyhow!("Metadata file not found at {}. Session not initialized correctly.", meta_path.display()));
+            return Err(anyhow::anyhow!(
+                "Metadata file not found at {}. Session not initialized correctly.",
+                meta_path.display()
+            ));
         }
-        
+
         let content = fs::read_to_string(&meta_path).context("Failed to read metadata")?;
-        let meta: WorktreeMeta = serde_json::from_str(&content).context("Failed to parse metadata")?;
+        let meta: WorktreeMeta =
+            serde_json::from_str(&content).context("Failed to parse metadata")?;
 
         Ok(Self {
             repo_root_path,
@@ -58,7 +65,7 @@ impl SyncContext {
 
 pub async fn status_command() -> Result<()> {
     let ctx = SyncContext::new()?;
-    
+
     // Materialize trees
     let base_tree = merge::materialize_git_tree(&ctx.canonical_path, &ctx.meta.last_synced_commit)
         .context("Failed to materialize base tree")?;
@@ -106,7 +113,7 @@ pub async fn status_command() -> Result<()> {
     for path in deleted {
         println!("\t{}", format!("deleted:    {}", path).red());
     }
-    
+
     if !added.is_empty() {
         println!();
         println!("Untracked files:");
@@ -122,14 +129,18 @@ pub async fn status_command() -> Result<()> {
 
 pub async fn diff_command() -> Result<()> {
     let ctx = SyncContext::new()?;
-    
+
     // Materialize trees
     let base_tree = merge::materialize_git_tree(&ctx.canonical_path, &ctx.meta.last_synced_commit)
         .context("Failed to materialize base tree")?;
     let local_tree = merge::materialize_fs_tree(&ctx.worktree_path)
         .context("Failed to materialize local tree")?;
 
-    let mut all_paths: Vec<_> = base_tree.files.keys().chain(local_tree.files.keys()).collect();
+    let mut all_paths: Vec<_> = base_tree
+        .files
+        .keys()
+        .chain(local_tree.files.keys())
+        .collect();
     all_paths.sort();
     all_paths.dedup();
 
@@ -199,40 +210,43 @@ fn print_diff(path: &str, old: &[u8], new: &[u8]) {
     let diff = TextDiff::from_lines(old_str, new_str);
 
     // Use unified diff format with context
-    print!("{}", diff.unified_diff().context_radius(3).header(path, path));
+    print!(
+        "{}",
+        diff.unified_diff().context_radius(3).header(path, path)
+    );
 }
 
 pub async fn credit_command(file: &str) -> Result<()> {
     let ctx = SyncContext::new()?;
-    
+
     // Check if file exists in worktree
     let file_path = ctx.worktree_path.join(file);
     if !file_path.exists() {
         return Err(anyhow::anyhow!("File '{}' not found in worktree", file));
     }
-    
+
     // Run git blame on the file in the worktree
     // We use the worktree path directly, but git needs to know it's a git repo.
     // However, our worktree is NOT a git repo (it's a plain directory).
     // The git repo is in `canonical`.
     // So we need to run git blame in `canonical` but target the file relative to root.
-    
+
     // Wait, if worktree files are modified but not synced, git blame on canonical won't show them?
     // Correct. git blame shows committed history.
     // If the user wants to see who wrote what, they usually mean committed history.
     // Uncommitted changes in worktree are by "you" (current user).
-    
+
     let status = Command::new("git")
         .arg("-C")
         .arg(&ctx.canonical_path)
-        .args(&["blame", file])
+        .args(["blame", file])
         .status()
         .await?;
-        
+
     if !status.success() {
         return Err(anyhow::anyhow!("Failed to run git blame on '{}'", file));
     }
-    
+
     Ok(())
 }
 
@@ -263,26 +277,29 @@ pub async fn publish_command() -> Result<()> {
 
         // 2. Commit
         println!("Committing...");
-        
+
         // Generate commit message with active users
         let sync_log_path = repo_root_path.join("sync-log");
-        let users = get_active_users(&sync_log_path, &current_user).unwrap_or_else(|_| vec![current_user.clone()]);
+        let users = get_active_users(&sync_log_path, &current_user)
+            .unwrap_or_else(|_| vec![current_user.clone()]);
         let user_list = users.join(", ");
         let msg = format!("Changes from collab session between {}", user_list);
 
         let status = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
-            .args(&["add", "-A"])
+            .args(["add", "-A"])
             .status()
             .await?;
-        
-        if !status.success() { return Err(anyhow::anyhow!("git add failed")); }
+
+        if !status.success() {
+            return Err(anyhow::anyhow!("git add failed"));
+        }
 
         let diff_status = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
-            .args(&["diff", "--cached", "--quiet"])
+            .args(["diff", "--cached", "--quiet"])
             .status()
             .await?;
 
@@ -290,11 +307,19 @@ pub async fn publish_command() -> Result<()> {
             let commit_status = Command::new("git")
                 .arg("-C")
                 .arg(&canonical_path)
-                .args(&["commit", "-m", &msg, "--author", "SteadyState Bot <bot@steadystate.dev>"])
+                .args([
+                    "commit",
+                    "-m",
+                    &msg,
+                    "--author",
+                    "SteadyState Bot <bot@steadystate.dev>",
+                ])
                 .status()
                 .await?;
-                
-            if !commit_status.success() { return Err(anyhow::anyhow!("git commit failed")); }
+
+            if !commit_status.success() {
+                return Err(anyhow::anyhow!("git commit failed"));
+            }
         } else {
             println!("No changes to commit.");
         }
@@ -304,13 +329,17 @@ pub async fn publish_command() -> Result<()> {
         let push_status = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
-            .args(&["push", "origin", &session_branch])
+            .args(["push", "origin", &session_branch])
             .status()
             .await?;
-            
+
         if !push_status.success() {
-            eprintln!("❌ Push to session repo failed. The remote branch is likely ahead of your local state.");
-            eprintln!("💡 Run 'steadystate sync' to merge remote changes into your worktree, then try publishing again.");
+            eprintln!(
+                "❌ Push to session repo failed. The remote branch is likely ahead of your local state."
+            );
+            eprintln!(
+                "💡 Run 'steadystate sync' to merge remote changes into your worktree, then try publishing again."
+            );
             return Err(anyhow::anyhow!("Push failed"));
         }
 
@@ -318,21 +347,23 @@ pub async fn publish_command() -> Result<()> {
         println!("Pushing to GitHub...");
         // The 'repo' directory is a sibling of 'canonical'
         let repo_path = canonical_path.parent().unwrap().join("repo");
-        
+
         // We use -C because 'repo' is a bare repository (or might be)
         // If it's not bare, this still works if pointing to the .git dir, but here 'repo' IS the git dir if bare.
         // However, local_provider.rs initializes it as a clone. If it's a bare clone, 'repo' is the dir.
-        
+
         let github_push_status = Command::new("git")
             .arg("-C")
             .arg(&repo_path)
-            .args(&["push", "origin", &session_branch])
+            .args(["push", "origin", &session_branch])
             .status()
             .await?;
 
         if !github_push_status.success() {
             eprintln!("⚠️  Warning: Push to GitHub failed.");
-            eprintln!("   Your changes are saved in the session, but could not be pushed to GitHub.");
+            eprintln!(
+                "   Your changes are saved in the session, but could not be pushed to GitHub."
+            );
             eprintln!("   Check your internet connection or GitHub permissions.");
             // We don't return error here because the session state is consistent locally
         }
@@ -360,11 +391,11 @@ fn get_active_users(log_path: &Path, current_user: &str) -> Result<Vec<String>> 
             }
         }
     }
-    
+
     if users.is_empty() {
         users.push(current_user.to_string());
     }
-    
+
     Ok(users)
 }
 
@@ -373,10 +404,10 @@ fn sync_canonical_from_worktree(worktree_path: &Path, canonical_path: &Path) -> 
     for entry in fs::read_dir(canonical_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.file_name().map_or(false, |n| n == ".git") { 
-            continue; 
+        if path.file_name().is_some_and(|n| n == ".git") {
+            continue;
         }
-        
+
         if path.is_dir() {
             fs::remove_dir_all(&path)?;
         } else {
@@ -385,17 +416,23 @@ fn sync_canonical_from_worktree(worktree_path: &Path, canonical_path: &Path) -> 
     }
 
     // 2. Copy from worktree (except .worktree, .git)
-    for entry in WalkDir::new(worktree_path).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(worktree_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
-        
+
         let rel_path = path.strip_prefix(worktree_path)?;
         let rel_path_str = rel_path.to_string_lossy();
-        
-        if rel_path_str.starts_with(".git") || rel_path_str.contains("/.git/") || 
-           rel_path_str.starts_with(".worktree") || rel_path_str.contains("/.worktree/") {
+
+        if rel_path_str.starts_with(".git")
+            || rel_path_str.contains("/.git/")
+            || rel_path_str.starts_with(".worktree")
+            || rel_path_str.contains("/.worktree/")
+        {
             continue;
         }
 
@@ -447,32 +484,33 @@ pub async fn sync() -> Result<()> {
         let fetch_status = Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
-            .args(&["fetch", "origin", &session_branch])
+            .args(["fetch", "origin", &session_branch])
             .output() // Use output() to capture stderr
             .await
             .context("Failed to fetch from origin")?;
-        
+
         let canonical_tree = if !fetch_status.status.success() {
             // Check if it's because the branch doesn't exist
             // If so, we treat it as a new branch (first push)
             // Canonical state is effectively the base state (no remote changes yet)
             println!("⚠️  Remote branch not found. Assuming first push for this session.");
             println!("   Using base commit as canonical state.");
-            
+
             // Materialize base tree as canonical tree
-            merge::materialize_git_tree(&canonical_path, &base_commit).context("Failed to materialize base tree (as canonical)")?
+            merge::materialize_git_tree(&canonical_path, &base_commit)
+                .context("Failed to materialize base tree (as canonical)")?
         } else {
             // Use origin/session_branch as canonical ref
             let canonical_ref = format!("origin/{}", session_branch);
-            
+
             // Verify the ref exists
             let verify_status = Command::new("git")
                 .arg("-C")
                 .arg(&canonical_path)
-                .args(&["rev-parse", "--verify", &canonical_ref])
+                .args(["rev-parse", "--verify", &canonical_ref])
                 .status()
                 .await?;
-            
+
             if !verify_status.success() {
                 // Should not happen if fetch succeeded, but just in case
                 return Err(anyhow::anyhow!(
@@ -486,7 +524,7 @@ pub async fn sync() -> Result<()> {
             let reset_status = Command::new("git")
                 .arg("-C")
                 .arg(&canonical_path)
-                .args(&["reset", "--hard", &canonical_ref])
+                .args(["reset", "--hard", &canonical_ref])
                 .status()
                 .await
                 .context("Failed to reset local branch")?;
@@ -494,22 +532,31 @@ pub async fn sync() -> Result<()> {
             if !reset_status.success() {
                 return Err(anyhow::anyhow!("Failed to reset to remote branch"));
             }
-            
-            merge::materialize_git_tree(&canonical_path, &canonical_ref).context("Failed to materialize canonical tree")?
+
+            merge::materialize_git_tree(&canonical_path, &canonical_ref)
+                .context("Failed to materialize canonical tree")?
         };
 
         // 4. Materialize trees
         println!("Materializing trees...");
-        let base_tree = merge::materialize_git_tree(&canonical_path, &base_commit).context("Failed to materialize base tree")?;
-        
-        let local_tree = merge::materialize_fs_tree(&worktree_path).context("Failed to materialize local tree")?;
+        let base_tree = merge::materialize_git_tree(&canonical_path, &base_commit)
+            .context("Failed to materialize base tree")?;
+
+        let local_tree = merge::materialize_fs_tree(&worktree_path)
+            .context("Failed to materialize local tree")?;
 
         // Check for changes before merging
         println!("Detecting changes...");
-        let local_changed = local_tree.files.len() != base_tree.files.len() 
-            || local_tree.files.iter().any(|(k, v)| base_tree.files.get(k) != Some(v));
+        let local_changed = local_tree.files.len() != base_tree.files.len()
+            || local_tree
+                .files
+                .iter()
+                .any(|(k, v)| base_tree.files.get(k) != Some(v));
         let remote_changed = canonical_tree.files.len() != base_tree.files.len()
-            || canonical_tree.files.iter().any(|(k, v)| base_tree.files.get(k) != Some(v));
+            || canonical_tree
+                .files
+                .iter()
+                .any(|(k, v)| base_tree.files.get(k) != Some(v));
 
         if !local_changed && !remote_changed {
             println!("No changes detected. Already up to date.");
@@ -526,22 +573,24 @@ pub async fn sync() -> Result<()> {
 
         // 5. Merge
         println!("Merging...");
-        let merged_tree = merge::merge_trees(&base_tree, &local_tree, &canonical_tree).context("Merge failed")?;
+        let merged_tree =
+            merge::merge_trees(&base_tree, &local_tree, &canonical_tree).context("Merge failed")?;
 
         // 6. Apply to canonical with safety checks and backup
         println!("Creating safety backup...");
-        let backup_ref = format!("refs/backups/sync-{}", 
+        let backup_ref = format!(
+            "refs/backups/sync-{}",
             SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs()
         );
-        
+
         let current_head = get_git_head(&canonical_path).await?;
         Command::new("git")
             .arg("-C")
             .arg(&canonical_path)
-            .args(&["update-ref", &backup_ref, &current_head])
+            .args(["update-ref", &backup_ref, &current_head])
             .status()
             .await
             .context("Failed to create backup ref")?;
@@ -550,27 +599,33 @@ pub async fn sync() -> Result<()> {
         let canonical_path_clone = canonical_path.clone();
         let merged_tree_clone = merged_tree.clone();
         let session_branch_clone = session_branch.clone();
-        
+
         let apply_result = tokio::task::spawn_blocking(move || {
-            apply_tree_to_canonical(&canonical_path_clone, &merged_tree_clone, &session_branch_clone)
-        }).await.context("Apply task panicked")?;
+            apply_tree_to_canonical(
+                &canonical_path_clone,
+                &merged_tree_clone,
+                &session_branch_clone,
+            )
+        })
+        .await
+        .context("Apply task panicked")?;
 
         if let Err(e) = apply_result {
             eprintln!("❌ Failed to apply tree: {}", e);
             eprintln!("🔄 Attempting recovery from backup...");
-            
+
             // Restore from backup
             let reset_status = Command::new("git")
                 .arg("-C")
                 .arg(&canonical_path)
-                .args(&["reset", "--hard", &backup_ref])
+                .args(["reset", "--hard", &backup_ref])
                 .status()
                 .await;
-                
+
             match reset_status {
                 Ok(status) if status.success() => {
                     return Err(anyhow::anyhow!(
-                        "Sync failed but successfully restored previous state. Error: {}", 
+                        "Sync failed but successfully restored previous state. Error: {}",
                         e
                     ));
                 }
@@ -585,7 +640,7 @@ pub async fn sync() -> Result<()> {
             }
         }
 
-    // 7. Commit
+        // 7. Commit
         println!("Committing...");
         changes = commit_changes(&canonical_path, &session_branch, &user).await?;
 
@@ -593,9 +648,9 @@ pub async fn sync() -> Result<()> {
 
         // 8. Update metadata IMMEDIATELY after commit
         let new_head = get_git_head(&canonical_path).await?;
-        let new_meta = WorktreeMeta { 
+        let new_meta = WorktreeMeta {
             session_branch: session_branch.clone(),
-            last_synced_commit: new_head 
+            last_synced_commit: new_head,
         };
         fs::create_dir_all(&meta_dir)?;
         fs::write(&meta_path, serde_json::to_string_pretty(&new_meta)?)?;
@@ -606,10 +661,10 @@ pub async fn sync() -> Result<()> {
     let push_status = Command::new("git")
         .arg("-C")
         .arg(&canonical_path)
-        .args(&["push", "origin", &session_branch])
+        .args(["push", "origin", &session_branch])
         .status()
         .await?;
-    
+
     if !push_status.success() {
         // This likely means someone else pushed while we were syncing
         // The user should sync again to get their changes
@@ -617,19 +672,19 @@ pub async fn sync() -> Result<()> {
         eprintln!("💡 Run 'steadystate sync' again to integrate their changes.");
         return Err(anyhow::anyhow!("Push failed - please sync again"));
     }
-    
+
     // 10. Reset local worktree
     println!("Refreshing worktree...");
     sync_worktree_from_canonical(&canonical_path, &worktree_path)?;
 
     // 11. Update sync-log
     let sync_log_path = repo_root_path.join("sync-log");
-    
+
     let timestamp = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-        
+
     append_to_sync_log(&sync_log_path, &user, timestamp, changes).await?;
 
     println!("✅ Sync complete!");
@@ -653,16 +708,18 @@ async fn commit_changes(repo_path: &Path, _branch: &str, user: &str) -> Result<V
     let status = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(&["add", "-A"])
+        .args(["add", "-A"])
         .status()
         .await?;
-    
-    if !status.success() { return Err(anyhow::anyhow!("git add failed")); }
+
+    if !status.success() {
+        return Err(anyhow::anyhow!("git add failed"));
+    }
 
     let diff_status = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(&["diff", "--cached", "--quiet"])
+        .args(["diff", "--cached", "--quiet"])
         .status()
         .await?;
 
@@ -674,17 +731,19 @@ async fn commit_changes(repo_path: &Path, _branch: &str, user: &str) -> Result<V
 
         let msg = format!("sync: SteadyState session by {}", user);
         let author = format!("{} <{}@steadystate.local>", user, user);
-        
+
         let commit_status = Command::new("git")
             .arg("-C")
             .arg(repo_path)
-            .args(&["commit", "-m", &msg, "--author", &author])
+            .args(["commit", "-m", &msg, "--author", &author])
             .status()
             .await?;
-            
-        if !commit_status.success() { return Err(anyhow::anyhow!("git commit failed")); }
+
+        if !commit_status.success() {
+            return Err(anyhow::anyhow!("git commit failed"));
+        }
     }
-    
+
     Ok(changes)
 }
 
@@ -692,7 +751,7 @@ async fn get_staged_changes(repo_path: &Path) -> Result<Vec<FileChange>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(&["diff", "--cached", "--unified=0"])
+        .args(["diff", "--cached", "--unified=0"])
         .output()
         .await?;
 
@@ -722,26 +781,25 @@ async fn get_staged_changes(repo_path: &Path) -> Result<Vec<FileChange>> {
             // We care about the + part (new file)
             // +10,2 means start at 10, 2 lines -> 10:11
             // +15 means start at 15, 1 line -> 15:15
-            
+
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
                 let new_hunk = parts[2]; // +10,2
-                if new_hunk.starts_with('+') {
-                    let hunk_content = &new_hunk[1..];
+                if let Some(hunk_content) = new_hunk.strip_prefix('+') {
                     let range: Vec<&str> = hunk_content.split(',').collect();
-                    
+
                     let start_line = range[0].parse::<u64>().unwrap_or(0);
                     let count = if range.len() > 1 {
                         range[1].parse::<u64>().unwrap_or(1)
                     } else {
                         1
                     };
-                    
+
                     if start_line > 0 {
                         let end_line = start_line + count - 1;
                         // If count is 0, it's a deletion, but let's ignore for now or show as single line
                         let end_line = if count == 0 { start_line } else { end_line };
-                        
+
                         changes.push(FileChange {
                             file: current_file.clone(),
                             lines: format!("{}:{}", start_line, end_line),
@@ -751,59 +809,67 @@ async fn get_staged_changes(repo_path: &Path) -> Result<Vec<FileChange>> {
             }
         }
     }
-    
+
     // Deduplicate changes per file? Or just list all ranges?
     // User asked for "analysis.R 10:12", implies one entry per range.
     // Let's keep all ranges.
-    
+
     Ok(changes)
 }
 
-async fn append_to_sync_log(log_path: &Path, user: &str, timestamp: u64, changes: Vec<FileChange>) -> Result<()> {
+async fn append_to_sync_log(
+    log_path: &Path,
+    user: &str,
+    timestamp: u64,
+    changes: Vec<FileChange>,
+) -> Result<()> {
     let log_path = log_path.to_path_buf();
     let user = user.to_string();
-    
+
     tokio::task::spawn_blocking(move || {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .context("Failed to open sync-log")?;
-        
+
         // Lock for append
-        file.lock_exclusive()
-            .context("Failed to lock sync-log")?;
-        
+        file.lock_exclusive().context("Failed to lock sync-log")?;
+
         let entry = SyncLogEntry {
             timestamp,
             user,
             changes,
         };
-        
+
         let mut log_entry = serde_json::to_string(&entry).unwrap_or_default();
         log_entry.push('\n');
-        
-        (&file).write_all(log_entry.as_bytes())
+
+        (&file)
+            .write_all(log_entry.as_bytes())
             .context("Failed to write to sync-log")?;
-        
+
         if let Err(e) = FileExt::unlock(&file) {
             tracing::warn!("Failed to unlock sync-log: {}", e);
         }
         Ok(())
-    }).await.context("Sync log task panicked")?
+    })
+    .await
+    .context("Sync log task panicked")?
 }
 
 async fn get_git_head(repo_path: &Path) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(&["rev-parse", "HEAD"])
+        .args(["rev-parse", "HEAD"])
         .output()
         .await?;
-    if !output.status.success() { return Err(anyhow::anyhow!("git rev-parse HEAD failed")); }
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("git rev-parse HEAD failed"));
+    }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
 
 /// WARNING: This function is DESTRUCTIVE.
 /// It deletes all files in `repo_path` (except .git) and replaces them with `tree`.
@@ -821,7 +887,7 @@ fn apply_tree_to_canonical(
             repo_path.display()
         ));
     }
-    
+
     // Safety check 2: Must end with /canonical
     if !repo_path.ends_with("canonical") {
         return Err(anyhow::anyhow!(
@@ -830,20 +896,22 @@ fn apply_tree_to_canonical(
             repo_path.display()
         ));
     }
-    
+
     // Safety check 3: Verify we're on the expected branch
     let current_branch_output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .context("Failed to get current branch")?;
-    
+
     if !current_branch_output.status.success() {
         return Err(anyhow::anyhow!("Failed to determine current branch"));
     }
-    
-    let current_branch = String::from_utf8_lossy(&current_branch_output.stdout).trim().to_string();
+
+    let current_branch = String::from_utf8_lossy(&current_branch_output.stdout)
+        .trim()
+        .to_string();
     if current_branch != expected_branch {
         return Err(anyhow::anyhow!(
             "Safety check failed: Expected branch '{}' but on '{}'. \
@@ -852,21 +920,24 @@ fn apply_tree_to_canonical(
             current_branch
         ));
     }
-    
+
     // Safety check 4: Verify working tree is clean - REMOVED as redundant after reset --hard
     // We just performed a hard reset to the remote branch, so the working tree is guaranteed clean.
-    
+
     // All safety checks passed - proceed with deletion
-    tracing::info!("Applying tree to {} (passed all safety checks)", repo_path.display());
-    
+    tracing::info!(
+        "Applying tree to {} (passed all safety checks)",
+        repo_path.display()
+    );
+
     // Delete everything except .git
     for entry in fs::read_dir(repo_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.file_name().map_or(false, |n| n == ".git") { 
-            continue; 
+        if path.file_name().is_some_and(|n| n == ".git") {
+            continue;
         }
-        
+
         if path.is_dir() {
             fs::remove_dir_all(&path)
                 .with_context(|| format!("Failed to remove directory {}", path.display()))?;
@@ -886,15 +957,23 @@ fn apply_tree_to_canonical(
         fs::write(&full_path, content)
             .with_context(|| format!("Failed to write file {}", full_path.display()))?;
     }
-    
+
     Ok(())
 }
 
 fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> Result<()> {
     // 1. Clear worktree (except .worktree and .git if it exists)
-    for entry in WalkDir::new(worktree_path).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(worktree_path)
+        .min_depth(1)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
-        let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
         if name == ".worktree" || name == ".git" {
             continue;
         }
@@ -906,15 +985,18 @@ fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> 
     }
 
     // 2. Copy from canonical (except .git)
-    for entry in WalkDir::new(canonical_path).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(canonical_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
-        
+
         let rel_path = path.strip_prefix(canonical_path)?;
         let rel_path_str = rel_path.to_string_lossy();
-        
+
         if rel_path_str.starts_with(".git") || rel_path_str.contains("/.git/") {
             continue;
         }
@@ -938,9 +1020,9 @@ fn lock_canonical(repo_path: &Path) -> Result<std::fs::File> {
         .create(true)
         .open(&lock_path)
         .context("Failed to open lock file")?;
-    
+
     file.lock_exclusive().context("Failed to acquire lock")?;
-    
+
     // Write PID to lock file for debugging
     // Note: We do not remove the file on drop because that introduces a race condition
     // where a new process creates a new inode while another process locks the old one.
@@ -951,6 +1033,6 @@ fn lock_canonical(repo_path: &Path) -> Result<std::fs::File> {
     if let Err(e) = file.write_all(format!("{}", std::process::id()).as_bytes()) {
         tracing::warn!("Failed to write PID to lock file: {}", e);
     }
-    
+
     Ok(file)
 }

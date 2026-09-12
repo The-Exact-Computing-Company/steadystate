@@ -26,6 +26,11 @@ use crate::state::AppState;
 /// loop would only add lock contention on the session map.
 pub const REAP_INTERVAL_SECS: u64 = 60;
 
+/// Provisioning sessions older than this are declared failed: cloud-init +
+/// nix builds take minutes, never tens of minutes. Stuck rows would
+/// otherwise live forever and permanently consume per-user cap.
+pub const PROVISIONING_TIMEOUT_SECS: u64 = 30 * 60;
+
 /// Run the reap loop forever. Spawn once from `main`.
 pub async fn run_forever(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_secs(REAP_INTERVAL_SECS));
@@ -41,7 +46,14 @@ pub async fn run_forever(state: Arc<AppState>) {
 /// Idle duration of a session at `now`, resolving the freshest signal:
 /// stored activity refreshed from the provider, else the stored value,
 /// else creation time (covers legacy rows and unobservable sessions).
-async fn idle_for(state: &Arc<AppState>, session: &Session, now: SystemTime) -> Duration {
+/// Returns `None` when provider signals fail: unknown must *defer* the
+/// idle reap (a broken signal must never accelerate killing), while
+/// lifetime expiry still applies.
+async fn idle_for(
+    state: &Arc<AppState>,
+    session: &Session,
+    now: SystemTime,
+) -> Option<Duration> {
     let mut best = session.last_activity_at;
     if let Some(provider) = state.compute_providers.get(&session.compute_provider) {
         match provider.last_activity(session).await {
@@ -52,7 +64,12 @@ async fn idle_for(state: &Arc<AppState>, session: &Session, now: SystemTime) -> 
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::debug!("Activity signal failed for {}: {:#}", session.id, e);
+                tracing::warn!(
+                    "Activity signal failed for {}; skipping idle reap this round: {:#}",
+                    session.id,
+                    e
+                );
+                return None;
             }
         }
     }
@@ -64,7 +81,7 @@ async fn idle_for(state: &Arc<AppState>, session: &Session, now: SystemTime) -> 
         state.persist_session(&session.id);
     }
     let baseline = best.or(Some(session.created_at)).unwrap_or(now);
-    now.duration_since(baseline).unwrap_or(Duration::ZERO)
+    Some(now.duration_since(baseline).unwrap_or(Duration::ZERO))
 }
 
 fn humandur(d: Duration) -> String {
@@ -81,18 +98,26 @@ fn humandur(d: Duration) -> String {
 }
 
 /// One sweep: terminate every Running session past lifetime expiry or the
-/// idle timeout. Returns the number of sessions sent to termination.
+/// idle timeout, and fail Provisioning sessions stuck past the provisioning
+/// timeout. Returns the number of sessions sent to termination.
 /// Legacy records without `expires_at` are never lifetime-reaped.
 pub async fn reap_once(state: &Arc<AppState>) -> usize {
     let now = SystemTime::now();
     let idle_ttl = Duration::from_secs(state.config.idle_ttl_secs);
+    let prov_timeout = Duration::from_secs(PROVISIONING_TIMEOUT_SECS);
 
-    // Snapshot ids first to keep map borrows short.
+    // Snapshot first to keep map borrows short.
     let running: Vec<String> = state
         .sessions
         .iter()
         .filter(|e| e.state == SessionState::Running)
         .map(|e| e.id.clone())
+        .collect();
+    let provisioning: Vec<(String, SystemTime)> = state
+        .sessions
+        .iter()
+        .filter(|e| e.state == SessionState::Provisioning)
+        .map(|e| (e.id.clone(), e.created_at))
         .collect();
 
     let mut reaped = 0;
@@ -100,22 +125,22 @@ pub async fn reap_once(state: &Arc<AppState>) -> usize {
         let Some(session) = state.sessions.get(&id).map(|e| e.clone()) else {
             continue;
         };
-        let lifetime_due = session
-            .expires_at
-            .map(|exp| exp <= now)
-            .unwrap_or(false);
+        let lifetime_due = session.expires_at.map(|exp| exp <= now).unwrap_or(false);
 
-        let (idle_due, idle) = if state.config.idle_ttl_secs == 0 {
-            (false, Duration::ZERO)
+        // Unknown signals defer: only a *known* idle duration kills.
+        let idle_due = if state.config.idle_ttl_secs == 0 {
+            false
         } else {
-            let idle = idle_for(state, &session, now).await;
-            (idle >= idle_ttl, idle)
+            matches!(idle_for(state, &session, now).await, Some(d) if d >= idle_ttl)
         };
 
         if !lifetime_due && !idle_due {
             continue;
         }
         if idle_due && !lifetime_due {
+            let idle = idle_for(state, &session, now)
+                .await
+                .unwrap_or(Duration::ZERO);
             let reason = format!("terminated: idle for {}", humandur(idle));
             tracing::info!("Reaper: session {} {}", id, reason);
             if let Some(mut s) = state.sessions.get_mut(&id) {
@@ -133,6 +158,31 @@ pub async fn reap_once(state: &Arc<AppState>) -> usize {
             }
         }
     }
+
+    // Stuck provisioning: fail them so they stop consuming cap. Provider
+    // cleanup runs best-effort through terminate_inner (a terminate without
+    // a live handle is a safe no-op at record level; workspace/VM leftovers
+    // are handled by provider best-effort paths).
+    for (id, created_at) in provisioning {
+        if now.duration_since(created_at).unwrap_or(Duration::ZERO) < prov_timeout {
+            continue;
+        }
+        tracing::warn!(
+            "Reaper: session {} stuck Provisioning past {:?}; failing it",
+            id,
+            prov_timeout
+        );
+        if let Some(mut s) = state.sessions.get_mut(&id) {
+            s.error_message = Some(format!(
+                "provisioning timed out after {:?}; retry with a fresh session",
+                prov_timeout
+            ));
+        }
+        state.persist_session(&id);
+        if terminate_inner(state, &id).await.is_ok() {
+            reaped += 1;
+        }
+    }
     reaped
 }
 
@@ -143,7 +193,7 @@ mod tests {
     use crate::state::lock_test_env;
 
     async fn test_state() -> Arc<AppState> {
-        let _guard = lock_test_env();
+        let _guard = lock_test_env().await;
         let saved: Vec<(String, Option<String>)> = [
             "JWT_SECRET",
             "NOENV_FLAKE_PATH",
@@ -188,7 +238,24 @@ mod tests {
         expires: Option<std::time::SystemTime>,
         last_activity: Option<std::time::SystemTime>,
     ) {
-        let now = std::time::SystemTime::now();
+        seed_created(
+            state,
+            id,
+            st,
+            expires,
+            last_activity,
+            std::time::SystemTime::now(),
+        );
+    }
+
+    fn seed_created(
+        state: &Arc<AppState>,
+        id: &str,
+        st: SessionState,
+        expires: Option<std::time::SystemTime>,
+        last_activity: Option<std::time::SystemTime>,
+        created: std::time::SystemTime,
+    ) {
         state.sessions.insert(
             id.to_string(),
             Session {
@@ -200,8 +267,8 @@ mod tests {
                 endpoint: None,
                 compute_provider: "local".to_string(),
                 creator_login: "alice".to_string(),
-                created_at: now,
-                updated_at: now,
+                created_at: created,
+                updated_at: created,
                 error_message: None,
                 magic_link: None,
                 host_public_key: None,
@@ -223,11 +290,10 @@ mod tests {
         // Local provider has no live handle for seeds, so cleanup resolves
         // immediately; poll for the spawned task to record Terminated.
         for _ in 0..50 {
-            if let Some(s) = state.sessions.get(id) {
-                if s.state == SessionState::Terminated {
+            if let Some(s) = state.sessions.get(id)
+                && s.state == SessionState::Terminated {
                     return;
                 }
-            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("{} was not terminated", id);
@@ -241,16 +307,40 @@ mod tests {
 
         // idle_ttl=60: give these fresh activity so only lifetime matters.
         let now = SystemTime::now();
-        seed(&state, "expired", SessionState::Running, Some(past), Some(now));
-        seed(&state, "live", SessionState::Running, Some(future), Some(now));
+        seed(
+            &state,
+            "expired",
+            SessionState::Running,
+            Some(past),
+            Some(now),
+        );
+        seed(
+            &state,
+            "live",
+            SessionState::Running,
+            Some(future),
+            Some(now),
+        );
         seed(&state, "legacy", SessionState::Running, None, Some(now));
-        seed(&state, "provisioning", SessionState::Provisioning, Some(past), Some(now));
+        seed(
+            &state,
+            "provisioning",
+            SessionState::Provisioning,
+            Some(past),
+            Some(now),
+        );
 
         assert_eq!(reap_once(&state).await, 1);
         wait_terminated(&state, "expired").await;
 
-        assert_eq!(state.sessions.get("live").unwrap().state, SessionState::Running);
-        assert_eq!(state.sessions.get("legacy").unwrap().state, SessionState::Running);
+        assert_eq!(
+            state.sessions.get("live").unwrap().state,
+            SessionState::Running
+        );
+        assert_eq!(
+            state.sessions.get("legacy").unwrap().state,
+            SessionState::Running
+        );
         assert_eq!(
             state.sessions.get("provisioning").unwrap().state,
             SessionState::Provisioning
@@ -263,10 +353,28 @@ mod tests {
         let state = test_state().await;
         let future = future(3600);
 
-        seed(&state, "idle", SessionState::Running, Some(future), Some(ago(3600)));
-        seed(&state, "active", SessionState::Running, Some(future), Some(SystemTime::now()));
+        seed(
+            &state,
+            "idle",
+            SessionState::Running,
+            Some(future),
+            Some(ago(3600)),
+        );
+        seed(
+            &state,
+            "active",
+            SessionState::Running,
+            Some(future),
+            Some(SystemTime::now()),
+        );
         // Legacy row without activity falls back to creation time (now) -> kept.
-        seed(&state, "legacy-idle", SessionState::Running, Some(future), None);
+        seed(
+            &state,
+            "legacy-idle",
+            SessionState::Running,
+            Some(future),
+            None,
+        );
 
         assert_eq!(reap_once(&state).await, 1);
         wait_terminated(&state, "idle").await;
@@ -280,7 +388,10 @@ mod tests {
             .unwrap_or_default();
         assert!(msg.starts_with("terminated: idle for"), "{}", msg);
 
-        assert_eq!(state.sessions.get("active").unwrap().state, SessionState::Running);
+        assert_eq!(
+            state.sessions.get("active").unwrap().state,
+            SessionState::Running
+        );
         assert_eq!(
             state.sessions.get("legacy-idle").unwrap().state,
             SessionState::Running
@@ -305,6 +416,43 @@ mod tests {
         assert_eq!(
             state.sessions.get("idle").unwrap().state,
             SessionState::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn fails_stuck_provisioning() {
+        let state = test_state().await;
+        seed_created(
+            &state,
+            "stuck",
+            SessionState::Provisioning,
+            None,
+            Some(SystemTime::now()),
+            ago(3600),
+        );
+        seed_created(
+            &state,
+            "fresh-prov",
+            SessionState::Provisioning,
+            None,
+            Some(SystemTime::now()),
+            ago(10),
+        );
+        assert_eq!(reap_once(&state).await, 1);
+        wait_terminated(&state, "stuck").await;
+        let stuck = state.sessions.get("stuck").unwrap();
+        assert!(
+            stuck
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("provisioning timed out"),
+            "{:?}",
+            stuck.error_message
+        );
+        assert_eq!(
+            state.sessions.get("fresh-prov").unwrap().state,
+            SessionState::Provisioning
         );
     }
 

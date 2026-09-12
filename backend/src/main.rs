@@ -1,10 +1,10 @@
 // backend/src/main.rs
 
 // ... (same imports)
-use std::net::SocketAddr;
 use axum::Router;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use std::net::SocketAddr;
 use steadystate_backend::state::AppState;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/health", steadystate_backend::routes::health::router())
         // Pass Arc<AppState> directly - do NOT dereference and clone!
         // Each clone of Arc points to the same underlying AppState.
-        .with_state(state.clone()) 
+        .with_state(state.clone())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
@@ -44,4 +44,4 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
-} 
+}

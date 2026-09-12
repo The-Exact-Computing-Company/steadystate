@@ -12,21 +12,27 @@ fn up_refreshes_proactively_when_jwt_expired() {
         // Proactive refresh call
         MockResponse::Json(json!({ "jwt": "fresh-jwt-123" })),
         // Session creation call
-        MockResponse::Json(json!({ "id": "session-xyz", "state": "Running", "endpoint": "ssh://fresh", "message": null, "compute_provider": "local" })),
+        MockResponse::Json(
+            json!({ "id": "session-xyz", "state": "Running", "endpoint": "ssh://fresh", "message": null, "compute_provider": "local" }),
+        ),
     ];
     let mut harness = TestHarness::new(script);
     harness.create_expired_session();
     harness.set_keyring_password("tester", "refresh-token-abc");
     harness.set_keyring_password("tester_access", "access-token-123");
 
-    let (out, reqs) = harness.run_cli_and_assert_success(&["up", "https://github.com/example/repo", "--env=noenv", "--mode=pair"]);
+    let (out, reqs) = harness.run_cli_and_assert_success(&[
+        "up",
+        "https://github.com/example/repo",
+        "--env=noenv",
+        "--mode=pair",
+    ]);
 
     assert_eq!(reqs.len(), 2);
     assert!(reqs[0].starts_with("POST /auth/refresh"));
     assert!(reqs[1].starts_with("POST /sessions"));
     assert!(String::from_utf8_lossy(&out.stdout).contains("session-xyz"));
 }
-
 
 #[test]
 fn up_errors_gracefully_if_server_returns_401() {
@@ -39,14 +45,22 @@ fn up_errors_gracefully_if_server_returns_401() {
     harness.set_keyring_password("tester_access", "access-token-123");
 
     // Run the CLI but don't assert success
-    let output = harness.run_cli(&["up", "https://github.com/example/repo", "--env=noenv", "--mode=pair"]);
+    let output = harness.run_cli(&[
+        "up",
+        "https://github.com/example/repo",
+        "--env=noenv",
+        "--mode=pair",
+    ]);
     harness.join_server();
 
     // Assert that the command failed as expected
-    assert!(!output.status.success(), "CLI should exit with a non-zero status");
-    
+    assert!(
+        !output.status.success(),
+        "CLI should exit with a non-zero status"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     // This is the key part of the error message from our `anyhow::bail!` call.
     // By checking for this specific substring, we are robust against formatting
     // changes from the `tracing` crate or the error prefix in `main.rs`.

@@ -1,15 +1,20 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::collections::HashMap;
-use anyhow::{Result, anyhow, Context};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::compute::{
-    traits::{ComputeProvider, ProviderCapabilities, SessionHealth, RemoteExecutor},
-    types::SessionStartResult,
-    common::{git_ops::GitOps, ssh_keys::SshKeyManager, sshd::{self, SshdConfig, SshdLogLevel}, scripts},
+    common::{
+        git_ops::GitOps,
+        scripts,
+        ssh_keys::SshKeyManager,
+        sshd::{self, SshdConfig, SshdLogLevel},
+    },
     providers::local::executor::LocalExecutor,
+    traits::{ComputeProvider, ProviderCapabilities, RemoteExecutor, SessionHealth},
+    types::SessionStartResult,
 };
 use crate::models::{Session, SessionRequest};
 
@@ -45,7 +50,6 @@ struct WorkspaceInfo {
     repo_path: PathBuf,
 }
 
-
 impl LocalComputeProvider {
     pub fn new(config: LocalProviderConfig, http_client: reqwest::Client) -> Self {
         Self {
@@ -56,7 +60,7 @@ impl LocalComputeProvider {
             http_client,
         }
     }
-    
+
     /// For testing with mock executor
     pub fn with_executor(
         config: LocalProviderConfig,
@@ -71,15 +75,15 @@ impl LocalComputeProvider {
             http_client,
         }
     }
-    
+
     async fn setup_workspace(&self, session_id: &str) -> Result<WorkspaceInfo> {
         let base = self.config.session_root.join(session_id);
-        
+
         self.executor.mkdir_p(&base, 0o700).await?;
-        
+
         let repo_path = base.join("repo");
         self.executor.mkdir_p(&repo_path, 0o700).await?;
-        
+
         Ok(WorkspaceInfo {
             root: base,
             repo_path,
@@ -102,10 +106,20 @@ impl LocalComputeProvider {
             None | Some("auto") => {
                 if has_tproject(self.executor.as_ref(), &workspace.repo_path).await? {
                     Some("tproject".to_string())
-                } else if self.executor.exists(&workspace.repo_path.join("flake.nix")).await? {
+                } else if self
+                    .executor
+                    .exists(&workspace.repo_path.join("flake.nix"))
+                    .await?
+                {
                     Some("flake".to_string())
-                } else if self.executor.exists(&workspace.repo_path.join("shell.nix")).await?
-                    || self.executor.exists(&workspace.repo_path.join("default.nix")).await?
+                } else if self
+                    .executor
+                    .exists(&workspace.repo_path.join("shell.nix"))
+                    .await?
+                    || self
+                        .executor
+                        .exists(&workspace.repo_path.join("default.nix"))
+                        .await?
                 {
                     Some("legacy-nix".to_string())
                 } else {
@@ -117,66 +131,66 @@ impl LocalComputeProvider {
 
         match resolved.as_deref() {
             Some("noenv") => {
-            // Create flake directory in session workspace
-            let flake_dest = workspace.root.join("flake");
-            self.executor.mkdir_p(&flake_dest, 0o755).await?;
-            
-            // Fetch flake.nix from GitHub
-            let flake_nix = self.http_client
-                .get(format!("{}/flake.nix", NOENV_FLAKE_URL))
-                .send()
-                .await
-                .context("Failed to fetch noenv flake.nix")?
-                .error_for_status()
-                .context("GitHub returned error for flake.nix")?
-                .bytes()
-                .await?;
-            self.executor
-                .write_file(&flake_dest.join("flake.nix"), &flake_nix, 0o644)
-                .await?;
-            
-            // Fetch flake.lock from GitHub
-            let flake_lock = self.http_client
-                .get(format!("{}/flake.lock", NOENV_FLAKE_URL))
-                .send()
-                .await
-                .context("Failed to fetch noenv flake.lock")?
-                .error_for_status()
-                .context("GitHub returned error for flake.lock")?
-                .bytes()
-                .await?;
-            self.executor
-                .write_file(&flake_dest.join("flake.lock"), &flake_lock, 0o644)
-                .await?;
-            
-            // Return path to bake into wrapper
-            Ok(flake_dest.to_string_lossy().to_string())
-        }
+                // Create flake directory in session workspace
+                let flake_dest = workspace.root.join("flake");
+                self.executor.mkdir_p(&flake_dest, 0o755).await?;
+
+                // Fetch flake.nix from GitHub
+                let flake_nix = self
+                    .http_client
+                    .get(format!("{}/flake.nix", NOENV_FLAKE_URL))
+                    .send()
+                    .await
+                    .context("Failed to fetch noenv flake.nix")?
+                    .error_for_status()
+                    .context("GitHub returned error for flake.nix")?
+                    .bytes()
+                    .await?;
+                self.executor
+                    .write_file(&flake_dest.join("flake.nix"), &flake_nix, 0o644)
+                    .await?;
+
+                // Fetch flake.lock from GitHub
+                let flake_lock = self
+                    .http_client
+                    .get(format!("{}/flake.lock", NOENV_FLAKE_URL))
+                    .send()
+                    .await
+                    .context("Failed to fetch noenv flake.lock")?
+                    .error_for_status()
+                    .context("GitHub returned error for flake.lock")?
+                    .bytes()
+                    .await?;
+                self.executor
+                    .write_file(&flake_dest.join("flake.lock"), &flake_lock, 0o644)
+                    .await?;
+
+                // Return path to bake into wrapper
+                Ok(flake_dest.to_string_lossy().to_string())
+            }
             Some("python") => {
                 // Detect Python version from repo files
-                let python_version = detect_python_version(
-                    self.executor.as_ref(),
-                    &workspace.repo_path,
-                ).await?;
-                
+                let python_version =
+                    detect_python_version(self.executor.as_ref(), &workspace.repo_path).await?;
+
                 // Generate flake with detected version
                 let flake_content = generate_python_flake(python_version);
-                
+
                 let flake_dest = workspace.root.join("flake");
                 self.executor.mkdir_p(&flake_dest, 0o755).await?;
                 self.executor
                     .write_file(
                         &flake_dest.join("flake.nix"),
                         flake_content.as_bytes(),
-                        0o644
+                        0o644,
                     )
                     .await?;
-                
+
                 tracing::info!(
                     "Generated Python flake with {} for session",
                     python_version.nix_attr()
                 );
-                
+
                 Ok(flake_dest.to_string_lossy().to_string())
             }
             Some("flake") | Some("legacy-nix") => {
@@ -196,8 +210,11 @@ impl LocalComputeProvider {
                 let _ = crate::compute::common::tproject::check_min_version(
                     self.executor.as_ref(),
                     &workspace.repo_path,
-                ).await;
-                tracing::info!("tproject.toml detected: ran `t update`, using nix develop on $WORKTREE");
+                )
+                .await;
+                tracing::info!(
+                    "tproject.toml detected: ran `t update`, using nix develop on $WORKTREE"
+                );
                 Ok("$WORKTREE".to_string())
             }
             _ => {
@@ -206,7 +223,7 @@ impl LocalComputeProvider {
             }
         }
     }
-    
+
     async fn setup_collab_mode(
         &self,
         workspace: &WorkspaceInfo,
@@ -214,26 +231,24 @@ impl LocalComputeProvider {
         session_id: &str,
     ) -> Result<SessionStartResult> {
         let git = GitOps::new(self.executor.as_ref());
-        
+
         // Clone repository
-        git.clone(&request.repo_url, &workspace.repo_path, Some(1), None).await?;
+        git.clone(&request.repo_url, &workspace.repo_path, Some(1), None)
+            .await?;
 
         // Setup environment - fetch flake if needed, get path to bake into wrapper
-        let flake_path = self.setup_environment(
-            workspace, 
-            request.environment.as_deref(),
-        ).await?;
-        
+        let flake_path = self
+            .setup_environment(workspace, request.environment.as_deref())
+            .await?;
+
         // Create canonical repo
         let canonical = workspace.root.join("canonical");
-        let repo_path_str = workspace.repo_path.to_str().ok_or_else(|| anyhow!("Invalid repo path"))?;
-        git.clone(
-            repo_path_str,
-            &canonical,
-            None,
-            None,
-        ).await?;
-        
+        let repo_path_str = workspace
+            .repo_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid repo path"))?;
+        git.clone(repo_path_str, &canonical, None, None).await?;
+
         // Create session branch
         let branch_name = format!(
             "{}_collab_{}",
@@ -241,7 +256,7 @@ impl LocalComputeProvider {
             session_id
         );
         git.checkout_new_branch(&canonical, &branch_name).await?;
-        
+
         // Extract forge auth (github PAT/OAuth token or gitlab PAT)
         let forge_auth = crate::compute::common::provider_config::extract_forge_config(request);
         let creator_login = forge_auth.as_ref().and_then(|f| f.login.clone());
@@ -253,11 +268,13 @@ impl LocalComputeProvider {
                 &workspace.repo_path,
                 &request.repo_url,
                 auth,
-            ).await;
+            )
+            .await;
         }
 
         // Setup SSH
-        let authorized_keys = self.ssh_key_manager
+        let authorized_keys = self
+            .ssh_key_manager
             .build_authorized_keys_for_repo(
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
@@ -265,32 +282,44 @@ impl LocalComputeProvider {
                 forge_auth.as_ref(),
             )
             .await;
-            
+
         // Install scripts
         self.install_scripts(workspace, &branch_name).await?;
-        
+
         // Launch SSHD
-        let (pid, invite, host_key) = self.launch_sshd(
-            workspace,
-            &authorized_keys,
-            session_id,
-            &branch_name,
-            &request.repo_url,
-            request.environment.as_deref(),
-            &flake_path,
-        ).await?;
-        
+        let (pid, invite, host_key) = self
+            .launch_sshd(
+                workspace,
+                &authorized_keys,
+                session_id,
+                &branch_name,
+                &request.repo_url,
+                request.environment.as_deref(),
+                &flake_path,
+            )
+            .await?;
+
         // Store state
-        self.state.live_sessions.insert(session_id.to_string(), LocalSession {
-            pid,
-            workspace_root: workspace.root.clone(),
-        });
-        
-        let magic_link = format!("steadystate://collab/{}?ssh={}&host_key={}", 
-                session_id, urlencoding::encode(&invite), urlencoding::encode(&host_key));
+        self.state.live_sessions.insert(
+            session_id.to_string(),
+            LocalSession {
+                pid,
+                workspace_root: workspace.root.clone(),
+            },
+        );
+
+        let magic_link = format!(
+            "steadystate://collab/{}?ssh={}&host_key={}",
+            session_id,
+            urlencoding::encode(&invite),
+            urlencoding::encode(&host_key)
+        );
 
         // Extract repo name for dashboard
-        let repo_name = request.repo_url.split('/').last()
+        let repo_name = request
+            .repo_url
+            .split('/')
+            .next_back()
             .map(|s| s.trim_end_matches(".git"))
             .unwrap_or("repo")
             .to_string();
@@ -303,7 +332,9 @@ impl LocalComputeProvider {
         });
         let info_path = workspace.root.join("session-info.json");
         let info_content = serde_json::to_string_pretty(&session_info)?;
-        self.executor.write_file(&info_path, info_content.as_bytes(), 0o644).await?;
+        self.executor
+            .write_file(&info_path, info_content.as_bytes(), 0o644)
+            .await?;
 
         Ok(SessionStartResult {
             endpoint: Some(invite.clone()),
@@ -319,16 +350,16 @@ impl LocalComputeProvider {
         session_id: &str,
     ) -> Result<SessionStartResult> {
         let git = GitOps::new(self.executor.as_ref());
-        git.clone(&request.repo_url, &workspace.repo_path, Some(1), None).await?;
+        git.clone(&request.repo_url, &workspace.repo_path, Some(1), None)
+            .await?;
 
         let forge_auth = crate::compute::common::provider_config::extract_forge_config(request);
         let creator_login = forge_auth.as_ref().and_then(|f| f.login.clone());
 
         // Setup environment - fetch flake if needed
-        let flake_path = self.setup_environment(
-            workspace, 
-            request.environment.as_deref(),
-        ).await?;
+        let flake_path = self
+            .setup_environment(workspace, request.environment.as_deref())
+            .await?;
 
         // Configure git auth if token present
         if let Some(auth) = forge_auth.as_ref() {
@@ -337,11 +368,13 @@ impl LocalComputeProvider {
                 &workspace.repo_path,
                 &request.repo_url,
                 auth,
-            ).await;
+            )
+            .await;
         }
 
         // Build authorized keys - same as collab mode
-        let authorized_keys = self.ssh_key_manager
+        let authorized_keys = self
+            .ssh_key_manager
             .build_authorized_keys_for_repo(
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
@@ -351,19 +384,26 @@ impl LocalComputeProvider {
             .await;
 
         // Install pair-mode scripts
-        self.install_pair_scripts(workspace, session_id, request.environment.as_deref(), &flake_path).await?;
+        self.install_pair_scripts(
+            workspace,
+            session_id,
+            request.environment.as_deref(),
+            &flake_path,
+        )
+        .await?;
 
         // Launch SSHD - reuse the same infrastructure as collab!
-        let (pid, ssh_invite, host_key) = self.launch_pair_sshd(
-            workspace,
-            &authorized_keys,
-            session_id,
-        ).await?;
+        let (pid, ssh_invite, host_key) = self
+            .launch_pair_sshd(workspace, &authorized_keys, session_id)
+            .await?;
 
-        self.state.live_sessions.insert(session_id.to_string(), LocalSession {
-            pid,
-            workspace_root: workspace.root.clone(),
-        });
+        self.state.live_sessions.insert(
+            session_id.to_string(),
+            LocalSession {
+                pid,
+                workspace_root: workspace.root.clone(),
+            },
+        );
 
         // Magic link format for pair mode (now SSH-based, same as collab)
         let magic_link = format!(
@@ -403,9 +443,13 @@ impl LocalComputeProvider {
             vars.insert("flake_path", flake_path);
             vars
         });
-        
+
         self.executor
-            .write_file(&bin_dir.join("pair-wrapper"), wrapper_content.as_bytes(), 0o755)
+            .write_file(
+                &bin_dir.join("pair-wrapper"),
+                wrapper_content.as_bytes(),
+                0o755,
+            )
             .await?;
 
         Ok(())
@@ -427,7 +471,8 @@ impl LocalComputeProvider {
         // Write authorized_keys with pair-wrapper as forced command
         let auth_keys_path = ssh_dir.join("authorized_keys");
         let wrapper_template = format!("{}/bin/pair-wrapper {{user}}", workspace.root.display());
-        let auth_keys_content = self.ssh_key_manager
+        let auth_keys_content = self
+            .ssh_key_manager
             .generate_authorized_keys_file(authorized_keys, Some(&wrapper_template));
         self.executor
             .write_file(&auth_keys_path, auth_keys_content.as_bytes(), 0o600)
@@ -458,24 +503,32 @@ impl LocalComputeProvider {
         let log_path = ssh_dir.join("sshd.log");
         let log_path_str = log_path.to_str().unwrap();
 
-        let (pid, _, _) = self.executor
-            .exec_streaming(&sshd_binary, &["-f", config_path_str, "-D", "-E", log_path_str])
+        let (pid, _, _) = self
+            .executor
+            .exec_streaming(
+                &sshd_binary,
+                &["-f", config_path_str, "-D", "-E", log_path_str],
+            )
             .await?;
 
         // Wait for SSHD to be ready
         let mut attempts = 0;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            
+
             if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
                 break;
             }
-            
+
             attempts += 1;
             if attempts > 50 {
                 let _ = self.executor.exec_shell(&format!("kill {}", pid)).await;
-                let log = self.executor.exec_shell(&format!("cat {}", log_path_str)).await
-                    .map(|o| o.stdout).unwrap_or_default();
+                let log = self
+                    .executor
+                    .exec_shell(&format!("cat {}", log_path_str))
+                    .await
+                    .map(|o| o.stdout)
+                    .unwrap_or_default();
                 return Err(anyhow!("SSHD failed to start: {}", log));
             }
         }
@@ -486,7 +539,8 @@ impl LocalComputeProvider {
         let invite = format!("ssh://{}@{}:{}", user, hostname, port);
 
         // Get host public key
-        let pub_key_content = self.executor
+        let pub_key_content = self
+            .executor
             .read_file(Path::new(&format!("{}.pub", host_key_path.display())))
             .await?;
         let pub_key_str = String::from_utf8(pub_key_content)?;
@@ -496,16 +550,16 @@ impl LocalComputeProvider {
             .collect::<Vec<_>>()
             .join(" ");
 
-        tracing::info!("Pair mode SSHD started on port {}, invite: {}", port, invite);
+        tracing::info!(
+            "Pair mode SSHD started on port {}, invite: {}",
+            port,
+            invite
+        );
 
         Ok((pid, invite, host_key))
     }
-    
-    async fn install_scripts(
-        &self,
-        workspace: &WorkspaceInfo,
-        _branch_name: &str,
-    ) -> Result<()> {
+
+    async fn install_scripts(&self, workspace: &WorkspaceInfo, _branch_name: &str) -> Result<()> {
         let bin_dir = workspace.root.join("bin");
         self.executor.mkdir_p(&bin_dir, 0o755).await?;
 
@@ -515,11 +569,15 @@ impl LocalComputeProvider {
 
         let activity_log = workspace.root.join("activity-log");
         self.executor.write_file(&activity_log, &[], 0o666).await?;
-        
+
         // Sync script
         let sync_content = scripts::sync_script().render(&HashMap::new());
         self.executor
-            .write_file(&bin_dir.join("steadystate-sync"), sync_content.as_bytes(), 0o755)
+            .write_file(
+                &bin_dir.join("steadystate-sync"),
+                sync_content.as_bytes(),
+                0o755,
+            )
             .await?;
 
         // Find the steadystate CLI binary
@@ -537,9 +595,17 @@ impl LocalComputeProvider {
         // Fallback: check relative to current exe (for production deployments)
         let cli_source = cli_source.or_else(|| {
             std::env::current_exe().ok().and_then(|exe| {
-                let bin_name = if cfg!(windows) { "steadystate.exe" } else { "steadystate" };
+                let bin_name = if cfg!(windows) {
+                    "steadystate.exe"
+                } else {
+                    "steadystate"
+                };
                 let cli_path = exe.parent()?.join(bin_name);
-                if cli_path.exists() { Some(cli_path) } else { None }
+                if cli_path.exists() {
+                    Some(cli_path)
+                } else {
+                    None
+                }
             })
         });
 
@@ -554,7 +620,7 @@ impl LocalComputeProvider {
         } else {
             tracing::warn!("steadystate CLI binary not found in PATH or relative to backend");
         }
-            
+
         Ok(())
     }
 
@@ -576,12 +642,21 @@ impl LocalComputeProvider {
 
         let auth_keys_path = ssh_dir.join("authorized_keys");
         // Use the collab wrapper script as the forced command
-        let wrapper_template = format!("{}/bin/steadystate-wrapper {{user}}", workspace.root.display());
-        let auth_keys_content = self.ssh_key_manager.generate_authorized_keys_file(authorized_keys, Some(&wrapper_template));
-        self.executor.write_file(&auth_keys_path, auth_keys_content.as_bytes(), 0o600).await?;
+        let wrapper_template = format!(
+            "{}/bin/steadystate-wrapper {{user}}",
+            workspace.root.display()
+        );
+        let auth_keys_content = self
+            .ssh_key_manager
+            .generate_authorized_keys_file(authorized_keys, Some(&wrapper_template));
+        self.executor
+            .write_file(&auth_keys_path, auth_keys_content.as_bytes(), 0o600)
+            .await?;
 
         // Extract repo name from URL (e.g. https://github.com/user/repo -> repo)
-        let repo_name = repo_url.split('/').last()
+        let repo_name = repo_url
+            .split('/')
+            .next_back()
             .map(|s| s.trim_end_matches(".git"))
             .unwrap_or("repo")
             .to_string();
@@ -589,7 +664,13 @@ impl LocalComputeProvider {
         // Create wrapper script
         let wrapper_content = scripts::collab_wrapper_script().render(&{
             let mut vars = HashMap::new();
-            vars.insert("session_root", workspace.root.to_str().ok_or_else(|| anyhow!("Invalid workspace root"))?);
+            vars.insert(
+                "session_root",
+                workspace
+                    .root
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid workspace root"))?,
+            );
             vars.insert("session_id", session_id);
             vars.insert("repo_name", &repo_name);
             vars.insert("branch_name", branch_name);
@@ -598,7 +679,13 @@ impl LocalComputeProvider {
             vars.insert("flake_path", flake_path);
             vars
         });
-        self.executor.write_file(&workspace.root.join("bin/steadystate-wrapper"), wrapper_content.as_bytes(), 0o755).await?;
+        self.executor
+            .write_file(
+                &workspace.root.join("bin/steadystate-wrapper"),
+                wrapper_content.as_bytes(),
+                0o755,
+            )
+            .await?;
 
         // Find a free port using OS assignment
         let port = self.find_available_port().await?;
@@ -614,49 +701,68 @@ impl LocalComputeProvider {
         };
 
         let config_path = ssh_dir.join("sshd_config");
-        self.executor.write_file(&config_path, config.generate().as_bytes(), 0o600).await?;
+        self.executor
+            .write_file(&config_path, config.generate().as_bytes(), 0o600)
+            .await?;
 
         let sshd_binary = sshd::find_sshd_binary(self.executor.as_ref()).await?;
         tracing::info!("Using sshd binary: {}", sshd_binary);
-        
-        let config_path_str = config_path.to_str().ok_or_else(|| anyhow!("Invalid config path"))?;
-        let log_path = ssh_dir.join("sshd.log");
-        let log_path_str = log_path.to_str().ok_or_else(|| anyhow!("Invalid log path"))?;
 
-        let (pid, _, _) = self.executor.exec_streaming(
-            &sshd_binary,
-            &["-f", config_path_str, "-D", "-E", log_path_str], // -D to run in foreground, -E to log to file
-        ).await?;
+        let config_path_str = config_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid config path"))?;
+        let log_path = ssh_dir.join("sshd.log");
+        let log_path_str = log_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid log path"))?;
+
+        let (pid, _, _) = self
+            .executor
+            .exec_streaming(
+                &sshd_binary,
+                &["-f", config_path_str, "-D", "-E", log_path_str], // -D to run in foreground, -E to log to file
+            )
+            .await?;
 
         // Wait for port to be open
         let mut attempts = 0;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            
+
             // Check if process is still alive
             let status_check = self.executor.exec_shell(&format!("kill -0 {}", pid)).await;
-            if let Ok(output) = status_check {
-                if !output.exit_status.success() {
+            if let Ok(output) = status_check
+                && !output.exit_status.success() {
                     // Process died
-                    let log_content = self.executor.exec_shell(&format!("cat {}", log_path_str)).await
+                    let log_content = self
+                        .executor
+                        .exec_shell(&format!("cat {}", log_path_str))
+                        .await
                         .map(|o| o.stdout)
                         .unwrap_or_else(|_| "Could not read log".to_string());
                     return Err(anyhow!("sshd process died early. Log: {}", log_content));
                 }
-            }
 
             // Try to connect to the port to see if it's open
             if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
                 break;
             }
             attempts += 1;
-            if attempts > 50 { // 10 seconds timeout
+            if attempts > 50 {
+                // 10 seconds timeout
                 // Kill the process if it didn't start properly
                 let _ = self.executor.exec_shell(&format!("kill {}", pid)).await;
-                let log_content = self.executor.exec_shell(&format!("cat {}", log_path_str)).await
+                let log_content = self
+                    .executor
+                    .exec_shell(&format!("cat {}", log_path_str))
+                    .await
                     .map(|o| o.stdout)
                     .unwrap_or_else(|_| "Could not read log".to_string());
-                return Err(anyhow!("sshd failed to start on port {}. Log: {}", port, log_content));
+                return Err(anyhow!(
+                    "sshd failed to start on port {}. Log: {}",
+                    port,
+                    log_content
+                ));
             }
         }
 
@@ -669,9 +775,11 @@ impl LocalComputeProvider {
         let invite = format!("ssh://{}@{}:{}", user, hostname, port);
 
         // Get host key content for known_hosts
-        let host_key_path_str = host_key_path.to_str().ok_or_else(|| anyhow!("Invalid host key path"))?;
+        let host_key_path_str = host_key_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid host key path"))?;
         let pub_key_path = format!("{}.pub", host_key_path_str);
-        
+
         let pub_key_content = self.executor.read_file(Path::new(&pub_key_path)).await?;
         let pub_key_str = String::from_utf8(pub_key_content)
             .context("Host public key is not valid UTF-8")?
@@ -695,27 +803,26 @@ impl LocalComputeProvider {
         if let Ok(host) = std::env::var("STEADYSTATE_EXTERNAL_HOST") {
             return host;
         }
-        
+
         // 2. Try to get the local IP address (Prioritize IP over hostname for reliability)
         if let Ok(ip) = Self::get_local_ip() {
             return ip;
         }
 
         // 3. Try to get the machine's hostname
-        if let Ok(hostname) = hostname::get() {
-            if let Some(hostname_str) = hostname.to_str() {
+        if let Ok(hostname) = hostname::get()
+            && let Some(hostname_str) = hostname.to_str() {
                 // Don't use "localhost" as that won't work for remote clients
                 if hostname_str != "localhost" && !hostname_str.is_empty() {
                     return hostname_str.to_string();
                 }
             }
-        }
-        
+
         // 4. Fallback to localhost (only works for same-machine connections)
         tracing::warn!("Could not determine external hostname, falling back to localhost");
         "localhost".to_string()
     }
-    
+
     /// Get the local network IP address
     fn get_local_ip() -> Result<String, ()> {
         // Use a UDP socket to determine which interface would be used
@@ -739,10 +846,14 @@ impl LocalComputeProvider {
 
 #[async_trait]
 impl ComputeProvider for LocalComputeProvider {
-    fn id(&self) -> &'static str { "local" }
-    
-    fn display_name(&self) -> &'static str { "Local Machine" }
-    
+    fn id(&self) -> &'static str {
+        "local"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Local Machine"
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_pair_mode: true,
@@ -760,41 +871,48 @@ impl ComputeProvider for LocalComputeProvider {
             ],
         }
     }
-    
+
     async fn start_session(
         &self,
         session_id: &str,
         request: &SessionRequest,
     ) -> Result<SessionStartResult> {
         let workspace = self.setup_workspace(session_id).await?;
-        
+
         match request.mode.as_deref() {
-            Some("collab") => self.setup_collab_mode(&workspace, request, session_id).await,
+            Some("collab") => {
+                self.setup_collab_mode(&workspace, request, session_id)
+                    .await
+            }
             Some("pair") | None => self.setup_pair_mode(&workspace, request, session_id).await,
             Some(mode) => Err(anyhow!("Unknown mode: {}", mode)),
         }
     }
-    
+
     async fn terminate_session(&self, session: &Session) -> Result<()> {
         if let Some((_, local_session)) = self.state.live_sessions.remove(&session.id) {
             // Kill process
-            if let Err(e) = self.executor
+            if let Err(e) = self
+                .executor
                 .exec_shell(&format!("kill -TERM {}", local_session.pid))
-                .await 
+                .await
             {
                 tracing::warn!("Failed to kill process {}: {}", local_session.pid, e);
             }
-                
+
             // Cleanup workspace
-            self.executor.remove_all(&local_session.workspace_root).await?;
+            self.executor
+                .remove_all(&local_session.workspace_root)
+                .await?;
         }
-        
+
         Ok(())
     }
-    
+
     async fn health_check(&self, session: &Session) -> Result<SessionHealth> {
         if let Some(local_session) = self.state.live_sessions.get(&session.id) {
-            let output = self.executor
+            let output = self
+                .executor
                 .exec_shell(&format!("kill -0 {}", local_session.pid))
                 .await?;
 

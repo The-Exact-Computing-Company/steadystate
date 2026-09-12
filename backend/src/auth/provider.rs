@@ -1,12 +1,12 @@
 // backend/src/auth/provider.rs
 
-use std::sync::Arc;
-use async_trait::async_trait;
-use serde::Serialize;
 use crate::{
     models::{DeviceStartResponse, ProviderId},
     state::AppState,
 };
+use async_trait::async_trait;
+use serde::Serialize;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct UserIdentity {
@@ -31,10 +31,7 @@ pub trait AuthProvider: std::fmt::Debug + Send + Sync {
     #[allow(dead_code)]
     fn id(&self) -> ProviderId;
     async fn start_device_flow(&self) -> anyhow::Result<DeviceStartResponse>;
-    async fn poll_device_flow(
-        &self,
-        device_code: &str,
-    ) -> anyhow::Result<DevicePollOutcome>;
+    async fn poll_device_flow(&self, device_code: &str) -> anyhow::Result<DevicePollOutcome>;
 }
 
 pub type AuthProviderDyn = Arc<dyn AuthProvider>;
@@ -45,4 +42,4 @@ pub trait AuthProviderFactory: Send + Sync {
     async fn build(self: Arc<Self>, state: &AppState) -> anyhow::Result<AuthProviderDyn>;
 }
 
-pub type AuthProviderFactoryDyn = Arc<dyn AuthProviderFactory>;  
+pub type AuthProviderFactoryDyn = Arc<dyn AuthProviderFactory>;

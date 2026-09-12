@@ -20,15 +20,14 @@ pub fn extract_forge_config(request: &SessionRequest) -> Option<ForgeAuth> {
                 #[serde(default)]
                 access_token: Option<String>,
             }
-            if let Ok(creds) = serde_json::from_value::<Creds>(block.clone()) {
-                if creds.login.is_some() || creds.access_token.is_some() {
+            if let Ok(creds) = serde_json::from_value::<Creds>(block.clone())
+                && (creds.login.is_some() || creds.access_token.is_some()) {
                     return Some(ForgeAuth {
                         provider: provider.to_string(),
                         login: creds.login,
                         token: creds.access_token,
                     });
                 }
-            }
         }
     }
     None
@@ -62,7 +61,11 @@ pub async fn inject_token_auth(
         let _ = url.set_password(Some(token));
         let git = GitOps::new(executor);
         if let Err(e) = git.set_remote_url(repo_path, "origin", url.as_str()).await {
-            tracing::warn!("Failed to configure git auth for {}: {}", repo_path.display(), e);
+            tracing::warn!(
+                "Failed to configure git auth for {}: {}",
+                repo_path.display(),
+                e
+            );
         }
     }
 }

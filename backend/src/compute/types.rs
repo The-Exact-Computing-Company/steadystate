@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use serde::{Serialize, Deserialize};
 
 /// Capabilities a provider may or may not support
 #[derive(Debug, Clone, Default)]

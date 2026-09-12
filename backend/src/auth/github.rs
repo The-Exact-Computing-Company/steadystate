@@ -1,10 +1,10 @@
 // backend/src/auth/github.rs
 
-use std::sync::Arc;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
 
 use crate::auth::provider::{
     AuthProvider, AuthProviderDyn, AuthProviderFactory, DevicePollOutcome, UserIdentity,
@@ -43,7 +43,8 @@ impl AuthProvider for GitHubAuth {
             ("scope", "read:user repo read:org"),
         ];
 
-        let resp = self.http
+        let resp = self
+            .http
             .post("https://github.com/login/device/code")
             .header("Accept", "application/json")
             .header("User-Agent", "steadystate-backend/0.1")
@@ -52,7 +53,9 @@ impl AuthProvider for GitHubAuth {
             .await?
             .error_for_status()?;
 
-        let out: DeviceStartOut = resp.json().await
+        let out: DeviceStartOut = resp
+            .json()
+            .await
             .context("Failed to decode GitHub's device code response")?;
 
         Ok(DeviceStartResponse {
@@ -72,7 +75,8 @@ impl AuthProvider for GitHubAuth {
             ("client_secret", self.client_secret.as_str()),
         ];
 
-        let resp = self.http
+        let resp = self
+            .http
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/json")
             .header("User-Agent", "steadystate-backend/0.1")
@@ -81,12 +85,15 @@ impl AuthProvider for GitHubAuth {
             .await?
             .error_for_status()?;
 
-        let token: DeviceTokenOut = resp.json().await
+        let token: DeviceTokenOut = resp
+            .json()
+            .await
             .context("Failed to decode GitHub's access token response")?;
 
         match token {
             DeviceTokenOut::Ok { access_token, .. } => {
-                let user = self.http
+                let user = self
+                    .http
                     .get("https://api.github.com/user")
                     .bearer_auth(&access_token)
                     .header("User-Agent", "steadystate-backend/0.1")
@@ -121,12 +128,20 @@ pub struct GitHubFactory;
 
 #[async_trait]
 impl AuthProviderFactory for GitHubFactory {
-    fn id(&self) -> &'static str { "github" }
+    fn id(&self) -> &'static str {
+        "github"
+    }
 
     async fn build(self: Arc<Self>, state: &AppState) -> anyhow::Result<AuthProviderDyn> {
-        let client_id = state.config.github_client_id.clone()
+        let client_id = state
+            .config
+            .github_client_id
+            .clone()
             .context("GITHUB_CLIENT_ID is not configured on the server")?;
-        let client_secret = state.config.github_client_secret.clone()
+        let client_secret = state
+            .config
+            .github_client_secret
+            .clone()
             .context("GITHUB_CLIENT_SECRET is not configured on the server")?;
 
         Ok(GitHubAuth::new(
@@ -136,7 +151,6 @@ impl AuthProviderFactory for GitHubFactory {
         ))
     }
 }
-
 
 // --- DTOs for GitHub API ---
 

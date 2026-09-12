@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, Context};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -21,8 +21,8 @@ pub fn base_for_repo(host: &str) -> String {
     if host.eq_ignore_ascii_case("gitlab.com") {
         return DEFAULT_GITLAB_URL.to_string();
     }
-    if let Ok(raw) = std::env::var("GITLAB_URL") {
-        if let Ok(base) = normalize_base_url(&raw) {
+    if let Ok(raw) = std::env::var("GITLAB_URL")
+        && let Ok(base) = normalize_base_url(&raw) {
             let base_host = base
                 .split("://")
                 .nth(1)
@@ -34,17 +34,12 @@ pub fn base_for_repo(host: &str) -> String {
                 return base;
             }
         }
-    }
     format!("https://{}", host)
 }
 
 /// Fetch a GitLab user's public SSH keys without authentication via
 /// `{base}/{username}.keys` (same convention as GitHub's `/{user}.keys`).
-pub async fn fetch_user_keys(
-    http: &Client,
-    base_url: &str,
-    username: &str,
-) -> Result<Vec<String>> {
+pub async fn fetch_user_keys(http: &Client, base_url: &str, username: &str) -> Result<Vec<String>> {
     let url = format!("{}/{}.keys", base_url.trim_end_matches('/'), username);
     let response = http
         .get(&url)
@@ -103,7 +98,11 @@ pub async fn fetch_user_keys_api(
         .id;
 
     let keys: Vec<KeyOnly> = http
-        .get(format!("{}/api/v4/users/{}/keys", base_url.trim_end_matches('/'), id))
+        .get(format!(
+            "{}/api/v4/users/{}/keys",
+            base_url.trim_end_matches('/'),
+            id
+        ))
         .header("PRIVATE-TOKEN", token)
         .header("User-Agent", "steadystate-backend/0.1")
         .send()
@@ -163,19 +162,19 @@ pub async fn fetch_project_members(
     token: &str,
 ) -> Result<Vec<GitLabMember>> {
     http.get(format!(
-            "{}/api/v4/projects/{}/members/all",
-            base_url.trim_end_matches('/'),
-            encoded_path
-        ))
-        .query(&[("per_page", "100")])
-        .header("PRIVATE-TOKEN", token)
-        .header("User-Agent", "steadystate-backend/0.1")
-        .send()
-        .await
-        .context("GitLab members lookup failed")?
-        .error_for_status()
-        .map_err(|e| anyhow!("GitLab members lookup failed (needs read_api scope): {}", e))?
-        .json()
-        .await
-        .context("Failed to decode GitLab members")
+        "{}/api/v4/projects/{}/members/all",
+        base_url.trim_end_matches('/'),
+        encoded_path
+    ))
+    .query(&[("per_page", "100")])
+    .header("PRIVATE-TOKEN", token)
+    .header("User-Agent", "steadystate-backend/0.1")
+    .send()
+    .await
+    .context("GitLab members lookup failed")?
+    .error_for_status()
+    .map_err(|e| anyhow!("GitLab members lookup failed (needs read_api scope): {}", e))?
+    .json()
+    .await
+    .context("Failed to decode GitLab members")
 }

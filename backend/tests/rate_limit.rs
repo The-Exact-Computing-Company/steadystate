@@ -76,7 +76,11 @@ async fn serve_with_limits(vars: &[(&str, &str)]) -> TestApp {
         .await
         .expect("serve test app");
     });
-    TestApp { base, _guard: guard, saved }
+    TestApp {
+        base,
+        _guard: guard,
+        saved,
+    }
 }
 
 #[tokio::test]
@@ -121,7 +125,10 @@ async fn token_tier_returns_429_with_json_and_retry_after() {
     assert!(resp.headers().contains_key("retry-after"));
     let body: serde_json::Value = resp.json().await.expect("429 json body");
     assert!(
-        body.get("error").and_then(|e| e.as_str()).map(|e| e.contains("rate limited")).unwrap_or(false),
+        body.get("error")
+            .and_then(|e| e.as_str())
+            .map(|e| e.contains("rate limited"))
+            .unwrap_or(false),
         "unexpected 429 body: {}",
         body
     );

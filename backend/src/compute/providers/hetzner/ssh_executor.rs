@@ -1,5 +1,5 @@
-use crate::compute::traits::{RemoteExecutor, CommandOutput, BoxedAsyncRead};
-use anyhow::{Result, Context};
+use crate::compute::traits::{BoxedAsyncRead, CommandOutput, RemoteExecutor};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::Path;
 
@@ -16,22 +16,34 @@ pub struct SshExecutor {
 
 impl SshExecutor {
     pub fn new(host: String, port: u16, user: String) -> Self {
-        Self { host, port, user, identity_file: None, strict_host_checking: false }
+        Self {
+            host,
+            port,
+            user,
+            identity_file: None,
+            strict_host_checking: false,
+        }
     }
 
     fn base_args(&self) -> Vec<String> {
         let mut args = vec![
-            "-p".to_string(), self.port.to_string(),
-            "-o".to_string(), "BatchMode=yes".to_string(),
-            "-o".to_string(), "ConnectTimeout=10".to_string(),
+            "-p".to_string(),
+            self.port.to_string(),
+            "-o".to_string(),
+            "BatchMode=yes".to_string(),
+            "-o".to_string(),
+            "ConnectTimeout=10".to_string(),
         ];
         if self.strict_host_checking {
             args.extend(["-o".to_string(), "StrictHostKeyChecking=yes".to_string()]);
         } else {
             args.extend([
-                "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
-                "-o".to_string(), "UserKnownHostsFile=/dev/null".to_string(),
-                "-o".to_string(), "LogLevel=ERROR".to_string(),
+                "-o".to_string(),
+                "StrictHostKeyChecking=no".to_string(),
+                "-o".to_string(),
+                "UserKnownHostsFile=/dev/null".to_string(),
+                "-o".to_string(),
+                "LogLevel=ERROR".to_string(),
             ]);
         }
         if let Some(key) = &self.identity_file {
@@ -99,7 +111,11 @@ impl RemoteExecutor for SshExecutor {
         cmd.arg(local);
         cmd.arg(format!("{}:{}", self.target(), remote.display()));
         let st = cmd.status().await.context("failed to run scp upload")?;
-        if st.success() { Ok(()) } else { Err(anyhow::anyhow!("scp upload failed")) }
+        if st.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("scp upload failed"))
+        }
     }
 
     async fn download_file(&self, remote: &Path, local: &Path) -> Result<()> {
@@ -116,7 +132,11 @@ impl RemoteExecutor for SshExecutor {
         cmd.arg(format!("{}:{}", self.target(), remote.display()));
         cmd.arg(local);
         let st = cmd.status().await.context("failed to run scp download")?;
-        if st.success() { Ok(()) } else { Err(anyhow::anyhow!("scp download failed")) }
+        if st.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("scp download failed"))
+        }
     }
 
     async fn write_file(&self, path: &Path, content: &[u8], mode: u32) -> Result<()> {
@@ -125,12 +145,21 @@ impl RemoteExecutor for SshExecutor {
         let b64 = encode(content);
         let script = format!(
             "mkdir -p {dir} && echo {b64} | base64 -d > {path} && chmod {mode:o} {path}",
-            dir = Self::shell_quote(&path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "/tmp".to_string())),
+            dir = Self::shell_quote(
+                &path
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "/tmp".to_string())
+            ),
             path = Self::shell_quote(&path.to_string_lossy()),
             mode = mode,
         );
         let out = self.exec_shell(&script).await?;
-        if out.exit_status.success() { Ok(()) } else { Err(anyhow::anyhow!("remote write_file failed: {}", out.stderr)) }
+        if out.exit_status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("remote write_file failed: {}", out.stderr))
+        }
     }
 
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
@@ -151,7 +180,11 @@ impl RemoteExecutor for SshExecutor {
             Self::shell_quote(&path.to_string_lossy())
         );
         let out = self.exec_shell(&script).await?;
-        if out.exit_status.success() { Ok(()) } else { Err(anyhow::anyhow!("remote mkdir failed: {}", out.stderr)) }
+        if out.exit_status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("remote mkdir failed: {}", out.stderr))
+        }
     }
 
     async fn exists(&self, path: &Path) -> Result<bool> {
@@ -163,13 +196,25 @@ impl RemoteExecutor for SshExecutor {
     async fn remove_all(&self, path: &Path) -> Result<()> {
         let script = format!("rm -rf {}", Self::shell_quote(&path.to_string_lossy()));
         let out = self.exec_shell(&script).await?;
-        if out.exit_status.success() { Ok(()) } else { Err(anyhow::anyhow!("remote rm failed: {}", out.stderr)) }
+        if out.exit_status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("remote rm failed: {}", out.stderr))
+        }
     }
 
     async fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
-        let script = format!("chmod {:o} {}", mode, Self::shell_quote(&path.to_string_lossy()));
+        let script = format!(
+            "chmod {:o} {}",
+            mode,
+            Self::shell_quote(&path.to_string_lossy())
+        );
         let out = self.exec_shell(&script).await?;
-        if out.exit_status.success() { Ok(()) } else { Err(anyhow::anyhow!("remote chmod failed: {}", out.stderr)) }
+        if out.exit_status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("remote chmod failed: {}", out.stderr))
+        }
     }
 }
 
@@ -208,7 +253,7 @@ fn decode_base64(s: &str) -> Result<Vec<u8>> {
         }
     }
     let bytes = s.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(anyhow::anyhow!("invalid base64 length"));
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
@@ -265,7 +310,12 @@ mod tests {
 
     #[test]
     fn test_base64_round_trip() {
-        for data in [&b""[..], b"hi".as_slice(), b"hello world".as_slice(), &[0u8, 1, 2, 250, 255]] {
+        for data in [
+            &b""[..],
+            b"hi".as_slice(),
+            b"hello world".as_slice(),
+            &[0u8, 1, 2, 250, 255],
+        ] {
             let enc = base64_like_encode::encode(data);
             let dec = decode_base64(&enc).unwrap();
             assert_eq!(dec, data);

@@ -14,11 +14,19 @@ pub struct ForgeAuth {
 
 impl ForgeAuth {
     pub fn github(login: Option<String>, token: Option<String>) -> Self {
-        Self { provider: "github".to_string(), login, token }
+        Self {
+            provider: "github".to_string(),
+            login,
+            token,
+        }
     }
 
     pub fn gitlab(login: Option<String>, token: Option<String>) -> Self {
-        Self { provider: "gitlab".to_string(), login, token }
+        Self {
+            provider: "gitlab".to_string(),
+            login,
+            token,
+        }
     }
 
     /// Username to embed in token-injected HTTPS clone URLs.
@@ -55,8 +63,8 @@ impl ForgeRepo {
         }
 
         // SCP-like SSH syntax: [user@]host:path (no scheme, path not absolute).
-        if !url.contains("://") {
-            if let Some(colon) = url.find(':') {
+        if !url.contains("://")
+            && let Some(colon) = url.find(':') {
                 let before = &url[..colon];
                 let after = &url[colon + 1..];
                 if !before.contains('/') && !after.starts_with('/') && !after.is_empty() {
@@ -64,7 +72,6 @@ impl ForgeRepo {
                     return Self::build(host, after);
                 }
             }
-        }
 
         // URL syntax (with or without scheme).
         let without_scheme = url
@@ -81,17 +88,27 @@ impl ForgeRepo {
         let (hostport, path) = without_userinfo
             .split_once('/')
             .ok_or_else(|| anyhow!("Could not parse repository URL: {}", url))?;
-        let host = hostport.rsplit_once(':').map(|(h, _)| h).unwrap_or(hostport);
+        let host = hostport
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(hostport);
         Self::build(host, path)
     }
 
     fn build(host: &str, path: &str) -> Result<Self> {
         let host = host.trim().trim_start_matches("www.").to_lowercase();
-        let path = path.trim().trim_matches('/').strip_suffix(".git").unwrap_or(path.trim().trim_matches('/'));
+        let path = path
+            .trim()
+            .trim_matches('/')
+            .strip_suffix(".git")
+            .unwrap_or(path.trim().trim_matches('/'));
         if host.is_empty() || path.is_empty() || !path.contains('/') {
             return Err(anyhow!("Could not parse repository from host/path"));
         }
-        Ok(Self { host, path: path.to_string() })
+        Ok(Self {
+            host,
+            path: path.to_string(),
+        })
     }
 
     /// True for github.com (and www alias).
@@ -137,7 +154,12 @@ mod tests {
             "www.github.com/owner/repo",
         ] {
             let r = ForgeRepo::from_url(url).unwrap();
-            assert_eq!((r.host.as_str(), r.path.as_str()), ("github.com", "owner/repo"), "{}", url);
+            assert_eq!(
+                (r.host.as_str(), r.path.as_str()),
+                ("github.com", "owner/repo"),
+                "{}",
+                url
+            );
         }
     }
 
@@ -153,16 +175,25 @@ mod tests {
     #[test]
     fn test_gitlab_ssh_and_self_managed() {
         let r = ForgeRepo::from_url("git@gitlab.com:group/repo.git").unwrap();
-        assert_eq!((r.host.as_str(), r.path.as_str()), ("gitlab.com", "group/repo"));
+        assert_eq!(
+            (r.host.as_str(), r.path.as_str()),
+            ("gitlab.com", "group/repo")
+        );
 
         let r = ForgeRepo::from_url("https://git.example.com:8443/team/project.git").unwrap();
-        assert_eq!((r.host.as_str(), r.path.as_str()), ("git.example.com", "team/project"));
+        assert_eq!(
+            (r.host.as_str(), r.path.as_str()),
+            ("git.example.com", "team/project")
+        );
     }
 
     #[test]
     fn test_token_injected_url() {
         let r = ForgeRepo::from_url("https://oauth2:glpat-xxx@gitlab.com/group/repo.git").unwrap();
-        assert_eq!((r.host.as_str(), r.path.as_str()), ("gitlab.com", "group/repo"));
+        assert_eq!(
+            (r.host.as_str(), r.path.as_str()),
+            ("gitlab.com", "group/repo")
+        );
     }
 
     #[test]
@@ -175,6 +206,9 @@ mod tests {
     #[test]
     fn test_token_usernames() {
         assert_eq!(ForgeAuth::gitlab(None, None).token_username(), "oauth2");
-        assert_eq!(ForgeAuth::github(None, None).token_username(), "x-access-token");
+        assert_eq!(
+            ForgeAuth::github(None, None).token_username(),
+            "x-access-token"
+        );
     }
 }

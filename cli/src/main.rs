@@ -7,10 +7,10 @@
 
 mod auth;
 mod config;
+mod merge;
+mod notify;
 mod session;
 mod sync;
-mod notify;
-mod merge;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -20,8 +20,8 @@ use tokio::time::Duration;
 use tracing::{error, info, warn};
 
 use auth::{
-    UpResponse, delete_refresh_token, device_login, get_refresh_token, perform_refresh,
-    request_with_auth, get_access_token,
+    UpResponse, delete_refresh_token, device_login, get_access_token, get_refresh_token,
+    perform_refresh, request_with_auth,
 };
 use config::{BACKEND_URL, CLI_VERSION, HTTP_TIMEOUT_SECS, JWT_REFRESH_BUFFER_SECS, USER_AGENT};
 use session::{read_session, remove_session};
@@ -157,7 +157,11 @@ async fn whoami(json_output: bool) -> Result<()> {
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("Logged in as: {} (via {})", sess.login, sess.provider_or_default());
+                println!(
+                    "Logged in as: {} (via {})",
+                    sess.login,
+                    sess.provider_or_default()
+                );
                 if let Some(exp) = sess.jwt_exp {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -310,9 +314,9 @@ async fn down(client: &Client, target: String) -> Result<()> {
 
     // Authenticated DELETE (request_with_auth expects a JSON body, but
     // DELETE answers 202 with none — so authenticate manually here).
-    let session = read_session(None).await.context(
-        "Not logged in. Please run 'steadystate login' first."
-    )?;
+    let session = read_session(None)
+        .await
+        .context("Not logged in. Please run 'steadystate login' first.")?;
     let mut jwt = session.jwt.clone();
     if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
         jwt = perform_refresh(client, Some(session.login.clone()), None)
@@ -354,8 +358,8 @@ async fn list_sessions(client: &Client, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<10} {:<12} {:<8} {:<10} {:<8} {}",
-        "ID", "STATE", "PROVIDER", "EXPIRES", "IDLE", "REPO"
+        "{:<10} {:<12} {:<8} {:<10} {:<8} REPO",
+        "ID", "STATE", "PROVIDER", "EXPIRES", "IDLE"
     );
     for s in &sessions {
         println!(
@@ -380,14 +384,17 @@ fn parse_duration_secs(s: &str) -> Result<u64> {
         anyhow::bail!("empty duration");
     }
     let (num_part, mult) = match s.chars().last() {
-        Some(c) if c.is_ascii_alphabetic() => (&s[..s.len() - 1], match c {
-            's' => 1,
-            'm' => 60,
-            'h' => 3600,
-            'd' => 86_400,
-            'w' => 604_800,
-            other => anyhow::bail!("unknown duration suffix '{}' (use s, m, h, d, w)", other),
-        }),
+        Some(c) if c.is_ascii_alphabetic() => (
+            &s[..s.len() - 1],
+            match c {
+                's' => 1,
+                'm' => 60,
+                'h' => 3600,
+                'd' => 86_400,
+                'w' => 604_800,
+                other => anyhow::bail!("unknown duration suffix '{}' (use s, m, h, d, w)", other),
+            },
+        ),
         _ => (s, 1),
     };
     let n: u64 = num_part
@@ -400,7 +407,18 @@ fn parse_duration_secs(s: &str) -> Result<u64> {
     Ok(secs)
 }
 
-async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>, provider: Option<String>, ttl: Option<String>, forge_token: Option<String>) -> Result<()> {
+async fn up(
+    client: &Client,
+    repo: String,
+    json: bool,
+    allow: Vec<String>,
+    public: bool,
+    env: Option<String>,
+    mode: Option<String>,
+    provider: Option<String>,
+    ttl: Option<String>,
+    forge_token: Option<String>,
+) -> Result<()> {
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
@@ -414,8 +432,12 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
             eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
             eprintln!("  --env=python                Python + uv (auto-detects version)");
             eprintln!("  --env=flake                 Use repository's flake.nix");
-            eprintln!("  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)");
-            eprintln!("  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)");
+            eprintln!(
+                "  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)"
+            );
+            eprintln!(
+                "  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)"
+            );
             eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
             eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
             return Ok(());
@@ -423,13 +445,13 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     };
 
     // Check if env is valid
-    let is_valid = env_val == "noenv" ||
-                   env_val == "python" ||
-                   env_val == "flake" ||
-                   env_val == "tproject" ||
-                   env_val == "auto" ||
-                   env_val == "legacy-nix" ||
-                   (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
+    let is_valid = env_val == "noenv"
+        || env_val == "python"
+        || env_val == "flake"
+        || env_val == "tproject"
+        || env_val == "auto"
+        || env_val == "legacy-nix"
+        || (env_val.starts_with("legacy-nix[") && env_val.ends_with("]"));
 
     if !is_valid {
         eprintln!("Error: Invalid --env option: {}", env_val);
@@ -437,8 +459,12 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         eprintln!("  --env=noenv                 Minimal environment (ne, neovim, git)");
         eprintln!("  --env=python                Python + uv (auto-detects version)");
         eprintln!("  --env=flake                 Use repository's flake.nix");
-        eprintln!("  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)");
-        eprintln!("  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)");
+        eprintln!(
+            "  --env=tproject              T-lang project (tproject.toml -> t update -> nix develop)"
+        );
+        eprintln!(
+            "  --env=auto                  Auto-detect (tproject.toml > flake.nix > legacy-nix)"
+        );
         eprintln!("  --env=legacy-nix            Use default.nix (nix-shell)");
         eprintln!("  --env=legacy-nix[filename]  Use specified nix file (nix-shell)");
         return Ok(());
@@ -493,15 +519,20 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     // Get credentials to send with request.
     // OIDC sessions carry no forge token (SSO identity only), so the access
     // token is optional here; --forge-token can still attach one.
-    let session = read_session(None).await.context(
-        "Not logged in. Please run 'steadystate login' first."
-    )?;
+    let session = read_session(None)
+        .await
+        .context("Not logged in. Please run 'steadystate login' first.")?;
 
-    let access_token = get_access_token(&session.login, None).await?.filter(|t| !t.trim().is_empty());
+    let access_token = get_access_token(&session.login, None)
+        .await?
+        .filter(|t| !t.trim().is_empty());
 
     let session_provider = session.provider_or_default().to_string();
     let mut provider_creds = serde_json::Map::new();
-    provider_creds.insert("login".to_string(), serde_json::Value::String(session.login.clone()));
+    provider_creds.insert(
+        "login".to_string(),
+        serde_json::Value::String(session.login.clone()),
+    );
     if let Some(t) = access_token {
         provider_creds.insert("access_token".to_string(), serde_json::Value::String(t));
     }
@@ -511,14 +542,26 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     // Forge token bridge for SSO (or cross-forge) sessions: attaches a
     // GitHub/GitLab PAT used for collaborator lookup + token-injected clone.
     // --forge-token wins, FORGE_TOKEN env is the fallback.
-    let forge_token = forge_token
-        .filter(|t| !t.trim().is_empty())
-        .or_else(|| std::env::var("FORGE_TOKEN").ok().filter(|t| !t.trim().is_empty()));
+    let forge_token = forge_token.filter(|t| !t.trim().is_empty()).or_else(|| {
+        std::env::var("FORGE_TOKEN")
+            .ok()
+            .filter(|t| !t.trim().is_empty())
+    });
     if let Some(ft) = forge_token {
-        let forge = if repo.to_lowercase().contains("gitlab") { "gitlab" } else { "github" };
+        let forge = if repo.to_lowercase().contains("gitlab") {
+            "gitlab"
+        } else {
+            "github"
+        };
         let mut forge_creds = serde_json::Map::new();
-        forge_creds.insert("login".to_string(), serde_json::Value::String(session.login.clone()));
-        forge_creds.insert("access_token".to_string(), serde_json::Value::String(ft.trim().to_string()));
+        forge_creds.insert(
+            "login".to_string(),
+            serde_json::Value::String(session.login.clone()),
+        );
+        forge_creds.insert(
+            "access_token".to_string(),
+            serde_json::Value::String(ft.trim().to_string()),
+        );
         provider_config.insert(forge.to_string(), serde_json::Value::Object(forge_creds));
     }
 
@@ -547,24 +590,24 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
     let mut final_endpoint = resp.endpoint.clone();
     let mut final_host_key = resp.host_public_key.clone();
 
-
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("✅ Session created: {}", resp.id);
-        
+
         // Poll until the session is ready or fails
         if resp.endpoint.is_none() && resp.state == SessionState::Provisioning {
             println!("⏳ Provisioning session...");
-            
+
             let mut attempts = 0;
             let max_attempts = 60; // 60 * 1s = 1 minute timeout
-            
+
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 attempts += 1;
-                
-                let status: UpResponse = request_with_auth( // Assuming UpResponse can also be used for status
+
+                let status: UpResponse = request_with_auth(
+                    // Assuming UpResponse can also be used for status
                     client,
                     |c, jwt| {
                         c.get(format!("{}/sessions/{}", &*BACKEND_URL, resp.id))
@@ -573,20 +616,24 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
                     None,
                 )
                 .await?;
-                
+
                 match status.state {
                     SessionState::Running => {
                         final_endpoint = status.endpoint;
                         final_host_key = status.host_public_key;
                         let final_magic_link = status.magic_link; // Update magic link from status
-                        
+
                         if let Some(endpoint) = &final_endpoint {
                             if mode_val == "pair" {
                                 println!("✅ Session ready!");
-                                println!("");
+                                println!();
                                 println!("SteadyState Pair Programming Session");
                                 println!("Session ID: {}", resp.id);
-                                let repo_name = repo.split('/').last().unwrap_or(&repo).trim_end_matches(".git");
+                                let repo_name = repo
+                                    .split('/')
+                                    .next_back()
+                                    .unwrap_or(&repo)
+                                    .trim_end_matches(".git");
                                 println!("Repository: {}", repo_name);
                                 if let Some(link) = &final_magic_link {
                                     println!("Join with:       steadystate join \"{}\"", link);
@@ -614,7 +661,10 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
                     SessionState::Provisioning => {
                         if attempts >= max_attempts {
                             println!("⏱️  Timed out waiting for session. Check status later with:");
-                            println!("  curl -H 'Authorization: Bearer <token>' {}/sessions/{}", &*BACKEND_URL, resp.id);
+                            println!(
+                                "  curl -H 'Authorization: Bearer <token>' {}/sessions/{}",
+                                &*BACKEND_URL, resp.id
+                            );
                             break;
                         }
                         // Continue polling
@@ -627,10 +677,14 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         } else if let Some(endpoint) = &resp.endpoint {
             if mode_val == "pair" {
                 println!("✅ Session ready!");
-                println!("");
+                println!();
                 println!("SteadyState Pair Programming Session");
                 println!("Session ID: {}", resp.id);
-                let repo_name = repo.split('/').last().unwrap_or(&repo).trim_end_matches(".git");
+                let repo_name = repo
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(&repo)
+                    .trim_end_matches(".git");
                 println!("Repository: {}", repo_name);
                 if let Some(link) = &resp.magic_link {
                     println!("Join with:       steadystate join \"{}\"", link);
@@ -639,66 +693,68 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
             } else {
                 println!("✅ Session ready!");
                 println!("SSH: {}", endpoint);
-                if let Some(link) = &resp.magic_link { // Print initial magic link if available
+                if let Some(link) = &resp.magic_link {
+                    // Print initial magic link if available
                     println!("Magic Link: {}", link);
                 }
             }
         }
 
         // Launch dashboard if in collab mode and we have an endpoint
-        if mode_val == "collab" {
-            if let Some(endpoint) = final_endpoint {
+        if mode_val == "collab"
+            && let Some(endpoint) = final_endpoint {
                 println!("Launching dashboard...");
                 // Parse endpoint to get host/port/user
                 // Endpoint is ssh://steady@host:port
                 // We want to run: ssh -t -p port steady@host "steadystate watch"
-                
+
                 if let Ok(url) = Url::parse(&endpoint) {
                     let host = url.host_str().unwrap_or("localhost");
                     let port = url.port().unwrap_or(22);
                     let user = url.username();
-                    
+
                     let mut args = vec![
                         "-p".to_string(),
                         port.to_string(),
                         "-t".to_string(), // Force PTY for TUI
                     ];
-                    
+
                     if let Some(host_key) = final_host_key {
                         let known_hosts = format!("[{}]:{} {}", host, port, host_key);
                         let known_hosts_path = format!("/tmp/steadystate-{}-known_hosts", resp.id);
                         std::fs::write(&known_hosts_path, known_hosts)?;
-                        
+
                         args.extend([
-                            "-o".to_string(), format!("UserKnownHostsFile={}", known_hosts_path),
-                            "-o".to_string(), "StrictHostKeyChecking=yes".to_string(),
+                            "-o".to_string(),
+                            format!("UserKnownHostsFile={}", known_hosts_path),
+                            "-o".to_string(),
+                            "StrictHostKeyChecking=yes".to_string(),
                         ]);
                     } else {
                         args.extend([
-                            "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
-                            "-o".to_string(), "UserKnownHostsFile=/dev/null".to_string(),
+                            "-o".to_string(),
+                            "StrictHostKeyChecking=no".to_string(),
+                            "-o".to_string(),
+                            "UserKnownHostsFile=/dev/null".to_string(),
                         ]);
                     }
-                    
+
                     let target = if !user.is_empty() {
                         format!("{}@{}", user, host)
                     } else {
                         host.to_string()
                     };
                     args.push(target);
-                    
+
                     // Command to run
                     args.push("steadystate watch".to_string());
-                    
+
                     println!("Connecting to dashboard...");
                     use std::os::unix::process::CommandExt;
-                    let err = std::process::Command::new("ssh")
-                        .args(&args)
-                        .exec();
+                    let err = std::process::Command::new("ssh").args(&args).exec();
                     return Err(anyhow::anyhow!("Failed to execute ssh: {}", err));
                 }
             }
-        }
     }
 
     Ok(())
@@ -707,9 +763,11 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
 async fn join(url_str: String) -> Result<()> {
     if url_str.starts_with("steadystate://") {
         let url = Url::parse(&url_str).context("Failed to parse magic link")?;
-        
-        let mode = url.host_str().ok_or_else(|| anyhow::anyhow!("Invalid magic link: missing mode"))?;
-        
+
+        let mode = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid magic link: missing mode"))?;
+
         match mode {
             "pair" | "collab" => {
                 // Both modes now use SSH!
@@ -720,29 +778,30 @@ async fn join(url_str: String) -> Result<()> {
                     .or_else(|| {
                         // Backward compat for old pair links (though they won't work with new backend)
                         pairs = url.query_pairs();
-                        pairs.find(|(key, _)| key == "upterm").map(|(_, val)| val.to_string())
+                        pairs
+                            .find(|(key, _)| key == "upterm")
+                            .map(|(_, val)| val.to_string())
                     })
                     .ok_or_else(|| anyhow::anyhow!("Invalid link: missing 'ssh' parameter"))?;
-                
+
                 // Reset iterator for host_key
                 let mut pairs = url.query_pairs();
                 let host_key = pairs
                     .find(|(key, _)| key == "host_key")
                     .map(|(_, val)| val.to_string());
-                
+
                 println!("Joining {} session...", mode);
                 println!("Connecting to: {}", ssh_url);
-                
+
                 // Execute ssh
                 let up_url = Url::parse(&ssh_url).context("Failed to parse SSH URL")?;
-                let host = up_url.host_str().ok_or_else(|| anyhow::anyhow!("Missing host in SSH URL"))?;
+                let host = up_url
+                    .host_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing host in SSH URL"))?;
                 let port = up_url.port().unwrap_or(22);
                 let user = up_url.username();
-                
-                let mut args = vec![
-                    "-p".to_string(),
-                    port.to_string(),
-                ];
+
+                let mut args = vec!["-p".to_string(), port.to_string()];
 
                 if let Some(key) = host_key {
                     // We don't have session ID easily here, use random or hash of url
@@ -755,20 +814,24 @@ async fn join(url_str: String) -> Result<()> {
                     let known_hosts = format!("[{}]:{} {}", host, port, key);
                     let known_hosts_path = format!("/tmp/steadystate-{}-known_hosts", session_id);
                     std::fs::write(&known_hosts_path, known_hosts)?;
-                    
+
                     args.extend([
-                        "-o".to_string(), format!("UserKnownHostsFile={}", known_hosts_path),
-                        "-o".to_string(), "StrictHostKeyChecking=yes".to_string(),
+                        "-o".to_string(),
+                        format!("UserKnownHostsFile={}", known_hosts_path),
+                        "-o".to_string(),
+                        "StrictHostKeyChecking=yes".to_string(),
                     ]);
                 } else {
                     args.extend([
-                        "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
-                        "-o".to_string(), "UserKnownHostsFile=/dev/null".to_string(),
+                        "-o".to_string(),
+                        "StrictHostKeyChecking=no".to_string(),
+                        "-o".to_string(),
+                        "UserKnownHostsFile=/dev/null".to_string(),
                     ]);
                 }
 
                 args.push("-t".to_string()); // Force PTY
-                
+
                 if !user.is_empty() {
                     args.push(format!("{}@{}", user, host));
                 } else {
@@ -777,57 +840,52 @@ async fn join(url_str: String) -> Result<()> {
 
                 // Inject username if available
                 let shell_cmd = if let Ok(session) = crate::session::read_session(None).await {
-                    format!("export STEADYSTATE_USERNAME={}; exec $SHELL -l", session.login)
+                    format!(
+                        "export STEADYSTATE_USERNAME={}; exec $SHELL -l",
+                        session.login
+                    )
                 } else {
                     "exec $SHELL -l".to_string()
                 };
                 args.push(shell_cmd);
-                
+
                 use std::os::unix::process::CommandExt;
-                let err = std::process::Command::new("ssh")
-                    .args(&args)
-                    .exec();
-                    
-                return Err(anyhow::anyhow!("Failed to execute ssh: {}", err));
+                let err = std::process::Command::new("ssh").args(&args).exec();
+
+                Err(anyhow::anyhow!("Failed to execute ssh: {}", err))
             }
             _ => {
-                return Err(anyhow::anyhow!("Unknown mode: {}", mode));
+                Err(anyhow::anyhow!("Unknown mode: {}", mode))
             }
         }
     } else {
         // Legacy/Direct SSH URL
         println!("Joining via direct SSH...");
-        
+
         if url_str.starts_with("ssh://") {
-             let up_url = Url::parse(&url_str).context("Failed to parse SSH URL")?;
-             let host = up_url.host_str().ok_or_else(|| anyhow::anyhow!("Missing host in SSH URL"))?;
-             let port = up_url.port().unwrap_or(22);
-             let user = up_url.username();
-             
-             let mut args = vec![
-                "-p".to_string(),
-                port.to_string(),
-                "-t".to_string(),
-            ];
-             
-             if !user.is_empty() {
+            let up_url = Url::parse(&url_str).context("Failed to parse SSH URL")?;
+            let host = up_url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing host in SSH URL"))?;
+            let port = up_url.port().unwrap_or(22);
+            let user = up_url.username();
+
+            let mut args = vec!["-p".to_string(), port.to_string(), "-t".to_string()];
+
+            if !user.is_empty() {
                 args.push(format!("{}@{}", user, host));
             } else {
                 args.push(host.to_string());
             }
-            
+
             use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new("ssh")
-                .args(&args)
-                .exec();
-            return Err(anyhow::anyhow!("Failed to execute ssh: {}", err));
+            let err = std::process::Command::new("ssh").args(&args).exec();
+            Err(anyhow::anyhow!("Failed to execute ssh: {}", err))
         } else {
             // Assume it's valid ssh arg
-             use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new("ssh")
-                .arg(&url_str)
-                .exec();
-            return Err(anyhow::anyhow!("Failed to execute ssh: {}", err));
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new("ssh").arg(&url_str).exec();
+            Err(anyhow::anyhow!("Failed to execute ssh: {}", err))
         }
     }
 }
@@ -835,83 +893,90 @@ async fn join(url_str: String) -> Result<()> {
 async fn open_dashboard(link: &str) -> Result<()> {
     // Parse the magic link
     let url = Url::parse(link).context("Invalid magic link format")?;
-    
+
     // Extract session info from the link
     // Format: steadystate://collab/{session_id}?ssh={ssh_url}&host_key={key}
-    
+
     if url.scheme() != "steadystate" {
-        return Err(anyhow::anyhow!("Invalid magic link: expected steadystate:// scheme"));
+        return Err(anyhow::anyhow!(
+            "Invalid magic link: expected steadystate:// scheme"
+        ));
     }
-    
-    let path_segments: Vec<&str> = url.path_segments()
-        .map(|c| c.collect())
-        .unwrap_or_default();
-    
+
+    let path_segments: Vec<&str> = url.path_segments().map(|c| c.collect()).unwrap_or_default();
+
     if path_segments.is_empty() {
         return Err(anyhow::anyhow!("Invalid magic link: missing session ID"));
     }
-    
+
     let _session_id = path_segments[0];
     let mode = url.host_str().unwrap_or("collab");
-    
+
     if mode != "collab" {
-        return Err(anyhow::anyhow!("Dashboard is only available for collab mode sessions"));
+        return Err(anyhow::anyhow!(
+            "Dashboard is only available for collab mode sessions"
+        ));
     }
-    
+
     // Parse query parameters
     let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
-    
-    let ssh_url = params.get("ssh")
+
+    let ssh_url = params
+        .get("ssh")
         .ok_or_else(|| anyhow::anyhow!("Magic link missing SSH URL"))?;
-    
+
     let host_key = params.get("host_key").map(|s| s.to_string());
-    
+
     // Parse SSH URL
-    let ssh_parsed = Url::parse(ssh_url)
-        .context("Invalid SSH URL in magic link")?;
-    
-    let host = ssh_parsed.host_str()
+    let ssh_parsed = Url::parse(ssh_url).context("Invalid SSH URL in magic link")?;
+
+    let host = ssh_parsed
+        .host_str()
         .ok_or_else(|| anyhow::anyhow!("SSH URL missing host"))?;
     let port = ssh_parsed.port().unwrap_or(22);
     let user = ssh_parsed.username();
-    
+
     println!("Opening dashboard...");
     println!("Connecting to: {}:{}", host, port);
-    
+
     // Build SSH command
     let mut args = vec![
         "-p".to_string(),
         port.to_string(),
         "-t".to_string(), // Force PTY for TUI
     ];
-    
+
     // Handle host key verification
     if let Some(key) = host_key {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         link.hash(&mut hasher);
         let hash = format!("{:x}", hasher.finish());
-        
+
         let known_hosts = format!("[{}]:{} {}", host, port, key);
         let known_hosts_path = format!("/tmp/steadystate-dash-{}-known_hosts", hash);
         std::fs::write(&known_hosts_path, &known_hosts)
             .context("Failed to write known_hosts file")?;
-        
+
         args.extend([
-            "-o".to_string(), format!("UserKnownHostsFile={}", known_hosts_path),
-            "-o".to_string(), "StrictHostKeyChecking=yes".to_string(),
+            "-o".to_string(),
+            format!("UserKnownHostsFile={}", known_hosts_path),
+            "-o".to_string(),
+            "StrictHostKeyChecking=yes".to_string(),
         ]);
     } else {
         // No host key provided - warn but allow connection
         eprintln!("⚠️  Warning: No host key in magic link, skipping verification");
         args.extend([
-            "-o".to_string(), "StrictHostKeyChecking=no".to_string(),
-            "-o".to_string(), "UserKnownHostsFile=/dev/null".to_string(),
+            "-o".to_string(),
+            "StrictHostKeyChecking=no".to_string(),
+            "-o".to_string(),
+            "UserKnownHostsFile=/dev/null".to_string(),
         ]);
     }
-    
+
     // Add target
     let target = if !user.is_empty() {
         format!("{}@{}", user, host)
@@ -919,24 +984,25 @@ async fn open_dashboard(link: &str) -> Result<()> {
         host.to_string()
     };
     args.push(target);
-    
+
     // Run watch command on remote
     // Use -- to separate SSH args from remote command
     args.push("--".to_string());
-    
+
     // Inject username if available so the dashboard knows who we are
     if let Ok(session) = crate::session::read_session(None).await {
-        args.push(format!("export STEADYSTATE_USERNAME={}; steadystate watch", session.login));
+        args.push(format!(
+            "export STEADYSTATE_USERNAME={}; steadystate watch",
+            session.login
+        ));
     } else {
         args.push("steadystate watch".to_string());
     }
-    
+
     // Execute SSH (replaces current process)
     use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new("ssh")
-        .args(&args)
-        .exec();
-    
+    let err = std::process::Command::new("ssh").args(&args).exec();
+
     Err(anyhow::anyhow!("Failed to execute ssh: {}", err))
 }
 
@@ -981,25 +1047,33 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS));
 
     if std::env::var("STEADYSTATE_BACKEND").is_ok() {
-        builder = builder
-            .pool_max_idle_per_host(0)
-            .pool_idle_timeout(None);
+        builder = builder.pool_max_idle_per_host(0).pool_idle_timeout(None);
     }
 
     let client = builder.build().context("create http client")?;
 
     match cmd {
-        Commands::Login { provider, token, no_browser } => {
+        Commands::Login {
+            provider,
+            token,
+            no_browser,
+        } => {
             // GitLab has no OAuth device flow: authenticate with a PAT.
             // OIDC likewise: browser + localhost callback instead.
             let login_result = if provider == "gitlab" {
-                match auth::resolve_pat(token, "GITLAB_TOKEN", "GitLab Personal Access Token (read_user scope): ") {
+                match auth::resolve_pat(
+                    token,
+                    "GITLAB_TOKEN",
+                    "GitLab Personal Access Token (read_user scope): ",
+                ) {
                     Ok(pat) => auth::token_login(&client, &provider, &pat).await,
                     Err(e) => Err(e),
                 }
             } else if provider == "oidc" {
                 if token.is_some() {
-                    Err(anyhow::anyhow!("--token is for --provider=gitlab; oidc uses the browser flow"))
+                    Err(anyhow::anyhow!(
+                        "--token is for --provider=gitlab; oidc uses the browser flow"
+                    ))
                 } else {
                     auth::oidc_login(&client, no_browser).await
                 }
@@ -1037,8 +1111,31 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Up { repo, json, allow, public, env, mode, provider, ttl, forge_token } => {
-            if let Err(e) = up(&client, repo, json, allow, public, env, mode, provider, ttl, forge_token).await {
+        Commands::Up {
+            repo,
+            json,
+            allow,
+            public,
+            env,
+            mode,
+            provider,
+            ttl,
+            forge_token,
+        } => {
+            if let Err(e) = up(
+                &client,
+                repo,
+                json,
+                allow,
+                public,
+                env,
+                mode,
+                provider,
+                ttl,
+                forge_token,
+            )
+            .await
+            {
                 let msg = format!("{:#}", e);
                 let usage_error = msg.contains("Invalid repository URL.");
 
@@ -1052,7 +1149,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Join { url } => {
-             if let Err(e) = join(url).await {
+            if let Err(e) = join(url).await {
                 eprintln!("join failed: {:#}", e);
                 std::process::exit(1);
             }
@@ -1192,4 +1289,4 @@ mod tests {
         assert_eq!(format_idle(Some(now - 7200)), "2h");
         assert_eq!(format_idle(Some(now - 90000)), "1d");
     }
-} 
+}

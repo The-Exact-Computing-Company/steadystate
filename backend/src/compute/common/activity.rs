@@ -36,14 +36,19 @@ fn shell_quote(s: &str) -> String {
 
 async fn file_content_nonempty(executor: &dyn RemoteExecutor, path: &Path) -> bool {
     match executor.read_file(path).await {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).lines().any(|l| !l.trim().is_empty()),
+        Ok(bytes) => String::from_utf8_lossy(&bytes)
+            .lines()
+            .any(|l| !l.trim().is_empty()),
         Err(_) => false,
     }
 }
 
 async fn path_mtime(executor: &dyn RemoteExecutor, path: &Path) -> Option<SystemTime> {
     let out = executor
-        .exec_shell(&format!("stat -c %Y {}", shell_quote(&path.to_string_lossy())))
+        .exec_shell(&format!(
+            "stat -c %Y {}",
+            shell_quote(&path.to_string_lossy())
+        ))
         .await
         .ok()?;
     if !out.exit_status.success() {

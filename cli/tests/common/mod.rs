@@ -1,16 +1,16 @@
+use serde_json::json;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Output};
 use std::time::Duration;
 use tempfile::TempDir;
-use serde_json::json;
 
 pub enum MockResponse {
     Json(serde_json::Value),
     Unauthorized,
     Ok,
-    Accepted, // 202 with empty body (DELETE /sessions/{id})
+    Accepted,       // 202 with empty body (DELETE /sessions/{id})
     Custom(String), // For custom bodies
 }
 
@@ -28,24 +28,18 @@ impl MockResponse {
                     body
                 )
             }
-            MockResponse::Unauthorized => {
-                "HTTP/1.1 401 Unauthorized\r\n\
+            MockResponse::Unauthorized => "HTTP/1.1 401 Unauthorized\r\n\
                  Connection: close\r\n\
                  Content-Length: 0\r\n\r\n"
-                    .to_string()
-            }
-            MockResponse::Ok => {
-                "HTTP/1.1 200 OK\r\n\
+                .to_string(),
+            MockResponse::Ok => "HTTP/1.1 200 OK\r\n\
                  Connection: close\r\n\
                  Content-Length: 0\r\n\r\n"
-                    .to_string()
-            }
-            MockResponse::Accepted => {
-                "HTTP/1.1 202 Accepted\r\n\
+                .to_string(),
+            MockResponse::Accepted => "HTTP/1.1 202 Accepted\r\n\
                  Connection: close\r\n\
                  Content-Length: 0\r\n\r\n"
-                    .to_string()
-            }
+                .to_string(),
             MockResponse::Custom(body) => {
                 format!(
                     "HTTP/1.1 200 OK\r\n\
@@ -92,8 +86,14 @@ impl TestHarness {
         let requests = self.join_server();
 
         if !output.status.success() {
-            eprintln!("=== CLI STDOUT ===\n{}", String::from_utf8_lossy(&output.stdout));
-            eprintln!("=== CLI STDERR ===\n{}", String::from_utf8_lossy(&output.stderr));
+            eprintln!(
+                "=== CLI STDOUT ===\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            eprintln!(
+                "=== CLI STDERR ===\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             eprintln!("=== SERVER REQUESTS ===");
             for (i, r) in requests.iter().enumerate() {
                 eprintln!("--- Request {} ---\n{}\n", i, r);
@@ -131,12 +131,20 @@ impl TestHarness {
     }
 
     pub fn create_future_session(&self) {
-        let exp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
         self.create_session("tester", "test-jwt", Some(exp));
     }
 
     pub fn create_expired_session(&self) {
-        let exp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 10;
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 10;
         self.create_session("tester", "expired-jwt", Some(exp));
     }
 
@@ -145,7 +153,7 @@ impl TestHarness {
         let path = self.tempdir.path().join(format!("{}.keyring", username));
         fs::write(path, password).unwrap();
     }
-    
+
     pub fn get_keyring_password(&self, username: &str) -> std::io::Result<String> {
         let path = self.tempdir.path().join(format!("{}.keyring", username));
         fs::read_to_string(path)
@@ -163,7 +171,9 @@ fn spawn_scripted_server(
         let mut reqs = Vec::new();
         for response in responses {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut buf = vec![0; 1024]; // Simple buffer is enough for headers
             if let Ok(n) = stream.read(&mut buf) {
                 reqs.push(String::from_utf8_lossy(&buf[..n]).to_string());

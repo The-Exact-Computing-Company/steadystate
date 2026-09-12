@@ -1,15 +1,15 @@
 // backend/src/jwt.rs
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use anyhow::{anyhow, Result};
+use crate::state::AppState;
+use anyhow::{Result, anyhow};
 use axum::{
     extract::FromRequestParts,
-    http::{header, request::Parts, StatusCode},
+    http::{StatusCode, header, request::Parts},
 };
 use jwt_simple::prelude::*;
 use serde::{Deserialize, Serialize};
-use crate::state::AppState;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct JwtKeys {
@@ -47,7 +47,9 @@ impl JwtKeys {
             .with_issuer(self.issuer.clone())
             .with_subject(login.to_string());
 
-        self.key.authenticate(claims).map_err(|e| anyhow!("Failed to sign JWT: {}", e))
+        self.key
+            .authenticate(claims)
+            .map_err(|e| anyhow!("Failed to sign JWT: {}", e))
     }
 
     pub fn verify(&self, token: &str) -> Result<CustomClaims> {
@@ -59,11 +61,14 @@ impl JwtKeys {
             ..Default::default()
         };
 
-        let claims = self.key
+        let claims = self
+            .key
             .verify_token::<InternalCustomClaims>(token, Some(options))
             .map_err(|e| anyhow!("Invalid or expired JWT: {}", e))?;
-        
-        let sub = claims.subject.ok_or_else(|| anyhow!("JWT missing subject claim"))?;
+
+        let sub = claims
+            .subject
+            .ok_or_else(|| anyhow!("JWT missing subject claim"))?;
 
         Ok(CustomClaims {
             sub,
@@ -87,14 +92,18 @@ impl FromRequestParts<Arc<AppState>> for CustomClaims {
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .ok_or_else(|| {
-                (StatusCode::UNAUTHORIZED, "Missing Authorization header".into())
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "Missing Authorization header".into(),
+                )
             })?;
 
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| {
-                (StatusCode::BAD_REQUEST, "Invalid token type; expected Bearer".into())
-            })?;
+        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid token type; expected Bearer".into(),
+            )
+        })?;
 
         state
             .jwt

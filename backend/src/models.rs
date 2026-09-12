@@ -1,8 +1,8 @@
 // backend/src/models.rs
 
-use serde::{Deserialize, Serialize};
 use crate::auth::provider::UserIdentity;
-pub use steadystate_common::types::{SessionInfo, SessionState, DeviceFlowResponse};
+use serde::{Deserialize, Serialize};
+pub use steadystate_common::types::{DeviceFlowResponse, SessionInfo, SessionState};
 
 // ============================================================================
 //  Authentication & Identity Models
@@ -13,15 +13,21 @@ pub use steadystate_common::types::{SessionInfo, SessionState, DeviceFlowRespons
 pub struct ProviderId(String);
 
 impl ProviderId {
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl From<String> for ProviderId {
-    fn from(s: String) -> Self { ProviderId(s) }
+    fn from(s: String) -> Self {
+        ProviderId(s)
+    }
 }
 
 impl From<&str> for ProviderId {
-    fn from(s: &str) -> Self { ProviderId(s.to_owned()) }
+    fn from(s: &str) -> Self {
+        ProviderId(s.to_owned())
+    }
 }
 
 #[derive(Clone)]
@@ -123,7 +129,10 @@ pub struct WhoamiOut {
 
 impl From<UserIdentity> for WhoamiOut {
     fn from(u: UserIdentity) -> Self {
-        Self { login: u.login, provider: u.provider }
+        Self {
+            login: u.login,
+            provider: u.provider,
+        }
     }
 }
 
@@ -209,11 +218,15 @@ impl From<&Session> for SessionInfo {
             magic_link: session.magic_link.clone(),
             host_public_key: session.host_public_key.clone(),
             expires_at: session.expires_at.and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs())
             }),
             repo_url: Some(session.repo_url.clone()),
             last_activity_at: session.last_activity_at.and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs())
             }),
         }
     }

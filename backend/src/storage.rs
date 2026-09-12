@@ -102,7 +102,9 @@ impl Storage {
                 }
             }
         }
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Open (creating parents as needed) the database file.
@@ -112,7 +114,8 @@ impl Storage {
             return Self::new(
                 rusqlite::Connection::open_in_memory().context("open in-memory sqlite")?,
             );
-        }        if let Some(parent) = path.parent() {
+        }
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create db parent dir {}", parent.display()))?;
         }
@@ -200,7 +203,8 @@ impl Storage {
                 last_activity_at: activity_raw.map(system_time),
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().context("load sessions")
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .context("load sessions")
     }
 
     pub fn delete_session(&self, id: &str) -> Result<()> {
@@ -220,7 +224,12 @@ impl Storage {
                ON CONFLICT(token) DO UPDATE SET
                  login=excluded.login, provider=excluded.provider,
                  expires_at=excluded.expires_at"#,
-            rusqlite::params![token, rec.login, rec.provider.as_str(), rec.expires_at as i64],
+            rusqlite::params![
+                token,
+                rec.login,
+                rec.provider.as_str(),
+                rec.expires_at as i64
+            ],
         )
         .context("save refresh token")?;
         Ok(())
@@ -228,7 +237,8 @@ impl Storage {
 
     pub fn load_refresh(&self) -> Result<Vec<(String, RefreshRecord)>> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
-        let mut stmt = conn.prepare("SELECT token, login, provider, expires_at FROM refresh_tokens")?;
+        let mut stmt =
+            conn.prepare("SELECT token, login, provider, expires_at FROM refresh_tokens")?;
         let rows = stmt.query_map([], |row| {
             let token: String = row.get(0)?;
             let rec = RefreshRecord {
@@ -238,7 +248,8 @@ impl Storage {
             };
             Ok((token, rec))
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().context("load refresh tokens")
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .context("load refresh tokens")
     }
 
     pub fn delete_refresh(&self, token: &str) -> Result<()> {
@@ -252,7 +263,10 @@ impl Storage {
     pub fn prune_expired_refresh(&self, now: u64) -> Result<usize> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
         let n = conn
-            .execute("DELETE FROM refresh_tokens WHERE expires_at <= ?1", [now as i64])
+            .execute(
+                "DELETE FROM refresh_tokens WHERE expires_at <= ?1",
+                [now as i64],
+            )
             .context("prune expired refresh tokens")?;
         Ok(n)
     }
@@ -295,7 +309,10 @@ mod tests {
         assert_eq!(loaded[0].id, "s1");
         assert_eq!(loaded[0].state, SessionState::Running);
         assert_eq!(loaded[0].creator_login, "alice");
-        assert_eq!(loaded[0].magic_link.as_deref(), Some("steadystate://collab/abc"));
+        assert_eq!(
+            loaded[0].magic_link.as_deref(),
+            Some("steadystate://collab/abc")
+        );
         assert!(loaded[0].expires_at.is_some());
         assert!(loaded[0].last_activity_at.is_some());
 
@@ -347,7 +364,14 @@ mod tests {
         db.save_session(&test_session("new-1")).unwrap();
         let loaded = db.load_sessions().unwrap();
         assert_eq!(loaded.len(), 2);
-        assert!(loaded.iter().find(|r| r.id == "new-1").unwrap().expires_at.is_some());
+        assert!(
+            loaded
+                .iter()
+                .find(|r| r.id == "new-1")
+                .unwrap()
+                .expires_at
+                .is_some()
+        );
     }
 
     #[test]
@@ -381,7 +405,14 @@ mod tests {
             expires_at: 9_999_999_999,
         };
         db.save_refresh("tok1", &rec).unwrap();
-        db.save_refresh("tok-old", &RefreshRecord { expires_at: 1, ..rec.clone() }).unwrap();
+        db.save_refresh(
+            "tok-old",
+            &RefreshRecord {
+                expires_at: 1,
+                ..rec.clone()
+            },
+        )
+        .unwrap();
 
         let loaded = db.load_refresh().unwrap();
         assert_eq!(loaded.len(), 2);

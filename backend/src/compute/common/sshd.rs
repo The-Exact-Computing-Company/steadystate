@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow};
 use crate::compute::traits::RemoteExecutor;
+use anyhow::{Result, anyhow};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct SshdConfig {
@@ -26,7 +26,8 @@ pub enum SshdLogLevel {
 
 impl SshdConfig {
     pub fn generate(&self) -> String {
-        format!(r#"# SteadyState SSH Configuration
+        format!(
+            r#"# SteadyState SSH Configuration
 Port {port}
 ListenAddress 0.0.0.0
 HostKey {host_key}
@@ -60,7 +61,11 @@ Subsystem sftp internal-sftp
             host_key = self.host_key_path.display(),
             auth_keys = self.authorized_keys_path.display(),
             pid_file = self.pid_file_path.display(),
-            permit_env = if self.permit_user_environment { "yes" } else { "no" },
+            permit_env = if self.permit_user_environment {
+                "yes"
+            } else {
+                "no"
+            },
             log_level = self.log_level.as_str(),
         )
     }
@@ -89,33 +94,30 @@ pub async fn find_sshd_binary(executor: &dyn RemoteExecutor) -> Result<String> {
             return Ok(path.to_string());
         }
     }
-    
+
     // Fall back to which
     let output = executor.exec("which", &["sshd"]).await?;
     if output.exit_status.success() {
         return Ok(output.stdout.trim().to_string());
     }
-    
+
     Err(anyhow!("sshd binary not found"))
 }
 
 /// Generate SSH host keys
-pub async fn generate_host_keys(
-    executor: &dyn RemoteExecutor,
-    key_path: &Path,
-) -> Result<()> {
+pub async fn generate_host_keys(executor: &dyn RemoteExecutor, key_path: &Path) -> Result<()> {
     let key_str = key_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
-    
+
     let output = executor
         .exec("ssh-keygen", &["-t", "ed25519", "-f", key_str, "-N", ""])
         .await?;
-        
+
     if !output.exit_status.success() {
         return Err(anyhow!("ssh-keygen failed: {}", output.stderr));
     }
-    
+
     // Set correct permissions
     executor.set_permissions(key_path, 0o600).await?;
-    
+
     Ok(())
 }

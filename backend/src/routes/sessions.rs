@@ -1,14 +1,14 @@
 // backend/src/routes/sessions.rs
 
-use std::sync::Arc;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, post, delete},
-    Json, Router,
+    routing::{delete, get, post},
 };
-use uuid::Uuid;
 use serde_json::json;
+use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::{
     jwt::CustomClaims,
@@ -23,36 +23,55 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/{id}", delete(terminate_session))
 }
 
-async fn run_provisioning(
-    app_state: Arc<AppState>,
-    session_id: String,
-    request: SessionRequest,
-) {
+async fn run_provisioning(app_state: Arc<AppState>, session_id: String, request: SessionRequest) {
     // 1. Retrieve the provider ID
     let provider_id = if let Some(session) = app_state.sessions.get(&session_id) {
         session.compute_provider.clone()
     } else {
-        return; 
+        return;
     };
 
     // 2. Get the provider (map is now wrapped in Arc, so access is cheap)
     let provider = if let Some(p) = app_state.compute_providers.get(&provider_id) {
         p.clone()
     } else {
+        // Unknown provider: fail fast instead of leaving Provisioning forever
+        // (the provisioning-timeout reaper is only the backstop).
         tracing::error!("Provider '{}' not found", provider_id);
+        if let Some(mut session) = app_state.sessions.get_mut(&session_id) {
+            session.state = SessionState::Failed;
+            session.error_message = Some(format!("Unknown compute provider '{}'", provider_id));
+            session.updated_at = std::time::SystemTime::now();
+            drop(session);
+            app_state.persist_session(&session_id);
+        }
         return;
     };
 
     // 3. Do the work (release lock first!)
     // We clone request data needed for provisioning if necessary, but here we pass the whole request.
-    
+
     // Release the lock by not holding a reference to session_entry across the await point.
     // We already have provider_id and provider.
-    
+
     let result = provider.start_session(&session_id, &request).await;
 
-    // 4. Handle result
+    // 4. Handle result — but never resurrect a session that was terminated
+    // while provisioning (user DELETE or reaper won the race): in that case
+    // the termination task owns cleanup, so leave the terminal state alone.
+    // The missing-provider case from step 2 also lands here as Failed.
     if let Some(mut session) = app_state.sessions.get_mut(&session_id) {
+        match session.state {
+            SessionState::Terminating | SessionState::Terminated => {
+                tracing::info!(
+                    "Session {} was terminated during provisioning; keeping {:?}",
+                    session_id,
+                    session.state
+                );
+                return;
+            }
+            _ => {}
+        }
         match result {
             Ok(start_result) => {
                 session.state = SessionState::Running;
@@ -93,20 +112,29 @@ async fn create_session(
     let session_id = Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now();
 
-    let requested_provider = request.provider.clone()
+    let requested_provider = request
+        .provider
+        .clone()
         .map(|p| p.trim().to_lowercase())
         .filter(|p| !p.is_empty());
     let compute_provider = match requested_provider {
         Some(p) if state.compute_providers.contains_key(&p) => p,
         Some(p) => {
-            tracing::warn!("Unknown compute provider '{}', falling back to '{}'", p, state.config.default_compute_provider);
+            tracing::warn!(
+                "Unknown compute provider '{}', falling back to '{}'",
+                p,
+                state.config.default_compute_provider
+            );
             state.config.default_compute_provider.clone()
         }
         None => state.config.default_compute_provider.clone(),
     };
 
     // Per-user live-session cap (cost control, chiefly for cloud providers).
-    // A cap of 0 disables the limit.
+    // A cap of 0 disables the limit. The per-user lock makes check+insert
+    // atomic so concurrent creates cannot jointly exceed the cap.
+    let creation_lock = state.creation_lock(&claims.sub);
+    let _creation_guard = creation_lock.lock().await;
     if state.config.max_sessions_per_user > 0
         && state.live_session_count(&claims.sub) >= state.config.max_sessions_per_user
     {
@@ -160,10 +188,14 @@ async fn create_session(
     };
 
     let session_info = SessionInfo::from(&session);
-    
+
     state.sessions.insert(session_id.clone(), session);
     state.persist_session(&session_id);
-    tracing::info!("Session {} inserted into map, total sessions: {}", session_id, state.sessions.len());
+    tracing::info!(
+        "Session {} inserted into map, total sessions: {}",
+        session_id,
+        state.sessions.len()
+    );
 
     // --- Inject the caller's forge token (github PAT/OAuth, gitlab PAT) ---
     // Keyed by the JWT's provider claim, so any auth provider works here.
@@ -173,7 +205,10 @@ async fn create_session(
         .get(&(claims.provider.clone(), claims.sub.clone()))
     {
         let mut creds = serde_json::Map::new();
-        creds.insert("login".to_string(), serde_json::Value::String(claims.sub.clone()));
+        creds.insert(
+            "login".to_string(),
+            serde_json::Value::String(claims.sub.clone()),
+        );
         creds.insert(
             "access_token".to_string(),
             serde_json::Value::String(token.value().clone()),
@@ -235,7 +270,11 @@ async fn get_session_status(
     claims: CustomClaims,
     Path(id): Path<String>,
 ) -> Result<Json<SessionInfo>, (StatusCode, Json<serde_json::Value>)> {
-    tracing::info!("GET /sessions/{}, total sessions in map: {}", id, state.sessions.len());
+    tracing::info!(
+        "GET /sessions/{}, total sessions in map: {}",
+        id,
+        state.sessions.len()
+    );
     match state.sessions.get(&id) {
         Some(session) => {
             tracing::info!("Found session {} in state {:?}", id, session.state);
@@ -248,7 +287,10 @@ async fn get_session_status(
         }
         None => {
             tracing::warn!("Session {} not found in map", id);
-            Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" }))))
+            Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Session not found" })),
+            ))
         }
     }
 }
@@ -271,13 +313,25 @@ async fn terminate_session(
     claims: CustomClaims,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    // 404 first so session IDs are not enumerable via 403-vs-404.
+    // NOTE on enumeration: missing ids answer 404 while existing-but-foreign
+    // ids answer 403, which inherently distinguishes them. UUIDv4 ids are
+    // unguessable, so this oracle has no practical exploit; the ordering
+    // (existence before ownership) only avoids leaking *which* check failed
+    // first in logs. Do not rely on this for secrecy — rely on unguessable ids.
     let creator = match state.sessions.get(&id) {
         Some(session) => session.creator_login.clone(),
-        None => return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" })))),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Session not found" })),
+            ));
+        }
     };
     if creator != claims.sub {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "Only the session creator can terminate it" }))));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Only the session creator can terminate it" })),
+        ));
     }
 
     terminate_inner(&state, &id).await
@@ -287,11 +341,42 @@ async fn terminate_session(
 /// cleanup (which records Terminated/Failed on completion).
 /// Used by DELETE (after the ownership check above) and by the reaper,
 /// which needs no caller auth — expiry is server policy.
+///
+/// Idempotent: only sessions in Provisioning/Running/Failed transition and
+/// spawn cleanup. Already-terminating or terminal sessions answer ACCEPTED
+/// without spawning duplicate cleanups (double provider deletes could
+/// otherwise mark a dead session Failed).
 pub(crate) async fn terminate_inner(
     state: &Arc<AppState>,
     id: &str,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    // State-guard first so concurrent terminates (manual + reaper, double
+    // DELETE) collapse onto a single cleanup task.
+    let needs_spawn = match state.sessions.get(id) {
+        Some(session) => matches!(
+            session.state,
+            SessionState::Provisioning | SessionState::Running | SessionState::Failed
+        ),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Session not found" })),
+            ));
+        }
+    };
+    if !needs_spawn {
+        return Ok(StatusCode::ACCEPTED);
+    }
+
     if let Some(mut session) = state.sessions.get_mut(id) {
+        // Re-check under the write guard: another task may have transitioned
+        // between the read above and now.
+        if !matches!(
+            session.state,
+            SessionState::Provisioning | SessionState::Running | SessionState::Failed
+        ) {
+            return Ok(StatusCode::ACCEPTED);
+        }
         session.state = SessionState::Terminating;
         session.updated_at = std::time::SystemTime::now();
         let session_clone = session.clone();
@@ -301,13 +386,20 @@ pub(crate) async fn terminate_inner(
         // Persist the Terminating state before spawning cleanup.
         state.persist_session(&owned_id);
 
-        if let Some(provider) = state.compute_providers.get(&session_clone.compute_provider) {
+        if let Some(provider) = state
+            .compute_providers
+            .get(&session_clone.compute_provider)
+        {
             let provider = provider.clone();
             let bg_state = state.clone();
             tokio::spawn(async move {
                 match provider.terminate_session(&session_clone).await {
                     Ok(()) => {
                         if let Some(mut s) = bg_state.sessions.get_mut(&owned_id) {
+                            // Preserve an idle-timeout reason set by the reaper;
+                            // it explains the termination in list/status output.
+                            // A Terminated session carrying a message is a
+                            // reason, not an error — see reaper.rs.
                             s.state = SessionState::Terminated;
                             s.updated_at = std::time::SystemTime::now();
                         }
@@ -324,10 +416,29 @@ pub(crate) async fn terminate_inner(
                     }
                 }
             });
+        } else {
+            // Unknown provider: never leave the session stuck Terminating.
+            tracing::error!(
+                "Unknown compute provider '{}' for session {}; marking Failed",
+                session_clone.compute_provider,
+                owned_id
+            );
+            if let Some(mut s) = state.sessions.get_mut(&owned_id) {
+                s.state = SessionState::Failed;
+                s.error_message = Some(format!(
+                    "Unknown compute provider '{}'",
+                    session_clone.compute_provider
+                ));
+                s.updated_at = std::time::SystemTime::now();
+            }
+            state.persist_session(&owned_id);
         }
         Ok(StatusCode::ACCEPTED)
     } else {
-        Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" }))))
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Session not found" })),
+        ))
     }
 }
 
@@ -341,7 +452,7 @@ mod tests {
     /// Env is saved, overridden, and restored under the shared test lock,
     /// so parallel env-mutating tests cannot observe intermediate values.
     async fn test_state() -> Arc<AppState> {
-        let _guard = lock_test_env();
+        let _guard = lock_test_env().await;
         let saved: Vec<(String, Option<String>)> = [
             "JWT_SECRET",
             "NOENV_FLAKE_PATH",
@@ -351,9 +462,9 @@ mod tests {
             "STEADYSTATE_MAX_SESSION_TTL_SECS",
             "STEADYSTATE_MAX_SESSIONS_PER_USER",
         ]
-            .iter()
-            .map(|k| (k.to_string(), std::env::var(k).ok()))
-            .collect();
+        .iter()
+        .map(|k| (k.to_string(), std::env::var(k).ok()))
+        .collect();
         // SAFETY: serialized by the shared test-env lock.
         unsafe {
             std::env::set_var("JWT_SECRET", "test-secret-for-route-tests");
@@ -379,27 +490,33 @@ mod tests {
 
     fn seed_session(state: &Arc<AppState>, id: &str, creator: &str) {
         let now = std::time::SystemTime::now();
-        state.sessions.insert(id.to_string(), Session {
-            id: id.to_string(),
-            state: SessionState::Running,
-            repo_url: "https://github.com/user/repo".to_string(),
-            branch: None,
-            environment: None,
-            endpoint: Some("ssh://steady@host:2222".to_string()),
-            compute_provider: "local".to_string(),
-            creator_login: creator.to_string(),
-            created_at: now,
-            updated_at: now,
-            error_message: None,
-            magic_link: Some("steadystate://collab/sess?ssh=x".to_string()),
-            host_public_key: Some("ssh-ed25519 AAAA".to_string()),
-            expires_at: None,
-            last_activity_at: None,
-        });
+        state.sessions.insert(
+            id.to_string(),
+            Session {
+                id: id.to_string(),
+                state: SessionState::Running,
+                repo_url: "https://github.com/user/repo".to_string(),
+                branch: None,
+                environment: None,
+                endpoint: Some("ssh://steady@host:2222".to_string()),
+                compute_provider: "local".to_string(),
+                creator_login: creator.to_string(),
+                created_at: now,
+                updated_at: now,
+                error_message: None,
+                magic_link: Some("steadystate://collab/sess?ssh=x".to_string()),
+                host_public_key: Some("ssh-ed25519 AAAA".to_string()),
+                expires_at: None,
+                last_activity_at: None,
+            },
+        );
     }
 
     fn claims(login: &str) -> CustomClaims {
-        CustomClaims { sub: login.to_string(), provider: "github".to_string() }
+        CustomClaims {
+            sub: login.to_string(),
+            provider: "github".to_string(),
+        }
     }
 
     #[tokio::test]
@@ -415,9 +532,13 @@ mod tests {
     async fn terminate_non_creator_is_403_and_keeps_session() {
         let state = test_state().await;
         seed_session(&state, "sess-1", "alice");
-        let err = terminate_session(State(state.clone()), claims("bob"), Path("sess-1".to_string()))
-            .await
-            .unwrap_err();
+        let err = terminate_session(
+            State(state.clone()),
+            claims("bob"),
+            Path("sess-1".to_string()),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
         let s = state.sessions.get("sess-1").unwrap();
         assert_eq!(s.state, SessionState::Running);
@@ -427,9 +548,13 @@ mod tests {
     async fn terminate_creator_is_accepted_then_terminated() {
         let state = test_state().await;
         seed_session(&state, "sess-2", "alice");
-        let status = terminate_session(State(state.clone()), claims("alice"), Path("sess-2".to_string()))
-            .await
-            .unwrap();
+        let status = terminate_session(
+            State(state.clone()),
+            claims("alice"),
+            Path("sess-2".to_string()),
+        )
+        .await
+        .unwrap();
         assert_eq!(status, StatusCode::ACCEPTED);
 
         // Local provider has no live handle for the seed, so cleanup resolves
@@ -488,8 +613,12 @@ mod tests {
     #[tokio::test]
     async fn create_clamps_over_max_ttl() {
         let state = test_state().await;
-        let (status, Json(info)) =
-            create_session(State(state), claims("alice"), Json(create_req(Some(999_999)))).await;
+        let (status, Json(info)) = create_session(
+            State(state),
+            claims("alice"),
+            Json(create_req(Some(999_999))),
+        )
+        .await;
         assert_eq!(status, StatusCode::ACCEPTED);
         let remaining = expires_in_secs(&info);
         assert!(remaining <= 7200 && remaining > 7100, "{}", remaining);
@@ -503,13 +632,16 @@ mod tests {
         seed_session(&state, "cap-2", "alice");
         seed_session(&state, "other-1", "bob");
 
-        let (status, _) =
-            create_session(State(state.clone()), claims("alice"), Json(create_req(None))).await;
+        let (status, _) = create_session(
+            State(state.clone()),
+            claims("alice"),
+            Json(create_req(None)),
+        )
+        .await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
         // Under the cap (bob has 1) still works.
-        let (status, _) =
-            create_session(State(state), claims("bob"), Json(create_req(None))).await;
+        let (status, _) = create_session(State(state), claims("bob"), Json(create_req(None))).await;
         assert_eq!(status, StatusCode::ACCEPTED);
     }
 
@@ -565,7 +697,10 @@ mod tests {
         assert_eq!(ids, vec!["a-1", "a-2"]);
         // Creator view carries connection details + repo.
         assert!(mine.iter().all(|s| s.magic_link.is_some()));
-        assert!(mine.iter().all(|s| s.repo_url.as_deref() == Some("https://github.com/user/repo")));
+        assert!(
+            mine.iter()
+                .all(|s| s.repo_url.as_deref() == Some("https://github.com/user/repo"))
+        );
 
         let Json(bobs) = list_sessions(State(state), claims("bob")).await;
         assert_eq!(bobs.len(), 1);

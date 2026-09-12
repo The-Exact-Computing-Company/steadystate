@@ -70,7 +70,6 @@ pub async fn get_cfg_dir(override_dir: Option<&PathBuf>) -> Result<PathBuf> {
     Ok(p)
 }
 
-
 pub async fn session_file(override_dir: Option<&PathBuf>) -> Result<PathBuf> {
     Ok(get_cfg_dir(override_dir).await?.join("session.json"))
 }
@@ -115,7 +114,7 @@ pub async fn remove_session(override_dir: Option<&PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     struct TestContext {
         // This holds the temporary directory, which is automatically deleted when TestContext goes out of scope.
@@ -133,93 +132,93 @@ mod tests {
         }
     }
 
-#[tokio::test]
-async fn test_is_near_expiry_true_when_within_buffer() {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    #[tokio::test]
+    async fn test_is_near_expiry_true_when_within_buffer() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-    let exp = now + 30; // expires in 30 seconds
-    let session = Session {
+        let exp = now + 30; // expires in 30 seconds
+        let session = Session {
             login: "u".into(),
             jwt: "t".into(),
             provider: None,
-        jwt_exp: Some(exp),
-    };
+            jwt_exp: Some(exp),
+        };
 
-    assert!(session.is_near_expiry(60)); // buffer 60s → should return true
-}
+        assert!(session.is_near_expiry(60)); // buffer 60s → should return true
+    }
 
-#[tokio::test]
-async fn test_is_near_expiry_false_when_outside_buffer() {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    #[tokio::test]
+    async fn test_is_near_expiry_false_when_outside_buffer() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-    let exp = now + 300; // expires in 5 minutes
-    let session = Session {
+        let exp = now + 300; // expires in 5 minutes
+        let session = Session {
             login: "u".into(),
             jwt: "t".into(),
             provider: None,
-        jwt_exp: Some(exp),
-    };
+            jwt_exp: Some(exp),
+        };
 
-    assert!(!session.is_near_expiry(60)); // buffer 60s → should return false
-}
+        assert!(!session.is_near_expiry(60)); // buffer 60s → should return false
+    }
 
-#[tokio::test]
-async fn test_is_near_expiry_none_expiry_means_false() {
-    let session = Session {
+    #[tokio::test]
+    async fn test_is_near_expiry_none_expiry_means_false() {
+        let session = Session {
             login: "u".into(),
             jwt: "t".into(),
             provider: None,
-        jwt_exp: None,
-    };
+            jwt_exp: None,
+        };
 
-    assert!(!session.is_near_expiry(60));
-}
+        assert!(!session.is_near_expiry(60));
+    }
 
-#[tokio::test]
-async fn test_is_near_expiry_exact_boundary() {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    #[tokio::test]
+    async fn test_is_near_expiry_exact_boundary() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-    let exp = now + 60;
-    let session = Session {
+        let exp = now + 60;
+        let session = Session {
             login: "u".into(),
             jwt: "t".into(),
             provider: None,
-        jwt_exp: Some(exp),
-    };
+            jwt_exp: Some(exp),
+        };
 
-    // Expiration equals now + buffer → treat as near expiry
-    assert!(session.is_near_expiry(60));
-}
+        // Expiration equals now + buffer → treat as near expiry
+        assert!(session.is_near_expiry(60));
+    }
 
     #[tokio::test]
     async fn test_write_read_cycle() {
         let ctx = TestContext::new();
-        
+
         // Ensure no session exists by passing the temp directory path.
         remove_session(Some(&ctx.path)).await.unwrap();
-        
+
         let session = Session {
             login: "test_user".into(),
             jwt: "fake_jwt".into(),
             provider: None,
             jwt_exp: Some(42),
         };
-        
+
         // Pass the temp directory path to the function being tested.
         write_session(&session, Some(&ctx.path)).await.unwrap();
-        
+
         // Pass the temp directory path to read from the correct location.
         let loaded = read_session(Some(&ctx.path)).await.unwrap();
-        
+
         assert_eq!(loaded.login, session.login);
         assert_eq!(loaded.jwt, session.jwt);
         assert_eq!(loaded.jwt_exp, session.jwt_exp);
@@ -246,10 +245,8 @@ async fn test_is_near_expiry_exact_boundary() {
         assert_eq!(gl.provider_or_default(), "gitlab");
 
         // Legacy JSON without the provider key still parses.
-        let parsed: Session = serde_json::from_str(
-            r#"{"login":"u","jwt":"t","jwt_exp":null}"#,
-        )
-        .unwrap();
+        let parsed: Session =
+            serde_json::from_str(r#"{"login":"u","jwt":"t","jwt_exp":null}"#).unwrap();
         assert_eq!(parsed.provider_or_default(), "github");
     }
 }

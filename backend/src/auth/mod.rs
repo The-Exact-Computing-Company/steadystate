@@ -1,13 +1,13 @@
 // backend/src/auth/mod.rs
 
-pub mod provider;
+pub mod fake;
 pub mod github;
 pub mod gitlab;
 pub mod oidc;
-pub mod fake;
+pub mod provider;
 
-use std::sync::Arc;
 use crate::state::AppState;
+use std::sync::Arc;
 
 /// Registers all the built-in authentication provider factories.
 /// This is the *only* place that needs to be modified to add a new provider.

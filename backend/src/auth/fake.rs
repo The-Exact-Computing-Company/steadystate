@@ -1,8 +1,8 @@
 // backend/src/auth/fake.rs
 
-use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use crate::auth::provider::{
     AuthProvider, AuthProviderDyn, AuthProviderFactory, DevicePollOutcome, UserIdentity,
@@ -71,4 +71,4 @@ impl AuthProviderFactory for FakeFactory {
         }
         Ok(FakeAuth::new())
     }
-} 
+}
