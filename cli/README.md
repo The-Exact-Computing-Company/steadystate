@@ -25,6 +25,8 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 | `steadystate refresh` | Force-refresh the JWT using the stored refresh token. |
 | `steadystate logout` | Revoke the refresh token (if possible) and clear local session files. |
 | `steadystate up <repo> --env=<ENV> --mode=<MODE> [--provider=<PROVIDER>]` | Create a remote development session for the given repository URL. Add `--json` for structured output. |
+| `steadystate down <id-or-magic-link>` | Terminate one of your sessions (creator-only). |
+| `steadystate list [--json]` | List your sessions with state, provider, expiry, and repo. |
 | `steadystate --version` or `-v` | Print the CLI version. |
 
 ### `up` flags

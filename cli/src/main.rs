@@ -23,7 +23,7 @@ use auth::{
     UpResponse, delete_refresh_token, device_login, get_refresh_token, perform_refresh,
     request_with_auth, get_access_token,
 };
-use config::{BACKEND_URL, CLI_VERSION, HTTP_TIMEOUT_SECS, USER_AGENT};
+use config::{BACKEND_URL, CLI_VERSION, HTTP_TIMEOUT_SECS, JWT_REFRESH_BUFFER_SECS, USER_AGENT};
 use session::{read_session, remove_session};
 use steadystate_common::types::SessionState;
 
@@ -117,6 +117,17 @@ enum Commands {
     Diff,
     /// Publish changes to the canonical repository (alias for sync)
     Publish,
+    /// Terminate a session by ID (or magic link)
+    Down {
+        /// Session ID or steadystate:// magic link
+        target: String,
+    },
+    /// List your sessions
+    List {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -205,6 +216,124 @@ async fn logout(client: &Client) -> Result<()> {
     }
     let _ = remove_session(None).await;
     println!("Logged out (local tokens removed).");
+    Ok(())
+}
+
+/// Extract a session ID from a raw ID or a steadystate:// magic link.
+fn session_id_from_target(target: &str) -> Result<String> {
+    let t = target.trim();
+    if let Some(_rest) = t.strip_prefix("steadystate://") {
+        let url = Url::parse(t).context("Failed to parse magic link")?;
+        let id = url
+            .path_segments()
+            .and_then(|mut c| c.next())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Magic link has no session ID"))?;
+        return Ok(id.to_string());
+    }
+    if t.contains("://") {
+        anyhow::bail!("Expected a session ID or steadystate:// magic link, got URL");
+    }
+    if t.is_empty() {
+        anyhow::bail!("Empty session target");
+    }
+    Ok(t.to_string())
+}
+
+/// Render expiry epoch seconds as relative human text.
+fn format_expiry(expires_at: Option<u64>) -> String {
+    match expires_at {
+        None => "never".to_string(),
+        Some(exp) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if exp <= now {
+                "expired".to_string()
+            } else {
+                let d = exp - now;
+                if d >= 3600 {
+                    format!("in {}h", d / 3600)
+                } else if d >= 60 {
+                    format!("in {}m", d / 60)
+                } else {
+                    format!("in {}s", d)
+                }
+            }
+        }
+    }
+}
+
+fn short_repo_name(repo_url: Option<&String>) -> &str {
+    repo_url
+        .map(|u| u.rsplit('/').next().unwrap_or(u).trim_end_matches(".git"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-")
+}
+
+async fn down(client: &Client, target: String) -> Result<()> {
+    let id = session_id_from_target(&target)?;
+
+    // Authenticated DELETE (request_with_auth expects a JSON body, but
+    // DELETE answers 202 with none — so authenticate manually here).
+    let session = read_session(None).await.context(
+        "Not logged in. Please run 'steadystate login' first."
+    )?;
+    let mut jwt = session.jwt.clone();
+    if session.is_near_expiry(JWT_REFRESH_BUFFER_SECS) {
+        jwt = perform_refresh(client, Some(session.login.clone()), None)
+            .await
+            .context("Session expired and refresh failed")?
+            .jwt;
+    }
+
+    let url = format!("{}/sessions/{}", &*BACKEND_URL, id);
+    let resp = auth::send_with_retries(|| client.delete(&url).bearer_auth(&jwt)).await?;
+
+    match resp.status().as_u16() {
+        202 => println!("Session {} termination requested.", id),
+        404 => println!("No such session: {} (already gone?)", id),
+        403 => anyhow::bail!("Not allowed: only the session creator can terminate it."),
+        401 => anyhow::bail!("Session expired or revoked. Run 'steadystate login' again."),
+        s => anyhow::bail!("Terminate failed with status {}", s),
+    }
+    Ok(())
+}
+
+async fn list_sessions(client: &Client, json: bool) -> Result<()> {
+    let sessions: Vec<UpResponse> = request_with_auth(
+        client,
+        |c, jwt| {
+            c.get(format!("{}/sessions", &*BACKEND_URL))
+                .bearer_auth(jwt)
+        },
+        None,
+    )
+    .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+    if sessions.is_empty() {
+        println!("No sessions. Create one with 'steadystate up ...'.");
+        return Ok(());
+    }
+    println!(
+        "{:<10} {:<12} {:<8} {:<10} {}",
+        "ID", "STATE", "PROVIDER", "EXPIRES", "REPO"
+    );
+    for s in &sessions {
+        println!(
+            "{:<10} {:<12} {:<8} {:<10} {}",
+            s.id.chars().take(8).collect::<String>(),
+            s.state.as_str(),
+            s.compute_provider.as_deref().unwrap_or("-"),
+            format_expiry(s.expires_at),
+            short_repo_name(s.repo_url.as_ref()),
+        );
+    }
     Ok(())
 }
 
@@ -915,6 +1044,18 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Commands::Down { target } => {
+            if let Err(e) = down(&client, target).await {
+                eprintln!("down failed: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::List { json } => {
+            if let Err(e) = list_sessions(&client, json).await {
+                eprintln!("list failed: {:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
@@ -938,5 +1079,48 @@ mod tests {
         for bad in ["", "0", "0h", "abc", "10x", "h", "-5m", "1.5h"] {
             assert!(parse_duration_secs(bad).is_err(), "{}", bad);
         }
+    }
+
+    #[test]
+    fn test_session_id_from_target() {
+        assert_eq!(session_id_from_target("abc123").unwrap(), "abc123");
+        assert_eq!(session_id_from_target("  abc123  ").unwrap(), "abc123");
+        assert_eq!(
+            session_id_from_target("steadystate://collab/abc123?ssh=x").unwrap(),
+            "abc123"
+        );
+        assert_eq!(
+            session_id_from_target("steadystate://pair/xyz").unwrap(),
+            "xyz"
+        );
+        assert!(session_id_from_target("steadystate://collab/").is_err());
+        assert!(session_id_from_target("ssh://steady@host:2222").is_err());
+        assert!(session_id_from_target("").is_err());
+    }
+
+    #[test]
+    fn test_format_expiry() {
+        assert_eq!(format_expiry(None), "never");
+        assert_eq!(format_expiry(Some(1)), "expired");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(format_expiry(Some(now + 90)), "in 1m");
+        assert_eq!(format_expiry(Some(now + 7200)), "in 2h");
+        assert_eq!(format_expiry(Some(now + 45)), "in 45s");
+    }
+
+    #[test]
+    fn test_short_repo_name() {
+        assert_eq!(
+            short_repo_name(Some(&"https://github.com/org/repo.git".to_string())),
+            "repo"
+        );
+        assert_eq!(
+            short_repo_name(Some(&"https://gitlab.com/group/sub/proj".to_string())),
+            "proj"
+        );
+        assert_eq!(short_repo_name(None), "-");
     }
 } 

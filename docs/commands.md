@@ -91,6 +91,30 @@ steadystate up --env=tproject --mode=collab --provider=hetzner https://github.co
 steadystate up --env=noenv --mode=pair --allow=alice,bob https://github.com/user/repo
 ```
 
+## steadystate list
+
+List your sessions.
+
+```
+steadystate list
+steadystate list --json
+```
+
+Shows ID, state, provider, expiry (`in 31h`, `expired`, `never`), and
+repository. `--json` dumps the raw array. Only your own sessions appear.
+
+## steadystate down
+
+Terminate a session by ID (or magic link).
+
+```
+steadystate down abc123
+steadystate down "steadystate://collab/abc123?ssh=...&host_key=..."
+```
+
+Only the session creator can terminate it (`403` otherwise). Unknown IDs
+report "already gone?" instead of failing.
+
 ## steadystate join
 
 Join an existing collaboration session.

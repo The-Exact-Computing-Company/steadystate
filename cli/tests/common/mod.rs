@@ -10,6 +10,7 @@ pub enum MockResponse {
     Json(serde_json::Value),
     Unauthorized,
     Ok,
+    Accepted, // 202 with empty body (DELETE /sessions/{id})
     Custom(String), // For custom bodies
 }
 
@@ -35,6 +36,12 @@ impl MockResponse {
             }
             MockResponse::Ok => {
                 "HTTP/1.1 200 OK\r\n\
+                 Connection: close\r\n\
+                 Content-Length: 0\r\n\r\n"
+                    .to_string()
+            }
+            MockResponse::Accepted => {
+                "HTTP/1.1 202 Accepted\r\n\
                  Connection: close\r\n\
                  Content-Length: 0\r\n\r\n"
                     .to_string()

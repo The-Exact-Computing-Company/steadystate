@@ -544,6 +544,8 @@ On GitHub:
 | `steadystate logout` | Clear local credentials |
 | `steadystate whoami` | Show current user |
 | `steadystate up --mode=collab <repo>` | Create a collaboration session |
+| `steadystate down <id>` | Terminate one of your sessions |
+| `steadystate list` | List your sessions |
 | `steadystate join "<magic_link>"` | Join an existing session |
 | `steadystate dashboard "<magic_link>"` | Open session dashboard (alias: `dash`) |
 | `steadystate sync` | Sync changes with collaborators |

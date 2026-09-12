@@ -13,6 +13,10 @@ pub struct SessionInfo {
     /// expiry tracking existed (treated as non-expiring legacy).
     #[serde(default)]
     pub expires_at: Option<u64>,
+    /// Repository the session was created for. Absent on records written
+    /// before it was exposed (populated going forward).
+    #[serde(default)]
+    pub repo_url: Option<String>,
 }
 
 impl SessionInfo {
@@ -44,6 +48,7 @@ mod tests {
             compute_provider: Some("local".to_string()),
             message: None,
             expires_at: Some(9_999_999),
+            repo_url: Some("https://github.com/user/repo".to_string()),
         };
         let red = full.redacted();
         assert_eq!(red.magic_link, None);

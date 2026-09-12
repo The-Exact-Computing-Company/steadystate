@@ -18,7 +18,7 @@ use crate::{
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/", post(create_session))
+        .route("/", post(create_session).get(list_sessions))
         .route("/{id}", get(get_session_status))
         .route("/{id}", delete(terminate_session))
 }
@@ -124,6 +124,7 @@ async fn create_session(
                 magic_link: None,
                 host_public_key: None,
                 expires_at: None,
+                repo_url: None,
             }),
         );
     }
@@ -181,6 +182,29 @@ async fn create_session(
     tokio::spawn(run_provisioning(state.clone(), session_id, request));
 
     (StatusCode::ACCEPTED, Json(session_info))
+}
+
+/// Lists the caller's own sessions (creator view, stable id order).
+///
+/// # Arguments
+/// * `state` - The application state.
+/// * `claims` - The JWT claims of the caller.
+///
+/// # Returns
+/// * `200 OK` with the array of the caller's sessions (possibly empty).
+async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    claims: CustomClaims,
+) -> Json<Vec<SessionInfo>> {
+    let mut own: Vec<SessionInfo> = state
+        .sessions
+        .iter()
+        .filter(|e| e.creator_login == claims.sub)
+        .map(|e| SessionInfo::from(&*e))
+        .collect();
+    // Stable (not chronological — ids are random UUIDv4) ordering.
+    own.sort_by(|a, b| a.id.cmp(&b.id));
+    Json(own)
 }
 
 /// Retrieves the status of a session.
@@ -517,5 +541,28 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_returns_only_own_sessions() {
+        let state = test_state().await;
+        seed_session(&state, "a-1", "alice");
+        seed_session(&state, "a-2", "alice");
+        seed_session(&state, "b-1", "bob");
+
+        let Json(mine) = list_sessions(State(state.clone()), claims("alice")).await;
+        let mut ids: Vec<_> = mine.iter().map(|s| s.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a-1", "a-2"]);
+        // Creator view carries connection details + repo.
+        assert!(mine.iter().all(|s| s.magic_link.is_some()));
+        assert!(mine.iter().all(|s| s.repo_url.as_deref() == Some("https://github.com/user/repo")));
+
+        let Json(bobs) = list_sessions(State(state), claims("bob")).await;
+        assert_eq!(bobs.len(), 1);
+        assert_eq!(bobs[0].id, "b-1");
+
+        let Json(none) = list_sessions(State(test_state().await), claims("carol")).await;
+        assert!(none.is_empty());
     }
 }

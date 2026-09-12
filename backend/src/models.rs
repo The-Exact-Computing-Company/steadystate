@@ -183,6 +183,7 @@ impl From<&Session> for SessionInfo {
             expires_at: session.expires_at.and_then(|t| {
                 t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
             }),
+            repo_url: Some(session.repo_url.clone()),
         }
     }
 }
