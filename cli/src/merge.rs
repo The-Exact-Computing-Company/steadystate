@@ -89,7 +89,10 @@ pub fn materialize_fs_tree(root_path: &Path) -> Result<TreeSnapshot> {
 
     use std::io::Write;
 
-    for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(root_path) {
+        // A silently skipped entry would look like a deletion and be
+        // propagated to canonical, so surface walk errors instead.
+        let entry = entry.with_context(|| format!("walk {}", root_path.display()))?;
         if entry.file_type().is_symlink() || !entry.file_type().is_file() {
             continue;
         }
@@ -286,13 +289,24 @@ fn tokenize(s: &str) -> Vec<String> {
     tokens
 }
 
-/// Compute LCS and return pairs of (base_idx, other_idx) that match
+/// Above this many DP cells, fall back to a linear-space diff instead of
+/// allocating an `m*n` table (a 5000x5000-token file would otherwise need
+/// ~200 MB; larger files could OOM or hang).
+const MAX_DP_CELLS: usize = 1_000_000;
+
+/// Compute LCS and return pairs of (base_idx, other_idx) that match.
+/// Uses the O(m*n) DP for small inputs (exact, well-tested) and a
+/// memory-bounded Myers diff for large ones.
 fn lcs_pairs(base: &[String], other: &[String]) -> Vec<(usize, usize)> {
     let m = base.len();
     let n = other.len();
 
     if m == 0 || n == 0 {
         return Vec::new();
+    }
+
+    if m.saturating_mul(n) > MAX_DP_CELLS {
+        return diff_pairs(base, other);
     }
 
     // Build DP table
@@ -325,6 +339,26 @@ fn lcs_pairs(base: &[String], other: &[String]) -> Vec<(usize, usize)> {
     }
 
     pairs.reverse();
+    pairs
+}
+
+/// Linear-space matching pairs via the `similar` crate's Myers diff.
+/// Equal segments map to the same anchor pairs the DP would produce.
+fn diff_pairs(base: &[String], other: &[String]) -> Vec<(usize, usize)> {
+    use similar::{DiffTag, TextDiff};
+
+    let base_refs: Vec<&str> = base.iter().map(|s| s.as_str()).collect();
+    let other_refs: Vec<&str> = other.iter().map(|s| s.as_str()).collect();
+    let diff = TextDiff::configure().diff_slices(&base_refs, &other_refs);
+
+    let mut pairs = Vec::new();
+    for op in diff.ops() {
+        if op.tag() == DiffTag::Equal {
+            for (bi, oi) in op.old_range().zip(op.new_range()) {
+                pairs.push((bi, oi));
+            }
+        }
+    }
     pairs
 }
 
@@ -452,6 +486,21 @@ mod tests {
         assert!(pairs.contains(&(0, 0))); // A
         assert!(pairs.contains(&(2, 2))); // C
         assert!(!pairs.iter().any(|&(bi, _)| bi == 1)); // B not matched
+    }
+
+    #[test]
+    fn test_large_input_uses_bounded_diff() {
+        // Exceeds MAX_DP_CELLS: must take the linear-space path and still
+        // anchor the bulk of unchanged tokens.
+        let base: Vec<String> = (0..1200).map(|i| format!("t{}", i)).collect();
+        let mut local = base.clone();
+        local[10] = "changed".to_string();
+        let pairs = lcs_pairs(&base, &local);
+        assert!(
+            pairs.len() > 1000,
+            "expected most tokens to anchor, got {}",
+            pairs.len()
+        );
     }
 
     #[test]

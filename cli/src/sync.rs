@@ -286,6 +286,11 @@ pub async fn publish_command() -> Result<()> {
     {
         let _lock = lock_canonical(&canonical_path)?;
 
+        // Snapshot canonical before the destructive worktree -> canonical
+        // copy so a failure can be recovered from the printed ref.
+        let backup_ref = create_backup_ref(&canonical_path, "publish").await?;
+        println!("Safety backup: {}", backup_ref);
+
         // 1. Update canonical from worktree (Staging)
         println!("Staging changes...");
         sync_canonical_from_worktree(&worktree_path, &canonical_path)?;
@@ -395,16 +400,24 @@ fn get_active_users(log_path: &Path, current_user: &str) -> Result<Vec<String>> 
 
     let content = fs::read_to_string(log_path)?;
     let mut users = Vec::new();
-    // Simple parsing: just get all unique users from the log
-    // In a real scenario, we might want to filter by recent time window
+    // Newer logs are JSON lines ({"timestamp","user","changes"}); older
+    // ones were `timestamp,user,action` CSV-ish. Try JSON first.
     for line in content.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let user = parts[1].to_string();
-            if !users.contains(&user) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let user = if line.starts_with('{') {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|v| v.get("user")?.as_str().map(str::to_string))
+        } else {
+            line.split_whitespace().nth(1).map(str::to_string)
+        };
+        if let Some(user) = user
+            && !users.contains(&user) {
                 users.push(user);
             }
-        }
     }
 
     if users.is_empty() {
@@ -431,10 +444,8 @@ fn sync_canonical_from_worktree(worktree_path: &Path, canonical_path: &Path) -> 
     }
 
     // 2. Copy from worktree (except .worktree, .git)
-    for entry in WalkDir::new(worktree_path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(worktree_path) {
+        let entry = entry.with_context(|| format!("walk {}", worktree_path.display()))?;
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -485,6 +496,10 @@ pub async fn sync() -> Result<()> {
     println!("Session branch: {}", session_branch);
 
     let mut changes = Vec::new();
+    // Metadata is only advanced after a successful push: if the push fails,
+    // the local commit is not the sync point yet (next sync would fetch and
+    // reset to origin, discarding it).
+    let mut pending_meta: Option<(std::path::PathBuf, WorktreeMeta)> = None;
 
     // Scope the lock so it is released before push
     {
@@ -593,22 +608,7 @@ pub async fn sync() -> Result<()> {
 
         // 6. Apply to canonical with safety checks and backup
         println!("Creating safety backup...");
-        let backup_ref = format!(
-            "refs/backups/sync-{}",
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-        );
-
-        let current_head = get_git_head(&canonical_path).await?;
-        Command::new("git")
-            .arg("-C")
-            .arg(&canonical_path)
-            .args(["update-ref", &backup_ref, &current_head])
-            .status()
-            .await
-            .context("Failed to create backup ref")?;
+        let backup_ref = create_backup_ref(&canonical_path, "sync").await?;
 
         println!("Applying to canonical...");
         let canonical_path_clone = canonical_path.clone();
@@ -661,14 +661,14 @@ pub async fn sync() -> Result<()> {
 
         // ... (backup cleanup omitted for brevity, it's fine) ...
 
-        // 8. Update metadata IMMEDIATELY after commit
+        // 8. Record the new sync point, but persist it only after the push
+        // succeeds (see below).
         let new_head = get_git_head(&canonical_path).await?;
         let new_meta = WorktreeMeta {
             session_branch: session_branch.clone(),
             last_synced_commit: new_head,
         };
-        fs::create_dir_all(&meta_dir)?;
-        fs::write(&meta_path, serde_json::to_string_pretty(&new_meta)?)?;
+        pending_meta = Some((meta_path.clone(), new_meta));
     } // Lock released here
 
     // 9. Push to session repo so other collaborators can see changes
@@ -686,6 +686,12 @@ pub async fn sync() -> Result<()> {
         eprintln!("⚠️  Push failed - another collaborator may have synced.");
         eprintln!("💡 Run 'steadystate sync' again to integrate their changes.");
         return Err(anyhow::anyhow!("Push failed - please sync again"));
+    }
+
+    // Push succeeded: now it is safe to advance the sync point.
+    if let Some((path, meta)) = pending_meta {
+        fs::create_dir_all(&meta_dir)?;
+        fs::write(&path, serde_json::to_string_pretty(&meta)?)?;
     }
 
     // 10. Reset local worktree
@@ -771,7 +777,12 @@ async fn get_staged_changes(repo_path: &Path) -> Result<Vec<FileChange>> {
         .await?;
 
     if !output.status.success() {
-        return Ok(vec![]);
+        // Hiding a git failure here would understate the sync in the log;
+        // surface it instead.
+        return Err(anyhow::anyhow!(
+            "git diff --cached failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
 
     let diff = String::from_utf8_lossy(&output.stdout);
@@ -886,6 +897,30 @@ async fn get_git_head(repo_path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Snapshot the current canonical HEAD under a unique backup ref so a
+/// failed destructive operation can be recovered with
+/// `git reset --hard <ref>`. Uniqueness uses nanos + pid to avoid the
+/// same-second collision a seconds-only name would have.
+async fn create_backup_ref(repo_path: &Path, label: &str) -> Result<String> {
+    let nanos = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let backup_ref = format!("refs/backups/{}-{}-{}", label, nanos, std::process::id());
+    let head = get_git_head(repo_path).await?;
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["update-ref", &backup_ref, &head])
+        .status()
+        .await
+        .context("create backup ref")?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("Failed to create backup ref {}", backup_ref));
+    }
+    Ok(backup_ref)
+}
+
 /// WARNING: This function is DESTRUCTIVE.
 /// It deletes all files in `repo_path` (except .git) and replaces them with `tree`.
 /// This is intended for the ephemeral `canonical` repository used in sessions.
@@ -903,12 +938,26 @@ fn apply_tree_to_canonical(
         ));
     }
 
-    // Safety check 2: Must end with /canonical
-    if !repo_path.ends_with("canonical") {
+    // Safety check 2: Canonicalize and require the final path component to
+    // be exactly "canonical" (component-wise; a symlinked parent still
+    // resolves to a real path before we check).
+    let resolved = repo_path
+        .canonicalize()
+        .with_context(|| format!("resolve {}", repo_path.display()))?;
+    if resolved.file_name().and_then(|n| n.to_str()) != Some("canonical") {
         return Err(anyhow::anyhow!(
             "Safety check failed: {} does not end with 'canonical'. \
              This function should only be used on ephemeral canonical repos.",
-            repo_path.display()
+            resolved.display()
+        ));
+    }
+
+    // Safety check 2b: only SteadyState session branches are eligible, so a
+    // tampered metadata file cannot point us at an arbitrary branch.
+    if !expected_branch.contains("_collab_") {
+        return Err(anyhow::anyhow!(
+            "Safety check failed: branch '{}' is not a SteadyState session branch",
+            expected_branch
         ));
     }
 
@@ -978,12 +1027,8 @@ fn apply_tree_to_canonical(
 
 fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> Result<()> {
     // 1. Clear worktree (except .worktree and .git if it exists)
-    for entry in WalkDir::new(worktree_path)
-        .min_depth(1)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(worktree_path).min_depth(1).max_depth(1) {
+        let entry = entry.with_context(|| format!("walk {}", worktree_path.display()))?;
         let path = entry.path();
         let name = path
             .file_name()
@@ -1000,10 +1045,8 @@ fn sync_worktree_from_canonical(canonical_path: &Path, worktree_path: &Path) -> 
     }
 
     // 2. Copy from canonical (except .git)
-    for entry in WalkDir::new(canonical_path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(canonical_path) {
+        let entry = entry.with_context(|| format!("walk {}", canonical_path.display()))?;
         let path = entry.path();
         if !path.is_file() {
             continue;

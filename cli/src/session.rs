@@ -84,7 +84,7 @@ pub async fn write_session(session: &Session, override_dir: Option<&PathBuf>) ->
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        // tokio's OpenOptions has an inherent `mode` on unix.
         opts.mode(0o600);
     }
     {
