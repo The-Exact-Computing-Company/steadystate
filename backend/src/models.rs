@@ -30,19 +30,18 @@ impl From<&str> for ProviderId {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PendingDevice {
     pub provider: ProviderId,
-    #[allow(dead_code)]
     pub device_code: String,
+    /// When this pending entry stops being pollable (provider `expires_in`).
+    pub expires_at: u64,
     #[allow(dead_code)]
     pub user_code: String,
     #[allow(dead_code)]
     pub verification_uri: String,
     #[allow(dead_code)]
     pub interval: u64,
-    #[allow(dead_code)]
-    pub created_at: u64,
 }
 
 #[derive(Clone)]
@@ -113,12 +112,15 @@ pub struct OidcStartOut {
 }
 
 /// OIDC login completion: the code captured by the CLI's localhost
-/// listener plus the PKCE verifier. `redirect_uri` is the stored one.
+/// listener plus the PKCE verifier. `state` must echo the value minted at
+/// start (CSRF binding).
 #[derive(Deserialize)]
 pub struct OidcCompleteIn {
     pub key: String,
     pub code: String,
     pub verifier: String,
+    /// State echoed by the IdP redirect; verified against the stored value.
+    pub state: String,
 }
 
 #[derive(Serialize)]

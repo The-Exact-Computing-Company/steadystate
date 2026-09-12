@@ -5,16 +5,18 @@
 // is the write-through backing store + startup rehydration source.
 //
 // Design notes:
-// - Single `rusqlite::Connection` behind a std Mutex. Critical sections are
-//   short and never hold across `.await`, so this cannot block the runtime
-//   for longer than one small SQL statement.
+// - Single `rusqlite::Connection` behind a std Mutex. rusqlite is blocking,
+//   so every method that runs on the async runtime is exposed as an
+//   `*_async` wrapper over `tokio::task::spawn_blocking` (the sync methods
+//   below are used by those wrappers and by startup/tests). Cheap enough
+//   for this workload and keeps the executor thread unblocked.
 // - `SystemTime` is stored as seconds since the Unix epoch (INTEGER).
-// - Schema is created idempotently (`CREATE TABLE IF NOT EXISTS`) so old
-//   database files keep working across upgrades that only add columns via
-//   separate migrations (none yet).
+// - Schema is created idempotently (`CREATE TABLE IF NOT EXISTS`) and
+//   column additions are driven by `PRAGMA table_info` rather than by
+//   string-matching SQLite's error text.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 
@@ -22,6 +24,21 @@ use crate::models::{RefreshRecord, Session, SessionState};
 
 pub struct Storage {
     conn: Mutex<rusqlite::Connection>,
+}
+
+impl Storage {
+    /// Poison-tolerant lock: a panic in an unrelated task must not take the
+    /// whole backend down. The data either committed or it did not; we log
+    /// and proceed rather than unwrap-panic.
+    fn lock(&self) -> MutexGuard<'_, rusqlite::Connection> {
+        match self.conn.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::error!("Storage mutex was poisoned by an earlier panic; continuing");
+                poisoned.into_inner()
+            }
+        }
+    }
 }
 
 const SCHEMA: &str = r#"
@@ -85,21 +102,22 @@ fn state_from_str(s: &str) -> SessionState {
 impl Storage {
     fn new(conn: rusqlite::Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA).context("init storage schema")?;
-        // Migrations for databases created before these columns existed.
-        // "duplicate column" on new DBs is expected and ignored; any other
-        // error is surfaced.
+        // Add columns missing from databases created before they existed.
+        // Driven by PRAGMA table_info so it is robust to SQLite's error
+        // wording and idempotent on fresh DBs.
+        let existing: std::collections::HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
         for column in ["expires_at", "last_activity_at"] {
-            match conn.execute(
-                &format!("ALTER TABLE sessions ADD COLUMN {} INTEGER", column),
-                [],
-            ) {
-                Ok(_) => tracing::info!("Migrated sessions table: added {}", column),
-                Err(e) => {
-                    let msg = e.to_string();
-                    if !msg.contains("duplicate column") {
-                        return Err(e).context("migrate sessions table");
-                    }
-                }
+            if !existing.contains(column) {
+                conn.execute(
+                    &format!("ALTER TABLE sessions ADD COLUMN {} INTEGER", column),
+                    [],
+                )
+                .with_context(|| format!("add sessions.{}", column))?;
+                tracing::info!("Migrated sessions table: added {}", column);
             }
         }
         Ok(Self {
@@ -132,7 +150,7 @@ impl Storage {
     // --- sessions ---
 
     pub fn save_session(&self, s: &Session) -> Result<()> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         conn.execute(
             r#"INSERT INTO sessions
                (id, state, repo_url, branch, environment, compute_provider,
@@ -174,7 +192,7 @@ impl Storage {
     }
 
     pub fn load_sessions(&self) -> Result<Vec<Session>> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         let mut stmt = conn.prepare(
             r#"SELECT id, state, repo_url, branch, environment, compute_provider,
                       creator_login, created_at, updated_at,
@@ -208,7 +226,7 @@ impl Storage {
     }
 
     pub fn delete_session(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         conn.execute("DELETE FROM sessions WHERE id = ?1", [id])
             .context("delete session")?;
         Ok(())
@@ -217,7 +235,7 @@ impl Storage {
     // --- refresh tokens ---
 
     pub fn save_refresh(&self, token: &str, rec: &RefreshRecord) -> Result<()> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         conn.execute(
             r#"INSERT INTO refresh_tokens (token, login, provider, expires_at)
                VALUES (?1, ?2, ?3, ?4)
@@ -236,7 +254,7 @@ impl Storage {
     }
 
     pub fn load_refresh(&self) -> Result<Vec<(String, RefreshRecord)>> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         let mut stmt =
             conn.prepare("SELECT token, login, provider, expires_at FROM refresh_tokens")?;
         let rows = stmt.query_map([], |row| {
@@ -253,7 +271,7 @@ impl Storage {
     }
 
     pub fn delete_refresh(&self, token: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         conn.execute("DELETE FROM refresh_tokens WHERE token = ?1", [token])
             .context("delete refresh token")?;
         Ok(())
@@ -261,7 +279,7 @@ impl Storage {
 
     /// Remove expired refresh tokens; returns rows removed.
     pub fn prune_expired_refresh(&self, now: u64) -> Result<usize> {
-        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let conn = self.lock();
         let n = conn
             .execute(
                 "DELETE FROM refresh_tokens WHERE expires_at <= ?1",
@@ -269,6 +287,56 @@ impl Storage {
             )
             .context("prune expired refresh tokens")?;
         Ok(n)
+    }
+
+    /// Delete terminal sessions older than `older_than` seconds
+    /// (retention: keeps the table and list endpoint bounded).
+    pub fn prune_terminal_sessions(&self, older_than: u64) -> Result<usize> {
+        let conn = self.lock();
+        let cutoff = unix_secs(std::time::SystemTime::now()) - older_than as i64;
+        let n = conn
+            .execute(
+                "DELETE FROM sessions WHERE state IN ('Terminated', 'Failed') AND updated_at <= ?1",
+                [cutoff],
+            )
+            .context("prune terminal sessions")?;
+        Ok(n)
+    }
+
+    // --- async wrappers (spawn_blocking) ---
+
+    pub async fn save_session_async(self: Arc<Self>, s: Session) -> Result<()> {
+        tokio::task::spawn_blocking(move || self.save_session(&s))
+            .await
+            .context("storage task join failed")?
+    }
+
+    pub async fn save_refresh_async(
+        self: Arc<Self>,
+        token: String,
+        rec: RefreshRecord,
+    ) -> Result<()> {
+        tokio::task::spawn_blocking(move || self.save_refresh(&token, &rec))
+            .await
+            .context("storage task join failed")?
+    }
+
+    pub async fn delete_refresh_async(self: Arc<Self>, token: String) -> Result<()> {
+        tokio::task::spawn_blocking(move || self.delete_refresh(&token))
+            .await
+            .context("storage task join failed")?
+    }
+
+    pub async fn prune_expired_refresh_async(self: Arc<Self>, now: u64) -> Result<usize> {
+        tokio::task::spawn_blocking(move || self.prune_expired_refresh(now))
+            .await
+            .context("storage task join failed")?
+    }
+
+    pub async fn prune_terminal_sessions_async(self: Arc<Self>, older_than: u64) -> Result<usize> {
+        tokio::task::spawn_blocking(move || self.prune_terminal_sessions(older_than))
+            .await
+            .context("storage task join failed")?
     }
 }
 

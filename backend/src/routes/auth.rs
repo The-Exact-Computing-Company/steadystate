@@ -60,15 +60,18 @@ pub async fn device_start(
 
     let start = provider.start_device_flow().await.map_err(internal)?;
 
+    // Bound pending entries: prune expired ones, then record the provider's
+    // own expiry so a device code cannot be polled forever.
+    state.prune_auth_state();
     state.device_pending.insert(
         start.device_code.clone(),
         PendingDevice {
             provider: q.provider.unwrap_or("github".into()).into(),
             device_code: start.device_code.clone(),
+            expires_at: now() + start.expires_in,
             user_code: start.user_code.clone(),
             verification_uri: start.verification_uri.clone(),
             interval: start.interval,
-            created_at: now(),
         },
     );
 
@@ -101,6 +104,24 @@ pub async fn poll(
             }));
         }
     };
+    // Expired device codes are terminal: drop and reject.
+    if pending.expires_at <= now() {
+        let provider_id = pending.provider.clone();
+        drop(pending);
+        state.device_pending.remove(&q.device_code);
+        info!(
+            "device code expired for provider '{}'",
+            provider_id.as_str()
+        );
+        return Ok(Json(PollOut {
+            status: None,
+            jwt: None,
+            refresh_token: None,
+            login: None,
+            provider_access_token: None,
+            error: Some("expired_device_code".into()),
+        }));
+    }
     let provider_id = pending.provider.clone();
     drop(pending);
 
@@ -131,7 +152,10 @@ pub async fn poll(
                 .jwt
                 .sign(&identity.login, provider_id.as_str())
                 .map_err(internal)?;
-            let refresh_token = state.issue_refresh_token(identity.login.clone(), provider_id);
+            let refresh_token = state
+                .issue_refresh_token(identity.login.clone(), provider_id)
+                .await
+                .map_err(internal)?;
 
             if let Some(ref token) = provider_access_token {
                 state.provider_tokens.insert(
@@ -215,18 +239,23 @@ pub async fn token_login(
     let validated = validate_gitlab_token(&state, &inp.token)
         .await
         .map_err(|e| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": e.to_string() })),
-            )
+            use crate::auth::gitlab::GitLabTokenError;
+            let status = match e {
+                GitLabTokenError::Empty => StatusCode::BAD_REQUEST,
+                GitLabTokenError::Rejected(_) => StatusCode::UNAUTHORIZED,
+                GitLabTokenError::Upstream(_) => StatusCode::BAD_GATEWAY,
+            };
+            (status, Json(json!({ "error": e.to_string() })))
         })?;
 
     let jwt = state
         .jwt
         .sign(&validated.login, "gitlab")
         .map_err(internal)?;
-    let refresh_token =
-        state.issue_refresh_token(validated.login.clone(), ProviderId::from("gitlab"));
+    let refresh_token = state
+        .issue_refresh_token(validated.login.clone(), ProviderId::from("gitlab"))
+        .await
+        .map_err(internal)?;
 
     state.provider_tokens.insert(
         ("gitlab".to_string(), validated.login.clone()),
@@ -250,11 +279,12 @@ pub async fn token_login(
 async fn validate_gitlab_token(
     state: &Arc<AppState>,
     token: &str,
-) -> anyhow::Result<crate::auth::provider::UserIdentity> {
-    use crate::auth::gitlab::GitLabAuth;
+) -> Result<crate::auth::provider::UserIdentity, crate::auth::gitlab::GitLabTokenError> {
+    use crate::auth::gitlab::{GitLabAuth, GitLabTokenError};
     // Build a short-lived instance from env (same config the factory uses);
     // avoids downcasting the trait object.
-    let base = crate::auth::gitlab::base_url_from_env()?;
+    let base = crate::auth::gitlab::base_url_from_env()
+        .map_err(|e| GitLabTokenError::Upstream(e.to_string()))?;
     GitLabAuth::new(state.http.clone(), base)
         .validate_token(token)
         .await
@@ -343,6 +373,14 @@ pub async fn oidc_complete(
 
     let cfg = state.oidc().await.map_err(internal)?;
 
+    // CSRF binding: the IdP must echo the state minted at start.
+    if inp.state.trim().is_empty() || inp.state != pending.state {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "OIDC state mismatch; restart login" })),
+        ));
+    }
+
     // The stored redirect_uri is the exact localhost callback the CLI used
     // at authorize time; the IdP requires it verbatim at exchange time.
     // Binding it server-side (rather than trusting a client-supplied value)
@@ -368,7 +406,10 @@ pub async fn oidc_complete(
         })?;
 
     let jwt = state.jwt.sign(&identity.login, "oidc").map_err(internal)?;
-    let refresh_token = state.issue_refresh_token(identity.login.clone(), ProviderId::from("oidc"));
+    let refresh_token = state
+        .issue_refresh_token(identity.login.clone(), ProviderId::from("oidc"))
+        .await
+        .map_err(internal)?;
 
     info!(
         "OIDC login complete for {} via {}",
@@ -408,7 +449,7 @@ pub async fn refresh(
         })?;
 
     if now() >= rec.expires_at {
-        state.revoke_refresh_token(&inp.refresh_token);
+        let _ = state.revoke_refresh_token(&inp.refresh_token).await;
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "refresh expired" })),
@@ -438,15 +479,18 @@ pub async fn revoke(
     State(state): State<Arc<AppState>>,
     Json(inp): Json<RevokeIn>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    state.revoke_refresh_token(&inp.refresh_token);
+    state
+        .revoke_refresh_token(&inp.refresh_token)
+        .await
+        .map_err(internal)?;
     Ok(Json(json!({ "revoked": true })))
 }
 
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("System time is before UNIX EPOCH")
-        .as_secs()
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, Json<serde_json::Value>) {
@@ -675,6 +719,7 @@ mod tests {
             "OIDC_ISSUER",
             "OIDC_CLIENT_ID",
             "OIDC_CLIENT_SECRET",
+            "OIDC_ALLOW_HTTP",
         ]
         .iter()
         .map(|k| (k.to_string(), std::env::var(k).ok()))
@@ -688,6 +733,8 @@ mod tests {
             std::env::set_var("OIDC_ISSUER", base);
             std::env::set_var("OIDC_CLIENT_ID", "test-cid");
             std::env::set_var("OIDC_CLIENT_SECRET", "test-csecret");
+            // Mock issuer runs on http://127.0.0.1.
+            std::env::set_var("OIDC_ALLOW_HTTP", "1");
         }
         let state = AppState::try_new().await.expect("test AppState");
         TestEnv {
@@ -718,6 +765,13 @@ mod tests {
         assert!(
             out.auth_url.contains("127.0.0.1%3A9999") || out.auth_url.contains("redirect_uri=")
         );
+        // Extract the state the backend minted (echoed via the IdP).
+        let echoed_state = url::Url::parse(&out.auth_url)
+            .expect("parse auth url")
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.to_string())
+            .expect("state in auth url");
 
         let out = oidc_complete(
             State(state.clone()),
@@ -725,6 +779,7 @@ mod tests {
                 key: out.key,
                 code: "auth-code-xyz".to_string(),
                 verifier: "verifier-abc".to_string(),
+                state: echoed_state,
             }),
         )
         .await
@@ -742,6 +797,38 @@ mod tests {
                 key: "nope".to_string(),
                 code: "x".to_string(),
                 verifier: "y".to_string(),
+                state: "z".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn oidc_complete_rejects_state_mismatch() {
+        let base = mock_oidc_issuer().await;
+        let env = test_state_with_oidc(&base).await;
+        let state = env.state.clone();
+
+        let out = oidc_start(
+            State(state.clone()),
+            Json(OidcStartIn {
+                code_challenge: "c".to_string(),
+                redirect_uri: "http://127.0.0.1:9999/callback".to_string(),
+            }),
+        )
+        .await
+        .expect("oidc start")
+        .0;
+
+        let err = oidc_complete(
+            State(state),
+            Json(OidcCompleteIn {
+                key: out.key,
+                code: "auth-code-xyz".to_string(),
+                verifier: "verifier".to_string(),
+                state: "wrong-state".to_string(),
             }),
         )
         .await

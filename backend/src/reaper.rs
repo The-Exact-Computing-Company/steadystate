@@ -31,6 +31,10 @@ pub const REAP_INTERVAL_SECS: u64 = 60;
 /// otherwise live forever and permanently consume per-user cap.
 pub const PROVISIONING_TIMEOUT_SECS: u64 = 30 * 60;
 
+/// Terminal sessions are retained this long for inspection/debugging before
+/// the reaper deletes their rows.
+pub const TERMINAL_SESSION_RETENTION_SECS: u64 = 7 * 24 * 3600;
+
 /// Run the reap loop forever. Spawn once from `main`.
 pub async fn run_forever(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_secs(REAP_INTERVAL_SECS));
@@ -39,6 +43,18 @@ pub async fn run_forever(state: Arc<AppState>) {
         let reaped = reap_once(&state).await;
         if reaped > 0 {
             tracing::info!("Reaper terminated {} expired session(s)", reaped);
+        }
+        // Keep the live maps and the DB bounded.
+        state.prune_auth_state();
+        match state
+            .storage
+            .clone()
+            .prune_terminal_sessions_async(TERMINAL_SESSION_RETENTION_SECS)
+            .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("Reaper pruned {} terminal session(s)", n),
+            Err(e) => tracing::warn!("Failed to prune terminal sessions: {:#}", e),
         }
     }
 }
@@ -78,7 +94,7 @@ async fn idle_for(
         if let Some(mut s) = state.sessions.get_mut(&session.id) {
             s.last_activity_at = best;
         }
-        state.persist_session(&session.id);
+        state.persist_session(&session.id).await;
     }
     let baseline = best.or(Some(session.created_at)).unwrap_or(now);
     Some(now.duration_since(baseline).unwrap_or(Duration::ZERO))
@@ -146,7 +162,7 @@ pub async fn reap_once(state: &Arc<AppState>) -> usize {
             if let Some(mut s) = state.sessions.get_mut(&id) {
                 s.error_message = Some(reason);
             }
-            state.persist_session(&id);
+            state.persist_session(&id).await;
         }
         match terminate_inner(state, &id).await {
             Ok(_) => {
@@ -178,7 +194,7 @@ pub async fn reap_once(state: &Arc<AppState>) -> usize {
                 prov_timeout
             ));
         }
-        state.persist_session(&id);
+        state.persist_session(&id).await;
         if terminate_inner(state, &id).await.is_ok() {
             reaped += 1;
         }

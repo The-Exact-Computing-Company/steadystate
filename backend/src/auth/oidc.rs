@@ -116,6 +116,13 @@ impl OidcConfig {
         let raw_issuer =
             std::env::var("OIDC_ISSUER").context("OIDC_ISSUER is not configured on the server")?;
         let issuer = expand_issuer_preset(&raw_issuer)?;
+        // Cleartext issuers leak client_secret + codes. Allow only behind an
+        // explicit escape hatch (local mock IdPs, closed test networks).
+        if issuer.starts_with("http://") && std::env::var("OIDC_ALLOW_HTTP").is_err() {
+            return Err(anyhow!(
+                "OIDC_ISSUER uses http:// which would send the client secret in cleartext; use https:// or set OIDC_ALLOW_HTTP=1 only for a trusted test IdP"
+            ));
+        }
         let client_id = std::env::var("OIDC_CLIENT_ID")
             .context("OIDC_CLIENT_ID is not configured on the server")?;
         let client_secret = std::env::var("OIDC_CLIENT_SECRET")

@@ -43,7 +43,7 @@ async fn run_provisioning(app_state: Arc<AppState>, session_id: String, request:
             session.error_message = Some(format!("Unknown compute provider '{}'", provider_id));
             session.updated_at = std::time::SystemTime::now();
             drop(session);
-            app_state.persist_session(&session_id);
+            app_state.persist_session(&session_id).await;
         }
         return;
     };
@@ -89,7 +89,7 @@ async fn run_provisioning(app_state: Arc<AppState>, session_id: String, request:
             }
         }
         drop(session);
-        app_state.persist_session(&session_id);
+        app_state.persist_session(&session_id).await;
     } else {
         tracing::warn!("Session {} disappeared after provisioning", session_id);
     }
@@ -190,7 +190,7 @@ async fn create_session(
     let session_info = SessionInfo::from(&session);
 
     state.sessions.insert(session_id.clone(), session);
-    state.persist_session(&session_id);
+    state.persist_session(&session_id).await;
     tracing::info!(
         "Session {} inserted into map, total sessions: {}",
         session_id,
@@ -384,7 +384,7 @@ pub(crate) async fn terminate_inner(
         drop(session);
 
         // Persist the Terminating state before spawning cleanup.
-        state.persist_session(&owned_id);
+        state.persist_session(&owned_id).await;
 
         if let Some(provider) = state
             .compute_providers
@@ -403,7 +403,7 @@ pub(crate) async fn terminate_inner(
                             s.state = SessionState::Terminated;
                             s.updated_at = std::time::SystemTime::now();
                         }
-                        bg_state.persist_session(&owned_id);
+                        bg_state.persist_session(&owned_id).await;
                     }
                     Err(e) => {
                         tracing::error!("Failed to terminate session {}: {:#}", owned_id, e);
@@ -412,7 +412,7 @@ pub(crate) async fn terminate_inner(
                             s.error_message = Some(format!("terminate failed: {:#}", e));
                             s.updated_at = std::time::SystemTime::now();
                         }
-                        bg_state.persist_session(&owned_id);
+                        bg_state.persist_session(&owned_id).await;
                     }
                 }
             });
@@ -431,7 +431,7 @@ pub(crate) async fn terminate_inner(
                 ));
                 s.updated_at = std::time::SystemTime::now();
             }
-            state.persist_session(&owned_id);
+            state.persist_session(&owned_id).await;
         }
         Ok(StatusCode::ACCEPTED)
     } else {

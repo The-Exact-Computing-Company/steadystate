@@ -334,10 +334,15 @@ impl AppState {
         Ok(provider)
     }
 
-    pub fn issue_refresh_token(&self, login: String, provider: ProviderId) -> String {
+    /// Issue a refresh token, persisting it before returning. Hard error on
+    /// storage failure (with the in-memory entry rolled back) so a caller
+    /// never hands out a token that would vanish on restart.
+    pub async fn issue_refresh_token(
+        &self,
+        login: String,
+        provider: ProviderId,
+    ) -> Result<String> {
         let token = Uuid::new_v4().to_string();
-
-        // Use cached TTL from config
         let expires_at = now() + self.config.refresh_ttl_secs;
 
         let rec = RefreshRecord {
@@ -345,12 +350,13 @@ impl AppState {
             provider,
             expires_at,
         };
-        self.refresh_store.insert(token.clone(), rec.clone());
-        if let Err(e) = self.storage.save_refresh(&token, &rec) {
-            tracing::warn!("Failed to persist refresh token: {:#}", e);
-        }
-
-        token
+        self.storage
+            .clone()
+            .save_refresh_async(token.clone(), rec.clone())
+            .await
+            .context("persist refresh token")?;
+        self.refresh_store.insert(token.clone(), rec);
+        Ok(token)
     }
 
     /// Effective lifetime in seconds for a create request: the requested
@@ -387,15 +393,16 @@ impl AppState {
             .clone()
     }
 
-    /// Write-through persistence for one session record.
-    /// Best-effort: logs on failure so storage outages degrade to
-    /// in-memory behavior instead of failing requests.
-    pub fn persist_session(&self, id: &str) {
+    /// Write-through persistence for one session record, off the async
+    /// runtime. Best-effort: the in-memory map is the source of truth for
+    /// the live process, and a storage outage degrades to in-memory
+    /// behavior rather than failing the request that triggered the write.
+    pub async fn persist_session(&self, id: &str) {
         if let Some(s) = self.sessions.get(id) {
             let owned = s.clone();
             drop(s);
-            if let Err(e) = self.storage.save_session(&owned) {
-                tracing::warn!("Failed to persist session {}: {:#}", id, e);
+            if let Err(e) = self.storage.clone().save_session_async(owned).await {
+                tracing::error!("Failed to persist session {}: {:#}", id, e);
             }
         }
     }
@@ -418,18 +425,40 @@ impl AppState {
         self.oidc_pending.retain(|_, p| p.created_at >= cutoff);
     }
 
+    /// Remove expired device-flow pending logins and refresh tokens from the
+    /// in-memory maps (the DB side is pruned by the reaper). Called lazily
+    /// from auth routes; keeps the maps bounded without a background task.
+    pub fn prune_auth_state(&self) {
+        let cutoff = now();
+        self.device_pending
+            .retain(|_, p| p.expires_at > cutoff);
+        self.refresh_store.retain(|_, r| r.expires_at > cutoff);
+        self.prune_oidc_pending();
+    }
+
     /// Remove a refresh token from both live and durable stores.
-    pub fn revoke_refresh_token(&self, token: &str) {
-        self.refresh_store.remove(token);
-        if let Err(e) = self.storage.delete_refresh(token) {
-            tracing::warn!("Failed to delete persisted refresh token: {:#}", e);
+    /// On storage failure the live entry is restored and an error returned,
+    /// so memory and disk never disagree about whether a token is revoked
+    /// (a restart must not resurrect a revoked token).
+    pub async fn revoke_refresh_token(&self, token: &str) -> Result<()> {
+        let removed = self.refresh_store.remove(token).map(|(_, v)| v);
+        if let Err(e) = self
+            .storage
+            .clone()
+            .delete_refresh_async(token.to_string())
+            .await
+        {
+            if let Some(rec) = removed {
+                self.refresh_store.insert(token.to_string(), rec);
+            }
+            return Err(e).context("delete refresh token from storage");
         }
+        Ok(())
     }
     pub fn save_tokens(&self) -> Result<()> {
         let home = std::env::var("HOME").context("HOME not set")?;
         let dir = std::path::PathBuf::from(home).join(".steadystate");
         std::fs::create_dir_all(&dir)?;
-        let file_path = dir.join("tokens.json");
 
         let mut map = HashMap::new();
         for item in self.provider_tokens.iter() {
@@ -439,9 +468,29 @@ impl AppState {
         }
 
         let json = serde_json::to_string_pretty(&map)?;
-        std::fs::write(file_path, json)?;
+        let file_path = dir.join("tokens.json");
+        write_private_file(&file_path, json.as_bytes())?;
         Ok(())
     }
+}
+
+/// Write a file with 0600 permissions from creation (not after), so forge
+/// tokens are never briefly world-readable regardless of umask.
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    f.write_all(contents)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
 }
 
 fn load_tokens() -> DashMap<(String, String), String> {

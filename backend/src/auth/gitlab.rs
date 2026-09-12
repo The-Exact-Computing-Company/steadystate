@@ -53,6 +53,19 @@ pub struct GitLabAuth {
     pub http: Client,
 }
 
+/// Distinguishes "the IdP said no" (client's fault, 401) from
+/// "the IdP is unreachable/broken" (our problem, 502), so a GitLab outage
+/// is not reported to users as an invalid credential.
+#[derive(Debug, thiserror::Error)]
+pub enum GitLabTokenError {
+    #[error("Empty GitLab token")]
+    Empty,
+    #[error("GitLab rejected the token ({0}). Check it has read_user scope and is not expired.")]
+    Rejected(String),
+    #[error("GitLab is unavailable: {0}")]
+    Upstream(String),
+}
+
 impl GitLabAuth {
     pub fn new(http: Client, base_url: String) -> Arc<Self> {
         Arc::new(Self { base_url, http })
@@ -60,32 +73,42 @@ impl GitLabAuth {
 
     /// Validate a PAT against `{base}/api/v4/user` and map it to an identity.
     /// Requires at least the `read_user` scope; without it GitLab answers 401.
-    pub async fn validate_token(&self, token: &str) -> anyhow::Result<UserIdentity> {
+    pub async fn validate_token(&self, token: &str) -> Result<UserIdentity, GitLabTokenError> {
         if token.trim().is_empty() {
-            return Err(anyhow!("Empty GitLab token"));
+            return Err(GitLabTokenError::Empty);
         }
-        let user: GlUser = self
+        let response = self
             .http
             .get(format!("{}/api/v4/user", self.base_url))
             .header("PRIVATE-TOKEN", token.trim())
             .header("User-Agent", "steadystate-backend/0.1")
             .send()
             .await
-            .context("GitLab /api/v4/user request failed")?
-            .error_for_status()
-            .map_err(|e| {
-                anyhow!(
-                    "GitLab rejected the token ({}). Check it has read_user scope and is not expired.",
-                    e.status().map(|s| s.to_string()).unwrap_or_else(|| "error".into())
-                )
-            })?
+            .map_err(|e| GitLabTokenError::Upstream(e.to_string()))?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(GitLabTokenError::Rejected(status.to_string()));
+        }
+        if !status.is_success() {
+            return Err(GitLabTokenError::Upstream(status.to_string()));
+        }
+
+        let user: GlUser = response
             .json()
             .await
-            .context("Failed to decode GitLab /api/v4/user response")?;
+            .map_err(|e| GitLabTokenError::Upstream(format!("decode /api/v4/user: {}", e)))?;
+
+        let login = user.username.trim().to_string();
+        if login.is_empty() {
+            return Err(GitLabTokenError::Upstream(
+                "GitLab returned an empty username".to_string(),
+            ));
+        }
 
         Ok(UserIdentity {
             id: user.id.to_string(),
-            login: user.username,
+            login,
             email: user.email,
             provider: "gitlab".into(),
         })

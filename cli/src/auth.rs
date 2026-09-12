@@ -384,6 +384,7 @@ pub async fn oidc_login(client: &Client, no_browser: bool) -> Result<()> {
             "key": start.key,
             "code": code,
             "verifier": verifier,
+            "state": echo_state,
         }))
     })
     .await
