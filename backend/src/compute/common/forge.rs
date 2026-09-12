@@ -64,14 +64,15 @@ impl ForgeRepo {
 
         // SCP-like SSH syntax: [user@]host:path (no scheme, path not absolute).
         if !url.contains("://")
-            && let Some(colon) = url.find(':') {
-                let before = &url[..colon];
-                let after = &url[colon + 1..];
-                if !before.contains('/') && !after.starts_with('/') && !after.is_empty() {
-                    let host = before.rsplit('@').next().unwrap_or(before);
-                    return Self::build(host, after);
-                }
+            && let Some(colon) = url.find(':')
+        {
+            let before = &url[..colon];
+            let after = &url[colon + 1..];
+            if !before.contains('/') && !after.starts_with('/') && !after.is_empty() {
+                let host = before.rsplit('@').next().unwrap_or(before);
+                return Self::build(host, after);
             }
+        }
 
         // URL syntax (with or without scheme).
         let without_scheme = url

@@ -1,4 +1,7 @@
 use serde_json::json;
+// Shared test harness. Not every test binary uses every helper or mock
+// variant; `#[allow(dead_code)] mod common;` at the call sites keeps the
+// module lint-clean.
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;

@@ -624,6 +624,9 @@ impl LocalComputeProvider {
         Ok(())
     }
 
+    // Wrapper params mirror the session setup inputs; grouping them into a
+    // struct would only shuffle the same fields around.
+    #[allow(clippy::too_many_arguments)]
     async fn launch_sshd(
         &self,
         workspace: &WorkspaceInfo,
@@ -732,16 +735,17 @@ impl LocalComputeProvider {
             // Check if process is still alive
             let status_check = self.executor.exec_shell(&format!("kill -0 {}", pid)).await;
             if let Ok(output) = status_check
-                && !output.exit_status.success() {
-                    // Process died
-                    let log_content = self
-                        .executor
-                        .exec_shell(&format!("cat {}", log_path_str))
-                        .await
-                        .map(|o| o.stdout)
-                        .unwrap_or_else(|_| "Could not read log".to_string());
-                    return Err(anyhow!("sshd process died early. Log: {}", log_content));
-                }
+                && !output.exit_status.success()
+            {
+                // Process died
+                let log_content = self
+                    .executor
+                    .exec_shell(&format!("cat {}", log_path_str))
+                    .await
+                    .map(|o| o.stdout)
+                    .unwrap_or_else(|_| "Could not read log".to_string());
+                return Err(anyhow!("sshd process died early. Log: {}", log_content));
+            }
 
             // Try to connect to the port to see if it's open
             if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
@@ -811,12 +815,13 @@ impl LocalComputeProvider {
 
         // 3. Try to get the machine's hostname
         if let Ok(hostname) = hostname::get()
-            && let Some(hostname_str) = hostname.to_str() {
-                // Don't use "localhost" as that won't work for remote clients
-                if hostname_str != "localhost" && !hostname_str.is_empty() {
-                    return hostname_str.to_string();
-                }
+            && let Some(hostname_str) = hostname.to_str()
+        {
+            // Don't use "localhost" as that won't work for remote clients
+            if hostname_str != "localhost" && !hostname_str.is_empty() {
+                return hostname_str.to_string();
             }
+        }
 
         // 4. Fallback to localhost (only works for same-machine connections)
         tracing::warn!("Could not determine external hostname, falling back to localhost");
@@ -920,7 +925,10 @@ impl ComputeProvider for LocalComputeProvider {
 
         if let Some((_, ls)) = live {
             let pid = ls.pid;
-            let _ = self.executor.exec_shell(&format!("kill -TERM {}", pid)).await;
+            let _ = self
+                .executor
+                .exec_shell(&format!("kill -TERM {}", pid))
+                .await;
             // Give the process a moment to exit, then escalate to KILL.
             let mut gone = false;
             for _ in 0..15 {
@@ -939,7 +947,10 @@ impl ComputeProvider for LocalComputeProvider {
             }
             if !gone {
                 tracing::warn!("Process {} did not exit on TERM; sending KILL", pid);
-                let _ = self.executor.exec_shell(&format!("kill -KILL {}", pid)).await;
+                let _ = self
+                    .executor
+                    .exec_shell(&format!("kill -KILL {}", pid))
+                    .await;
             }
         }
 

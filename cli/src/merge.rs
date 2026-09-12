@@ -396,7 +396,7 @@ pub fn merge_file_yjs(base: &str, local: &str, canonical: &str) -> Result<String
     let mut local_idx = 0;
     let mut canon_idx = 0;
 
-    for base_idx in 0..base_tokens.len() {
+    for (base_idx, base_token) in base_tokens.iter().enumerate() {
         let local_match = base_to_local.get(&base_idx).copied();
         let canon_match = base_to_canon.get(&base_idx).copied();
 
@@ -426,7 +426,7 @@ pub fn merge_file_yjs(base: &str, local: &str, canonical: &str) -> Result<String
         match (local_match, canon_match) {
             (Some(li), Some(ci)) => {
                 // Both sides kept this token - output it
-                result.push(base_tokens[base_idx].clone());
+                result.push(base_token.clone());
                 local_idx = li + 1;
                 canon_idx = ci + 1;
             }

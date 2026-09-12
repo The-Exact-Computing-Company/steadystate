@@ -67,155 +67,152 @@ fn run_dashboard(stdout: &mut std::io::Stdout) -> Result<()> {
 
         // 2. Handle Input
         if event::poll(Duration::from_millis(500))?
-            && let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
 
-                    KeyCode::Char('s') => {
-                        if let Some(path) = &worktree_path {
-                            last_status_msg = "Syncing...".to_string();
-                            status_msg_time = std::time::Instant::now();
-                            draw_ui(
-                                stdout,
-                                &session_id,
-                                &repo_root,
-                                &sync_log_path,
-                                &active_users_path,
-                                &current_user,
-                                &worktree_path,
-                                &last_status_msg,
-                            )?;
+                KeyCode::Char('s') => {
+                    if let Some(path) = &worktree_path {
+                        last_status_msg = "Syncing...".to_string();
+                        draw_ui(
+                            stdout,
+                            &session_id,
+                            &repo_root,
+                            &sync_log_path,
+                            &active_users_path,
+                            &current_user,
+                            &worktree_path,
+                            &last_status_msg,
+                        )?;
 
-                            match run_command("sync", path) {
-                                Ok(_) => last_status_msg = "Sync complete!".to_string(),
-                                Err(e) => last_status_msg = format!("Sync failed: {}", e),
-                            }
-                        } else {
-                            last_status_msg = "No worktree found for current user".to_string();
+                        match run_command("sync", path) {
+                            Ok(_) => last_status_msg = "Sync complete!".to_string(),
+                            Err(e) => last_status_msg = format!("Sync failed: {}", e),
                         }
+                    } else {
+                        last_status_msg = "No worktree found for current user".to_string();
+                    }
+                    status_msg_time = std::time::Instant::now();
+                }
+
+                KeyCode::Char('p') => {
+                    if let Some(path) = &worktree_path {
+                        last_status_msg = "Publishing...".to_string();
+                        draw_ui(
+                            stdout,
+                            &session_id,
+                            &repo_root,
+                            &sync_log_path,
+                            &active_users_path,
+                            &current_user,
+                            &worktree_path,
+                            &last_status_msg,
+                        )?;
+
+                        match run_command("publish", path) {
+                            Ok(_) => last_status_msg = "Publish complete!".to_string(),
+                            Err(e) => last_status_msg = format!("Publish failed: {}", e),
+                        }
+                    } else {
+                        last_status_msg = "No worktree found for current user".to_string();
+                    }
+                    status_msg_time = std::time::Instant::now();
+                }
+
+                KeyCode::Char('d') => {
+                    if let Some(path) = &worktree_path {
+                        // Diff is interactive/output heavy, so we need to temporarily leave TUI
+                        execute!(stdout, LeaveAlternateScreen, cursor::Show)?;
+                        disable_raw_mode()?;
+
+                        println!("Running diff...");
+                        let _ = std::process::Command::new("steadystate")
+                            .arg("diff")
+                            .current_dir(path)
+                            .status();
+
+                        println!("\nPress Enter to return to dashboard...");
+                        let _ = std::io::stdin().read_line(&mut String::new());
+
+                        enable_raw_mode()?;
+                        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+                    } else {
+                        last_status_msg = "No worktree found for current user".to_string();
                         status_msg_time = std::time::Instant::now();
                     }
+                }
 
-                    KeyCode::Char('p') => {
-                        if let Some(path) = &worktree_path {
-                            last_status_msg = "Publishing...".to_string();
-                            status_msg_time = std::time::Instant::now();
-                            draw_ui(
-                                stdout,
-                                &session_id,
-                                &repo_root,
-                                &sync_log_path,
-                                &active_users_path,
-                                &current_user,
-                                &worktree_path,
-                                &last_status_msg,
-                            )?;
+                KeyCode::Char('c') => {
+                    if let Some(path) = &worktree_path {
+                        last_status_msg = "Prompting for file...".to_string();
+                        draw_ui(
+                            stdout,
+                            &session_id,
+                            &repo_root,
+                            &sync_log_path,
+                            &active_users_path,
+                            &current_user,
+                            &worktree_path,
+                            &last_status_msg,
+                        )?;
 
-                            match run_command("publish", path) {
-                                Ok(_) => last_status_msg = "Publish complete!".to_string(),
-                                Err(e) => last_status_msg = format!("Publish failed: {}", e),
-                            }
-                        } else {
-                            last_status_msg = "No worktree found for current user".to_string();
-                        }
-                        status_msg_time = std::time::Instant::now();
-                    }
+                        // Temporarily leave TUI to prompt for input
+                        execute!(stdout, LeaveAlternateScreen, cursor::Show)?;
+                        disable_raw_mode()?;
 
-                    KeyCode::Char('d') => {
-                        if let Some(path) = &worktree_path {
-                            // Diff is interactive/output heavy, so we need to temporarily leave TUI
-                            execute!(stdout, LeaveAlternateScreen, cursor::Show)?;
-                            disable_raw_mode()?;
+                        print!("Enter file to credit: ");
+                        stdout.flush()?;
 
-                            println!("Running diff...");
-                            let _ = std::process::Command::new("steadystate")
-                                .arg("diff")
+                        let mut filename = String::new();
+                        std::io::stdin().read_line(&mut filename)?;
+                        let filename = filename.trim();
+
+                        if !filename.is_empty() {
+                            println!("Running credit on {}...", filename);
+
+                            // Single-quote the filename before handing it
+                            // to the shell: it is free-form user input.
+                            let quoted = format!("'{}'", filename.replace('\'', "'\\''"));
+                            let status = std::process::Command::new("sh")
+                                .arg("-c")
+                                .arg(format!("steadystate credit {} | less", quoted))
                                 .current_dir(path)
                                 .status();
 
-                            println!("\nPress Enter to return to dashboard...");
-                            let _ = std::io::stdin().read_line(&mut String::new());
-
-                            enable_raw_mode()?;
-                            execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
-                        } else {
-                            last_status_msg = "No worktree found for current user".to_string();
-                            status_msg_time = std::time::Instant::now();
-                        }
-                    }
-
-                    KeyCode::Char('c') => {
-                        if let Some(path) = &worktree_path {
-                            last_status_msg = "Prompting for file...".to_string();
-                            status_msg_time = std::time::Instant::now();
-                            draw_ui(
-                                stdout,
-                                &session_id,
-                                &repo_root,
-                                &sync_log_path,
-                                &active_users_path,
-                                &current_user,
-                                &worktree_path,
-                                &last_status_msg,
-                            )?;
-
-                            // Temporarily leave TUI to prompt for input
-                            execute!(stdout, LeaveAlternateScreen, cursor::Show)?;
-                            disable_raw_mode()?;
-
-                            print!("Enter file to credit: ");
-                            stdout.flush()?;
-
-                            let mut filename = String::new();
-                            std::io::stdin().read_line(&mut filename)?;
-                            let filename = filename.trim();
-
-                            if !filename.is_empty() {
-                                println!("Running credit on {}...", filename);
-
-                                // Single-quote the filename before handing it
-                                // to the shell: it is free-form user input.
-                                let quoted = format!("'{}'", filename.replace('\'', "'\\''"));
-                                let status = std::process::Command::new("sh")
-                                    .arg("-c")
-                                    .arg(format!("steadystate credit {} | less", quoted))
-                                    .current_dir(path)
-                                    .status();
-
-                                match status {
-                                    Ok(s) => {
-                                        if s.success() {
-                                            last_status_msg =
-                                                format!("Credit successful for {}!", filename);
-                                        } else {
-                                            last_status_msg =
-                                                format!("Credit failed for {}", filename);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        last_status_msg = format!("Credit command error: {}", e);
+                            match status {
+                                Ok(s) => {
+                                    if s.success() {
+                                        last_status_msg =
+                                            format!("Credit successful for {}!", filename);
+                                    } else {
+                                        last_status_msg = format!("Credit failed for {}", filename);
                                     }
                                 }
-
-                                println!("\nPress Enter to return to dashboard...");
-                                let _ = std::io::stdin().read_line(&mut String::new());
-                            } else {
-                                last_status_msg = "Credit cancelled.".to_string();
+                                Err(e) => {
+                                    last_status_msg = format!("Credit command error: {}", e);
+                                }
                             }
 
-                            // Restore TUI
-                            enable_raw_mode()?;
-                            execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+                            println!("\nPress Enter to return to dashboard...");
+                            let _ = std::io::stdin().read_line(&mut String::new());
                         } else {
-                            last_status_msg = "No worktree found for current user".to_string();
+                            last_status_msg = "Credit cancelled.".to_string();
                         }
-                        status_msg_time = std::time::Instant::now();
-                    }
 
-                    _ => {}
+                        // Restore TUI
+                        enable_raw_mode()?;
+                        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+                    } else {
+                        last_status_msg = "No worktree found for current user".to_string();
+                    }
+                    status_msg_time = std::time::Instant::now();
                 }
+
+                _ => {}
             }
+        }
     }
 
     Ok(())
@@ -234,6 +231,8 @@ fn run_command(cmd: &str, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+// Renders the whole dashboard; the fields are its logical inputs.
+#[allow(clippy::too_many_arguments)]
 fn draw_ui(
     stdout: &mut std::io::Stdout,
     session_id: &str,
@@ -264,22 +263,23 @@ fn draw_ui(
 
     if session_info_path.exists()
         && let Ok(content) = std::fs::read_to_string(&session_info_path)
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                magic_link = json
-                    .get("magic_link")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                ssh_url = json
-                    .get("ssh_url")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                if repo_name.is_none() {
-                    repo_name = json
-                        .get("repo_name")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                }
-            }
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+        magic_link = json
+            .get("magic_link")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        ssh_url = json
+            .get("ssh_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if repo_name.is_none() {
+            repo_name = json
+                .get("repo_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
 
     write!(stdout, "Session ID: {}\r\n", session_id)?;
     if let Some(repo) = repo_name {
@@ -329,18 +329,19 @@ fn draw_ui(
     // Connected Users
     write!(stdout, "Connected Users:\r\n")?;
     if active_users_path.exists()
-        && let Ok(content) = std::fs::read_to_string(active_users_path) {
-            let mut users: Vec<&str> = content
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .collect();
-            users.sort();
-            users.dedup();
-            for user in users {
-                write!(stdout, "  • {}\r\n", user)?;
-            }
+        && let Ok(content) = std::fs::read_to_string(active_users_path)
+    {
+        let mut users: Vec<&str> = content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        users.sort();
+        users.dedup();
+        for user in users {
+            write!(stdout, "  • {}\r\n", user)?;
         }
+    }
     write!(stdout, "\r\n")?;
 
     // Activity Log

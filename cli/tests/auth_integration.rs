@@ -2,6 +2,7 @@
 
 // cli/tests/auth_integration.rs
 
+#[allow(dead_code)]
 mod common;
 use common::{MockResponse, TestHarness};
 use serde_json::json;

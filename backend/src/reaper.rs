@@ -65,11 +65,7 @@ pub async fn run_forever(state: Arc<AppState>) {
 /// Returns `None` when provider signals fail: unknown must *defer* the
 /// idle reap (a broken signal must never accelerate killing), while
 /// lifetime expiry still applies.
-async fn idle_for(
-    state: &Arc<AppState>,
-    session: &Session,
-    now: SystemTime,
-) -> Option<Duration> {
+async fn idle_for(state: &Arc<AppState>, session: &Session, now: SystemTime) -> Option<Duration> {
     let mut best = session.last_activity_at;
     if let Some(provider) = state.compute_providers.get(&session.compute_provider) {
         match provider.last_activity(session).await {
@@ -307,9 +303,10 @@ mod tests {
         // immediately; poll for the spawned task to record Terminated.
         for _ in 0..50 {
             if let Some(s) = state.sessions.get(id)
-                && s.state == SessionState::Terminated {
-                    return;
-                }
+                && s.state == SessionState::Terminated
+            {
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("{} was not terminated", id);

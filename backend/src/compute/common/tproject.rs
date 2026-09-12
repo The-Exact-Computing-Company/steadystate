@@ -23,13 +23,15 @@ pub fn parse_min_version(content: &str) -> Option<String> {
             in_t_section = t == "[t]";
             continue;
         }
-        if in_t_section && t.starts_with("min_version")
-            && let Some((_, v)) = t.split_once('=') {
-                let v = v.trim().trim_matches(|c| c == '"' || c == '\'').trim();
-                if !v.is_empty() {
-                    return Some(v.to_string());
-                }
+        if in_t_section
+            && t.starts_with("min_version")
+            && let Some((_, v)) = t.split_once('=')
+        {
+            let v = v.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
             }
+        }
     }
     None
 }

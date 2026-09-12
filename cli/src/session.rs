@@ -17,6 +17,8 @@ pub struct Session {
 }
 
 impl Session {
+    /// Convenience constructor without provider attribution (used by tests).
+    #[allow(dead_code)]
     pub fn new(login: String, jwt: String) -> Self {
         Self::with_provider(login, jwt, None)
     }
@@ -89,10 +91,7 @@ pub async fn write_session(session: &Session, override_dir: Option<&PathBuf>) ->
     }
     {
         use tokio::io::AsyncWriteExt;
-        let mut f = opts
-            .open(&tmp)
-            .await
-            .context("open temp session file")?;
+        let mut f = opts.open(&tmp).await.context("open temp session file")?;
         f.write_all(&data).await.context("write session file")?;
         f.flush().await.context("flush session file")?;
     }

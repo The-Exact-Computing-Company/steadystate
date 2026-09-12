@@ -386,10 +386,7 @@ pub(crate) async fn terminate_inner(
         // Persist the Terminating state before spawning cleanup.
         state.persist_session(&owned_id).await;
 
-        if let Some(provider) = state
-            .compute_providers
-            .get(&session_clone.compute_provider)
-        {
+        if let Some(provider) = state.compute_providers.get(&session_clone.compute_provider) {
             let provider = provider.clone();
             let bg_state = state.clone();
             tokio::spawn(async move {

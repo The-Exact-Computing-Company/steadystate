@@ -21,13 +21,14 @@ pub fn extract_forge_config(request: &SessionRequest) -> Option<ForgeAuth> {
                 access_token: Option<String>,
             }
             if let Ok(creds) = serde_json::from_value::<Creds>(block.clone())
-                && (creds.login.is_some() || creds.access_token.is_some()) {
-                    return Some(ForgeAuth {
-                        provider: provider.to_string(),
-                        login: creds.login,
-                        token: creds.access_token,
-                    });
-                }
+                && (creds.login.is_some() || creds.access_token.is_some())
+            {
+                return Some(ForgeAuth {
+                    provider: provider.to_string(),
+                    login: creds.login,
+                    token: creds.access_token,
+                });
+            }
         }
     }
     None

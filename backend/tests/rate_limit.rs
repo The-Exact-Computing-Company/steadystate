@@ -1,19 +1,15 @@
 // backend/tests/rate_limit.rs
 //
-// Black-box rate-limit tests: serve the real auth router on loopback with
-// tiny per-minute tiers and assert 429s with JSON bodies + retry-after.
+//! Black-box rate-limit tests: serve the real auth router on loopback with
+//! tiny per-minute tiers and assert 429s with JSON bodies + retry-after.
 
-use std::sync::{Mutex, MutexGuard};
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn lock_env() -> MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
+// Shared env lock is a tokio Mutex so a guard can be held across `.await`
+// (env-mutating tests are serialized; std guards would be a lint error).
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct TestApp {
     base: String,
-    _guard: MutexGuard<'static, ()>,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
     saved: Vec<(String, Option<String>)>,
 }
 
@@ -32,7 +28,7 @@ impl Drop for TestApp {
 }
 
 async fn serve_with_limits(vars: &[(&str, &str)]) -> TestApp {
-    let guard = lock_env();
+    let guard = ENV_LOCK.lock().await;
     let mut saved = Vec::new();
     for k in [
         "JWT_SECRET",

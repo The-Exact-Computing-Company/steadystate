@@ -216,9 +216,10 @@ pub fn resolve_pat(flag: Option<String>, env_var: &str, prompt: &str) -> Result<
         return Ok(t);
     }
     if let Ok(t) = std::env::var(env_var)
-        && !t.trim().is_empty() {
-            return Ok(t);
-        }
+        && !t.trim().is_empty()
+    {
+        return Ok(t);
+    }
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         anyhow::bail!(
             "No token provided. Pass --token, set {} or run interactively.",
@@ -332,10 +333,9 @@ pub async fn oidc_login(client: &Client, no_browser: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Backend returned an authorization URL without ?state="))?;
 
     println!("Open this URL in your browser:\n\n  {}\n", start.auth_url);
-    if !no_browser
-        && let Err(e) = open::that(&start.auth_url) {
-            warn!("open browser failed: {}", e);
-        }
+    if !no_browser && let Err(e) = open::that(&start.auth_url) {
+        warn!("open browser failed: {}", e);
+    }
 
     let (code, echo_state) = if no_browser {
         println!("After approving, paste the full localhost redirect URL here:");
@@ -524,8 +524,7 @@ where
     }
 
     // Step 5: Parse and return
-    resp
-        .json::<T>()
+    resp.json::<T>()
         .await
         .context("Failed to parse server response")
 }

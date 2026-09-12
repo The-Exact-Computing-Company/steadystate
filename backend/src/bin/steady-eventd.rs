@@ -71,18 +71,19 @@ impl EventDaemon {
         let mut root_watcher =
             notify::recommended_watcher(move |res: notify::Result<NotifyEvent>| {
                 if let Ok(event) = res
-                    && let notify::event::EventKind::Create(_) = event.kind {
-                        for path in event.paths {
-                            if path.is_dir() {
-                                // Check if it looks like a user workspace (has .git?)
-                                // Or just assume any new dir is a user workspace?
-                                // Let's just signal a "NewWorkspace" event and handle it in the loop?
-                                // For simplicity, we might just poll or restart.
-                                // But let's stick to the plan: watch existing.
-                                // If we need dynamic watching, we'd need a control channel to add watchers.
-                            }
+                    && let notify::event::EventKind::Create(_) = event.kind
+                {
+                    for path in event.paths {
+                        if path.is_dir() {
+                            // Check if it looks like a user workspace (has .git?)
+                            // Or just assume any new dir is a user workspace?
+                            // Let's just signal a "NewWorkspace" event and handle it in the loop?
+                            // For simplicity, we might just poll or restart.
+                            // But let's stick to the plan: watch existing.
+                            // If we need dynamic watching, we'd need a control channel to add watchers.
                         }
                     }
+                }
             })?;
         root_watcher.watch(&self.session_root, RecursiveMode::NonRecursive)?;
 
@@ -184,9 +185,10 @@ impl EventDaemon {
         let now = std::time::Instant::now();
 
         if let Some(last) = self.debounce_map.get(&key)
-            && now.duration_since(*last) < Duration::from_millis(500) {
-                return Ok(());
-            }
+            && now.duration_since(*last) < Duration::from_millis(500)
+        {
+            return Ok(());
+        }
         self.debounce_map.insert(key, now);
 
         let action = match event.event_type {

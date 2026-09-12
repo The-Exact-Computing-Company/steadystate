@@ -309,12 +309,11 @@ impl HetznerComputeProvider {
                     .await?;
                 // Remote host has curl (installed by cloud-init).
                 for file in ["flake.nix", "flake.lock"] {
+                    let dest = format!("{}/{}", flake_dest, file);
                     let out = ex
                         .exec_shell(&format!(
                             "curl -fsSL {}/{} -o '{}'",
-                            NOENV_FLAKE_URL,
-                            file,
-                            format!("{}/{}", flake_dest, file),
+                            NOENV_FLAKE_URL, file, dest,
                         ))
                         .await?;
                     if !out.exit_status.success() {
@@ -508,13 +507,8 @@ impl HetznerComputeProvider {
                     break;
                 }
                 _ => {
-                    tracing::warn!(
-                        "Remote sshd not listening on port {}; retrying",
-                        candidate
-                    );
-                    let _ = ex
-                        .exec_shell(&format!("kill {} 2>/dev/null", _pid))
-                        .await;
+                    tracing::warn!("Remote sshd not listening on port {}; retrying", candidate);
+                    let _ = ex.exec_shell(&format!("kill {} 2>/dev/null", _pid)).await;
                     continue;
                 }
             }

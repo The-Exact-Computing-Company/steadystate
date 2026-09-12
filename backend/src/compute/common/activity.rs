@@ -3,15 +3,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::compute::traits::RemoteExecutor;
 
-/// Activity signals for idle reaping, read through any `RemoteExecutor`
-/// (local or over SSH).
-///
-/// Sources, in priority order:
-/// 1. `active-users` non-empty (collab): someone is connected *right now*.
-/// 2. Attached tmux clients (pair): `tmux list-clients -t pair-<id8>`.
-/// 3. `sync-log` / `activity-log` mtimes: last sync or connection.
-/// Anything unobservable yields `None` and the reaper falls back to the
-/// session's creation time.
+// Activity signals for idle reaping, read through any `RemoteExecutor`
+// (local or over SSH).
+//
+// Sources, in priority order:
+// 1. `active-users` non-empty (collab): someone is connected *right now*.
+// 2. Attached tmux clients (pair): `tmux list-clients -t pair-<id8>`.
+// 3. `sync-log` / `activity-log` mtimes: last sync or connection.
+//
+// Anything unobservable yields `None` and the reaper defers the idle reap.
 
 /// tmux session name for a pair session (mirrors pair-wrapper's
 /// `TMUX_SESSION="pair-${SESSION_ID:0:8}"`).

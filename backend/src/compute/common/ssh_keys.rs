@@ -62,21 +62,23 @@ impl SshKeyManager {
         if let Some(home_dir) = dirs::home_dir() {
             let ssh_dir = home_dir.join(".ssh");
             if ssh_dir.exists()
-                && let Ok(mut entries) = tokio::fs::read_dir(ssh_dir).await {
-                    while let Ok(Some(entry)) = entries.next_entry().await {
-                        let path = entry.path();
-                        if let Some(extension) = path.extension()
-                            && extension == "pub"
-                                && let Ok(content) = tokio::fs::read_to_string(&path).await {
-                                    for line in content.lines() {
-                                        let line = line.trim();
-                                        if !line.is_empty() && !line.starts_with('#') {
-                                            keys.push(line.to_string());
-                                        }
-                                    }
-                                }
+                && let Ok(mut entries) = tokio::fs::read_dir(ssh_dir).await
+            {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if let Some(extension) = path.extension()
+                        && extension == "pub"
+                        && let Ok(content) = tokio::fs::read_to_string(&path).await
+                    {
+                        for line in content.lines() {
+                            let line = line.trim();
+                            if !line.is_empty() && !line.starts_with('#') {
+                                keys.push(line.to_string());
+                            }
+                        }
                     }
                 }
+            }
         }
 
         Ok(keys)
@@ -211,9 +213,10 @@ impl SshKeyManager {
                 && let Ok(keys) =
                     gitlab_forge::fetch_user_keys_api(&self.http_client, &base, username, token)
                         .await
-                    && !keys.is_empty() {
-                        return Ok(keys);
-                    }
+                && !keys.is_empty()
+            {
+                return Ok(keys);
+            }
             self.fetch_github_keys(username).await
         } else {
             match self.fetch_github_keys(username).await {

@@ -2,8 +2,7 @@ use anyhow::Result;
 use std::path::Path;
 
 /// Supported Python versions in nixpkgs
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PythonVersion {
     Python39,
     Python310,
@@ -74,7 +73,6 @@ impl PythonVersion {
     }
 }
 
-
 /// Detect Python version from repository files
 pub async fn detect_python_version<E: crate::compute::traits::RemoteExecutor + ?Sized>(
     executor: &E,
@@ -134,10 +132,11 @@ fn parse_requires_python(content: &str) -> Option<PythonVersion> {
         // Look for: requires-python = ">=3.11"
         // Look for: requires-python = ">=3.11"
         if line.starts_with("requires-python")
-            && let Some((_, value_part)) = line.split_once('=') {
-                let value = value_part.trim().trim_matches(|c| c == '"' || c == '\'');
-                return PythonVersion::from_specifier(value);
-            }
+            && let Some((_, value_part)) = line.split_once('=')
+        {
+            let value = value_part.trim().trim_matches(|c| c == '"' || c == '\'');
+            return PythonVersion::from_specifier(value);
+        }
     }
 
     None

@@ -529,7 +529,8 @@ async fn up(client: &Client, args: UpArgs) -> Result<()> {
     }
 
     // Validate --mode (required).
-    let mode_val = mode.ok_or_else(|| anyhow::anyhow!("--mode flag is required.\n{}", MODE_HELP))?;
+    let mode_val =
+        mode.ok_or_else(|| anyhow::anyhow!("--mode flag is required.\n{}", MODE_HELP))?;
     if mode_val != "pair" && mode_val != "collab" {
         anyhow::bail!("Invalid --mode option: {}\n{}", mode_val, MODE_HELP);
     }
@@ -748,60 +749,61 @@ async fn up(client: &Client, args: UpArgs) -> Result<()> {
 
         // Launch dashboard if in collab mode and we have an endpoint
         if mode_val == "collab"
-            && let Some(endpoint) = final_endpoint {
-                println!("Launching dashboard...");
-                // Parse endpoint to get host/port/user
-                // Endpoint is ssh://steady@host:port
-                // We want to run: ssh -t -p port steady@host "steadystate watch"
+            && let Some(endpoint) = final_endpoint
+        {
+            println!("Launching dashboard...");
+            // Parse endpoint to get host/port/user
+            // Endpoint is ssh://steady@host:port
+            // We want to run: ssh -t -p port steady@host "steadystate watch"
 
-                if let Ok(url) = Url::parse(&endpoint) {
-                    let host = url.host_str().unwrap_or("localhost");
-                    let port = url.port().unwrap_or(22);
-                    let user = url.username();
+            if let Ok(url) = Url::parse(&endpoint) {
+                let host = url.host_str().unwrap_or("localhost");
+                let port = url.port().unwrap_or(22);
+                let user = url.username();
 
-                    let mut args = vec![
-                        "-p".to_string(),
-                        port.to_string(),
-                        "-t".to_string(), // Force PTY for TUI
-                    ];
+                let mut args = vec![
+                    "-p".to_string(),
+                    port.to_string(),
+                    "-t".to_string(), // Force PTY for TUI
+                ];
 
-                    if let Some(host_key) = final_host_key {
-                        let known_hosts_path =
-                            write_known_hosts("dash", &resp.id, host, port, &host_key)?;
-                        args.extend([
-                            "-o".to_string(),
-                            format!("UserKnownHostsFile={}", known_hosts_path),
-                            "-o".to_string(),
-                            "StrictHostKeyChecking=yes".to_string(),
-                        ]);
-                    } else {
-                        args.extend([
-                            "-o".to_string(),
-                            "StrictHostKeyChecking=no".to_string(),
-                            "-o".to_string(),
-                            "UserKnownHostsFile=/dev/null".to_string(),
-                        ]);
-                    }
-
-                    let target = if !user.is_empty() {
-                        format!("{}@{}", user, host)
-                    } else {
-                        host.to_string()
-                    };
-                    // `--` ends ssh option parsing so a hostile host/user
-                    // cannot smuggle an ssh flag.
-                    args.push("--".to_string());
-                    args.push(target);
-
-                    // Command to run
-                    args.push("steadystate watch".to_string());
-
-                    println!("Connecting to dashboard...");
-                    use std::os::unix::process::CommandExt;
-                    let err = std::process::Command::new("ssh").args(&args).exec();
-                    return Err(anyhow::anyhow!("Failed to execute ssh: {}", err));
+                if let Some(host_key) = final_host_key {
+                    let known_hosts_path =
+                        write_known_hosts("dash", &resp.id, host, port, &host_key)?;
+                    args.extend([
+                        "-o".to_string(),
+                        format!("UserKnownHostsFile={}", known_hosts_path),
+                        "-o".to_string(),
+                        "StrictHostKeyChecking=yes".to_string(),
+                    ]);
+                } else {
+                    args.extend([
+                        "-o".to_string(),
+                        "StrictHostKeyChecking=no".to_string(),
+                        "-o".to_string(),
+                        "UserKnownHostsFile=/dev/null".to_string(),
+                    ]);
                 }
+
+                let target = if !user.is_empty() {
+                    format!("{}@{}", user, host)
+                } else {
+                    host.to_string()
+                };
+                // `--` ends ssh option parsing so a hostile host/user
+                // cannot smuggle an ssh flag.
+                args.push("--".to_string());
+                args.push(target);
+
+                // Command to run
+                args.push("steadystate watch".to_string());
+
+                println!("Connecting to dashboard...");
+                use std::os::unix::process::CommandExt;
+                let err = std::process::Command::new("ssh").args(&args).exec();
+                return Err(anyhow::anyhow!("Failed to execute ssh: {}", err));
             }
+        }
     }
 
     Ok(())
@@ -851,8 +853,7 @@ async fn join(url_str: String) -> Result<()> {
                 let mut args = vec!["-p".to_string(), port.to_string()];
 
                 if let Some(key) = host_key {
-                    let known_hosts_path =
-                        write_known_hosts("join", &url_str, host, port, &key)?;
+                    let known_hosts_path = write_known_hosts("join", &url_str, host, port, &key)?;
                     args.extend([
                         "-o".to_string(),
                         format!("UserKnownHostsFile={}", known_hosts_path),
@@ -896,9 +897,7 @@ async fn join(url_str: String) -> Result<()> {
 
                 Err(anyhow::anyhow!("Failed to execute ssh: {}", err))
             }
-            _ => {
-                Err(anyhow::anyhow!("Unknown mode: {}", mode))
-            }
+            _ => Err(anyhow::anyhow!("Unknown mode: {}", mode)),
         }
     } else {
         // Legacy/Direct SSH URL

@@ -22,18 +22,19 @@ pub fn base_for_repo(host: &str) -> String {
         return DEFAULT_GITLAB_URL.to_string();
     }
     if let Ok(raw) = std::env::var("GITLAB_URL")
-        && let Ok(base) = normalize_base_url(&raw) {
-            let base_host = base
-                .split("://")
-                .nth(1)
-                .unwrap_or(&base)
-                .split('/')
-                .next()
-                .unwrap_or(&base);
-            if base_host.eq_ignore_ascii_case(host) {
-                return base;
-            }
+        && let Ok(base) = normalize_base_url(&raw)
+    {
+        let base_host = base
+            .split("://")
+            .nth(1)
+            .unwrap_or(&base)
+            .split('/')
+            .next()
+            .unwrap_or(&base);
+        if base_host.eq_ignore_ascii_case(host) {
+            return base;
         }
+    }
     format!("https://{}", host)
 }
 

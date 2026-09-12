@@ -415,9 +415,10 @@ fn get_active_users(log_path: &Path, current_user: &str) -> Result<Vec<String>> 
             line.split_whitespace().nth(1).map(str::to_string)
         };
         if let Some(user) = user
-            && !users.contains(&user) {
-                users.push(user);
-            }
+            && !users.contains(&user)
+        {
+            users.push(user);
+        }
     }
 
     if users.is_empty() {
@@ -495,11 +496,12 @@ pub async fn sync() -> Result<()> {
     println!("Base commit: {}", base_commit);
     println!("Session branch: {}", session_branch);
 
-    let mut changes = Vec::new();
+    // Assigned inside the lock scope; only read after a successful push.
+    let changes: Vec<FileChange>;
     // Metadata is only advanced after a successful push: if the push fails,
     // the local commit is not the sync point yet (next sync would fetch and
     // reset to origin, discarding it).
-    let mut pending_meta: Option<(std::path::PathBuf, WorktreeMeta)> = None;
+    let pending_meta: Option<(std::path::PathBuf, WorktreeMeta)>;
 
     // Scope the lock so it is released before push
     {
@@ -796,11 +798,7 @@ async fn get_staged_changes(repo_path: &Path) -> Result<Vec<FileChange>> {
             if parts.len() >= 4 {
                 // b/file.txt
                 let b_path = parts[3];
-                if b_path.starts_with("b/") {
-                    current_file = b_path[2..].to_string();
-                } else {
-                    current_file = b_path.to_string();
-                }
+                current_file = b_path.strip_prefix("b/").unwrap_or(b_path).to_string();
             }
         } else if line.starts_with("@@") {
             // @@ -1,5 +10,2 @@
@@ -916,7 +914,10 @@ async fn create_backup_ref(repo_path: &Path, label: &str) -> Result<String> {
         .await
         .context("create backup ref")?;
     if !status.success() {
-        return Err(anyhow::anyhow!("Failed to create backup ref {}", backup_ref));
+        return Err(anyhow::anyhow!(
+            "Failed to create backup ref {}",
+            backup_ref
+        ));
     }
     Ok(backup_ref)
 }
@@ -1076,6 +1077,7 @@ fn lock_canonical(repo_path: &Path) -> Result<std::fs::File> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&lock_path)
         .context("Failed to open lock file")?;
 

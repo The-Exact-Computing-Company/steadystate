@@ -275,9 +275,10 @@ impl AppState {
                 }
                 // Drop expired rows so the table does not grow forever.
                 if let Ok(pruned) = storage.prune_expired_refresh(now)
-                    && pruned > 0 {
-                        tracing::info!("Pruned {} expired refresh token(s)", pruned);
-                    }
+                    && pruned > 0
+                {
+                    tracing::info!("Pruned {} expired refresh token(s)", pruned);
+                }
                 tracing::info!("Rehydrated {} live refresh token(s)", live);
             }
             Err(e) => tracing::warn!("Failed to load refresh tokens: {:#}", e),
@@ -337,11 +338,7 @@ impl AppState {
     /// Issue a refresh token, persisting it before returning. Hard error on
     /// storage failure (with the in-memory entry rolled back) so a caller
     /// never hands out a token that would vanish on restart.
-    pub async fn issue_refresh_token(
-        &self,
-        login: String,
-        provider: ProviderId,
-    ) -> Result<String> {
+    pub async fn issue_refresh_token(&self, login: String, provider: ProviderId) -> Result<String> {
         let token = Uuid::new_v4().to_string();
         let expires_at = now() + self.config.refresh_ttl_secs;
 
@@ -430,8 +427,7 @@ impl AppState {
     /// from auth routes; keeps the maps bounded without a background task.
     pub fn prune_auth_state(&self) {
         let cutoff = now();
-        self.device_pending
-            .retain(|_, p| p.expires_at > cutoff);
+        self.device_pending.retain(|_, p| p.expires_at > cutoff);
         self.refresh_store.retain(|_, r| r.expires_at > cutoff);
         self.prune_oidc_pending();
     }
@@ -501,14 +497,15 @@ fn load_tokens() -> DashMap<(String, String), String> {
             .join("tokens.json");
         if file_path.exists()
             && let Ok(content) = std::fs::read_to_string(file_path)
-                && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content) {
-                    for (k, v) in map {
-                        if let Some((provider, login)) = k.split_once(':') {
-                            dash.insert((provider.to_string(), login.to_string()), v);
-                        }
-                    }
-                    info!("Loaded {} tokens from disk", dash.len());
+            && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&content)
+        {
+            for (k, v) in map {
+                if let Some((provider, login)) = k.split_once(':') {
+                    dash.insert((provider.to_string(), login.to_string()), v);
                 }
+            }
+            info!("Loaded {} tokens from disk", dash.len());
+        }
     }
     dash
 }

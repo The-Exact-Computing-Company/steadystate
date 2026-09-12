@@ -64,9 +64,10 @@ fn json_error_handler(err: GovernorError) -> axum::response::Response {
     };
     let mut resp = (status, axum::Json(serde_json::json!({ "error": msg }))).into_response();
     if let Some(w) = wait
-        && let Ok(v) = w.to_string().parse() {
-            resp.headers_mut().insert("retry-after", v);
-        }
+        && let Ok(v) = w.to_string().parse()
+    {
+        resp.headers_mut().insert("retry-after", v);
+    }
     resp
 }
 
