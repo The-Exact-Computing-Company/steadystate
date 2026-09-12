@@ -35,13 +35,21 @@ coming later) and manages **ephemeral SSH-accessible sessions** in the cloud.
 | --------------- | ----------------------------------------------------------------- |
 | `/auth/device`  | Start the OAuth device flow (returns verification URL + code)     |
 | `/auth/poll`    | Poll until the user authorizes the device                         |
+| `/auth/token`   | PAT login for providers without a device flow (GitLab)            |
 | `/auth/refresh` | Exchange a refresh token for a new JWT                            |
 | `/auth/me`      | Return current user identity from JWT                             |
-| `/sessions`     | (WIP) Create reproducible cloud dev environments                  |
+| `/sessions`     | Create/list/terminate reproducible dev environments (48h TTL, capped per user) |
 | `providers/`    | Modular auth providers (`github.rs`, `gitlab.rs`, `orchid.rs`, …) |
-| `storage.rs`    | In-memory token registry (can later use Postgres or Redis)        |
+| `storage.rs`    | SQLite persistence for sessions + refresh tokens                  |
+| `rate_limit.rs` | Per-IP tiers on auth routes (5/30/120 per min, env-configurable)  |
+| `reaper.rs`     | Background expiry enforcement for sessions                        |
 | `jwt.rs`        | JWT encoding and validation                                       |
 | `main.rs`       | Axum router and startup logic                                     |
+
+Auth routes are rate-limited per client IP and answer `429` with a JSON
+error + `Retry-After` header. `GET /sessions/{id}` returns full details
+to the session creator and a redacted view (no endpoint/magic link/host
+key) to other authenticated users; `DELETE` is creator-only.
 
 ---
 

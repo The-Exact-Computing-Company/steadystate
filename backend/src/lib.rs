@@ -6,3 +6,4 @@ pub mod auth;
 pub mod compute;
 pub mod storage;
 pub mod reaper;
+pub mod rate_limit;

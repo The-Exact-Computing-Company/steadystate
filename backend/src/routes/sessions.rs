@@ -185,23 +185,34 @@ async fn create_session(
 
 /// Retrieves the status of a session.
 ///
+/// Any authenticated user may poll lifecycle state, but only the creator
+/// sees connection secrets (`endpoint`, `magic_link`, `host_public_key`).
+/// Joining uses the out-of-band magic link directly, so redaction breaks
+/// no collaborator flow.
+///
 /// # Arguments
 /// * `state` - The application state.
+/// * `claims` - The JWT claims of the caller.
 /// * `id` - The session ID.
 ///
 /// # Returns
-/// * `200 OK` with the session info.
+/// * `200 OK` with the session info (redacted for non-creators).
 /// * `404 Not Found` if the session does not exist.
 async fn get_session_status(
     State(state): State<Arc<AppState>>,
-    _claims: CustomClaims,
+    claims: CustomClaims,
     Path(id): Path<String>,
 ) -> Result<Json<SessionInfo>, (StatusCode, Json<serde_json::Value>)> {
     tracing::info!("GET /sessions/{}, total sessions in map: {}", id, state.sessions.len());
     match state.sessions.get(&id) {
         Some(session) => {
             tracing::info!("Found session {} in state {:?}", id, session.state);
-            Ok(Json(SessionInfo::from(&*session)))
+            let info = SessionInfo::from(&*session);
+            if session.creator_login == claims.sub {
+                Ok(Json(info))
+            } else {
+                Ok(Json(info.redacted()))
+            }
         }
         None => {
             tracing::warn!("Session {} not found in map", id);
@@ -342,14 +353,14 @@ mod tests {
             repo_url: "https://github.com/user/repo".to_string(),
             branch: None,
             environment: None,
-            endpoint: None,
+            endpoint: Some("ssh://steady@host:2222".to_string()),
             compute_provider: "local".to_string(),
             creator_login: creator.to_string(),
             created_at: now,
             updated_at: now,
             error_message: None,
-            magic_link: None,
-            host_public_key: None,
+            magic_link: Some("steadystate://collab/sess?ssh=x".to_string()),
+            host_public_key: Some("ssh-ed25519 AAAA".to_string()),
             expires_at: None,
         });
     }
@@ -467,5 +478,44 @@ mod tests {
         let (status, _) =
             create_session(State(state), claims("bob"), Json(create_req(None))).await;
         assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn status_creator_sees_full_info() {
+        let state = test_state().await;
+        seed_session(&state, "sess-9", "alice");
+        let Json(info) =
+            get_session_status(State(state), claims("alice"), Path("sess-9".to_string()))
+                .await
+                .unwrap();
+        assert_eq!(info.state, SessionState::Running);
+        assert!(info.magic_link.is_some());
+        assert!(info.endpoint.is_some());
+        assert!(info.host_public_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn status_non_creator_is_redacted() {
+        let state = test_state().await;
+        seed_session(&state, "sess-9", "alice");
+        let Json(info) =
+            get_session_status(State(state), claims("mallory"), Path("sess-9".to_string()))
+                .await
+                .unwrap();
+        // Lifecycle visible, connection secrets hidden.
+        assert_eq!(info.state, SessionState::Running);
+        assert_eq!(info.id, "sess-9");
+        assert_eq!(info.magic_link, None);
+        assert_eq!(info.endpoint, None);
+        assert_eq!(info.host_public_key, None);
+    }
+
+    #[tokio::test]
+    async fn status_unknown_id_is_404() {
+        let state = test_state().await;
+        let err = get_session_status(State(state), claims("alice"), Path("nope".to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
     }
 }

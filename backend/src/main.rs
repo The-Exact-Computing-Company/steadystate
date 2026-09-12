@@ -35,7 +35,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("SteadyState backend listening on http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // with_connect_info supplies peer SocketAddr to extractors —
+    // required by the rate limiter's PeerIpKeyExtractor.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 } 

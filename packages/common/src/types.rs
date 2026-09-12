@@ -15,6 +15,48 @@ pub struct SessionInfo {
     pub expires_at: Option<u64>,
 }
 
+impl SessionInfo {
+    /// Redacted view for non-creators: connection secrets removed, but
+    /// lifecycle state stays visible. Joining never needs the API —
+    /// collaborators connect with the out-of-band magic link over SSH.
+    pub fn redacted(&self) -> Self {
+        Self {
+            magic_link: None,
+            endpoint: None,
+            host_public_key: None,
+            ..self.clone()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redacted_hides_connection_secrets() {
+        let full = SessionInfo {
+            id: "abc".to_string(),
+            endpoint: Some("ssh://steady@host:2222".to_string()),
+            magic_link: Some("steadystate://collab/abc?ssh=x".to_string()),
+            state: SessionState::Running,
+            host_public_key: Some("ssh-ed25519 AAAA".to_string()),
+            compute_provider: Some("local".to_string()),
+            message: None,
+            expires_at: Some(9_999_999),
+        };
+        let red = full.redacted();
+        assert_eq!(red.magic_link, None);
+        assert_eq!(red.endpoint, None);
+        assert_eq!(red.host_public_key, None);
+        // Lifecycle stays visible.
+        assert_eq!(red.id, "abc");
+        assert_eq!(red.state, SessionState::Running);
+        assert_eq!(red.expires_at, Some(9_999_999));
+        assert_eq!(red.compute_provider.as_deref(), Some("local"));
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SessionState {
     Provisioning,

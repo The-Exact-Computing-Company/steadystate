@@ -222,6 +222,24 @@ export STEADYSTATE_MAX_SESSIONS_PER_USER=5
 
 **Default:** `5`
 
+### RATE_LIMIT_TOKEN_PER_MIN / RATE_LIMIT_AUTH_PER_MIN / RATE_LIMIT_DEFAULT_PER_MIN
+
+Per-IP rate limits (requests/minute) for `POST /auth/token`, the device
+flow (`/auth/device`, `/auth/poll`), and the remaining auth routes
+(`refresh`, `revoke`, `me`). `0` disables a tier.
+
+```
+export RATE_LIMIT_TOKEN_PER_MIN=5
+export RATE_LIMIT_AUTH_PER_MIN=30
+export RATE_LIMIT_DEFAULT_PER_MIN=120
+```
+
+**Defaults:** `5` / `30` / `120`
+
+Over-limit responses are `429` with a JSON `{"error": ...}` body and a
+`Retry-After` header. Keys are peer IPs: behind a reverse proxy every
+client shares the proxy's IP unless the proxy setup is adjusted.
+
 ### RUST_LOG
 
 Control logging verbosity.

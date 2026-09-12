@@ -18,13 +18,20 @@ use crate::{
 };
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/device", post(device_start))
-        .route("/poll", post(poll))
-        .route("/token", post(token_login))
-        .route("/refresh", post(refresh))
-        .route("/revoke", post(revoke))
-        .route("/me", get(me))
+    // Per-route rate-limit tiers (see rate_limit.rs). Merging preserves layers.
+    let token = crate::rate_limit::token_limit(Router::new().route("/token", post(token_login)));
+    let device = crate::rate_limit::auth_limit(
+        Router::new()
+            .route("/device", post(device_start))
+            .route("/poll", post(poll)),
+    );
+    let general = crate::rate_limit::general_limit(
+        Router::new()
+            .route("/refresh", post(refresh))
+            .route("/revoke", post(revoke))
+            .route("/me", get(me)),
+    );
+    Router::new().merge(token).merge(device).merge(general)
 }
 
 /// Initiates the device flow authentication process.
