@@ -225,6 +225,171 @@ pub fn resolve_pat(flag: Option<String>, env_var: &str, prompt: &str) -> Result<
 }
 
 // =======================================================================
+// OIDC LOGIN (browser + localhost callback, RFC 8252 native-app style)
+// =======================================================================
+
+/// Generate a PKCE verifier/challenge pair (S256).
+/// Returns `(verifier, challenge)`; the verifier stays on this machine.
+pub fn pkce_pair() -> (String, String) {
+    use base64::Engine as _;
+    use rand::RngCore;
+    use sha2::{Digest, Sha256};
+    let mut bytes = [0u8; 64];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let digest = Sha256::digest(verifier.as_bytes());
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
+    (verifier, challenge)
+}
+
+/// Pull `code` and `state` out of a redirect target: either a full URL
+/// (pasted from the browser) or a bare `?code=..&state=..` query string.
+pub fn parse_callback_target(target: &str) -> Result<(String, String)> {
+    let params = callback_params(target)?;
+    let code = params.get("code").filter(|s| !s.is_empty()).cloned()
+        .ok_or_else(|| anyhow::anyhow!("Redirect has no ?code= parameter (access denied or IdP error?)"))?;
+    let state = params.get("state").filter(|s| !s.is_empty()).cloned()
+        .ok_or_else(|| anyhow::anyhow!("Redirect has no ?state= parameter"))?;
+    Ok((code, state))
+}
+
+/// Parse the query half of a redirect target into a map (code optional —
+/// the backend's authorization URL carries `state` but no `code` yet).
+pub fn callback_params(target: &str) -> Result<std::collections::HashMap<String, String>> {
+    let query = if let Some(q) = target.split_once('?') {
+        q.1.to_string()
+    } else if target.contains('=') {
+        target.to_string()
+    } else {
+        anyhow::bail!("No query string in redirect target");
+    };
+    Ok(url::form_urlencoded::parse(query.as_bytes()).into_owned().collect())
+}
+
+#[derive(Deserialize)]
+struct OidcStartOut {
+    key: String,
+    auth_url: String,
+    expires_in: u64,
+}
+
+/// OIDC login: PKCE start, browser round-trip via a localhost listener
+/// (or pasted redirect with `no_browser`), then completion + session store.
+pub async fn oidc_login(client: &Client, no_browser: bool) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let (verifier, challenge) = pkce_pair();
+
+    // Bind localhost first so the redirect_uri is known before start.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("bind localhost callback listener")?;
+    let redirect_uri = format!(
+        "http://127.0.0.1:{}/callback",
+        listener.local_addr()?.port()
+    );
+
+    let start_url = format!("{}/auth/oidc/start", &*BACKEND_URL);
+    let resp = send_with_retries(|| {
+        client.post(&start_url).json(&serde_json::json!({
+            "code_challenge": challenge,
+            "redirect_uri": redirect_uri,
+        }))
+    })
+    .await
+    .context("OIDC start request failed")?;
+    if resp.status().as_u16() == 503 {
+        anyhow::bail!("OIDC is not configured on this backend (OIDC_ISSUER/ID/SECRET).");
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!("OIDC start failed ({}): {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    let start: OidcStartOut = resp.json().await.context("parse OIDC start response")?;
+
+    // The backend minted `state` inside auth_url; the echo must match it.
+    let expected_state = callback_params(&start.auth_url)?
+        .get("state")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Backend returned an authorization URL without ?state="))?;
+
+    println!("Open this URL in your browser:\n\n  {}\n", start.auth_url);
+    if !no_browser {
+        if let Err(e) = open::that(&start.auth_url) {
+            warn!("open browser failed: {}", e);
+        }
+    }
+
+    let (code, echo_state) = if no_browser {
+        println!("After approving, paste the full localhost redirect URL here:");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+            .context("read redirect URL")?;
+        parse_callback_target(line.trim())?
+    } else {
+        println!("Waiting for the browser callback (press Ctrl+C to cancel)...");
+        let (mut stream, _) = tokio::time::timeout(
+            Duration::from_secs(start.expires_in.max(60)),
+            listener.accept(),
+        )
+        .await
+        .context("Timed out waiting for the browser callback")?
+        .context("localhost callback accept failed")?;
+        let mut reader = tokio::io::BufReader::new(&mut stream);
+        let mut request_line = String::new();
+        reader
+            .read_line(&mut request_line)
+            .await
+            .context("read callback request")?;
+        let target = request_line
+            .split_whitespace()
+            .nth(1)
+            .context("malformed callback request line")?;
+        let parsed = parse_callback_target(target);
+        let body = "<html><body>Login received — return to the terminal.</body></html>";
+        let _ = stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await;
+        parsed?
+    };
+
+    if echo_state != expected_state {
+        anyhow::bail!("State mismatch in OIDC callback (possible CSRF) — aborting.");
+    }
+
+    let complete_url = format!("{}/auth/oidc/complete", &*BACKEND_URL);
+    let resp = send_with_retries(|| {
+        client.post(&complete_url).json(&serde_json::json!({
+            "key": start.key,
+            "code": code,
+            "verifier": verifier,
+        }))
+    })
+    .await
+    .context("OIDC complete request failed")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("OIDC complete failed ({}): {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    let out: PollResponse = resp.json().await.context("parse OIDC complete response")?;
+    let jwt = out.jwt.context("server did not return jwt")?;
+    let refresh = out.refresh_token.context("no refresh token returned")?;
+    let login = out.login.context("no login returned")?;
+
+    store_refresh_token(&login, &refresh, None).await?;
+    let session = Session::with_provider(login.clone(), jwt, Some("oidc".to_string()));
+    write_session(&session, None).await?;
+    println!("✅ Logged in as {} (via oidc)", login);
+    Ok(())
+}
+
+// =======================================================================
 // REFACTORED AUTHENTICATION LOGIC
 // =======================================================================
 
@@ -733,5 +898,47 @@ mod tests {
         // instead of blocking on a prompt.
         let err = resolve_pat(None, "STEADYSTATE_TEST_PAT_MISSING", "prompt: ").unwrap_err();
         assert!(format!("{:#}", err).contains("STEADYSTATE_TEST_PAT_MISSING"));
+    }
+
+    #[test]
+    fn test_pkce_pair_challenge_matches_verifier() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let (verifier, challenge) = pkce_pair();
+        assert!(!verifier.is_empty() && !challenge.is_empty());
+        // RFC 7636 test-style recomputation: challenge == BASE64URL(SHA256(verifier)).
+        let recomputed = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        assert_eq!(challenge, recomputed);
+        // Uniqueness across generations.
+        assert_ne!(pkce_pair().0, verifier);
+    }
+
+    #[test]
+    fn test_parse_callback_target() {
+        let (code, state) = parse_callback_target(
+            "http://127.0.0.1:54321/callback?code=abc123&state=xyz",
+        )
+        .unwrap();
+        assert_eq!((code.as_str(), state.as_str()), ("abc123", "xyz"));
+
+        // Bare query strings (SSH-pasted redirects) work too.
+        let (code, _) = parse_callback_target("code=only-code&state=s").unwrap();
+        assert_eq!(code, "only-code");
+
+        assert!(parse_callback_target("http://127.0.0.1:1/callback").is_err());
+        assert!(parse_callback_target("http://x/cb?code=a").is_err());
+        assert!(parse_callback_target("http://x/cb?error=access_denied").is_err());
+    }
+
+    #[test]
+    fn test_callback_params_state_without_code() {
+        // The backend's authorization URL carries state but no code yet.
+        let params = callback_params(
+            "https://sso.example.com/authorize?response_type=code&state=st4te",
+        )
+        .unwrap();
+        assert_eq!(params.get("state").map(String::as_str), Some("st4te"));
+        assert!(!params.contains_key("code"));
     }
     }

@@ -27,6 +27,20 @@ input. The token needs `read_user` scope (`read_api` additionally for
 collaborator lookup in sessions). Which GitLab instance to talk to is a
 backend setting (`GITLAB_URL`, default `https://gitlab.com`).
 
+For enterprise SSO (no device flow either), authenticate with OIDC:
+
+```
+steadystate login --provider=oidc
+steadystate login --provider=oidc --no-browser
+```
+
+This opens the IdP login in a browser and captures the redirect on
+localhost. With `--no-browser` (headless/SSH sessions), paste the full
+redirect URL when prompted instead. The IdP must be configured on the
+backend (`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`); the IdP
+side must allowlist `http://127.0.0.1:*` redirect URIs (any port — the CLI
+binds an ephemeral one per login).
+
 **Exit Status:**
 - 0 on success
 - 1 on authentication failure or timeout
@@ -79,6 +93,9 @@ steadystate up [OPTIONS] <REPOSITORY>
 
 `--ttl=<DURATION>`
 :   Session lifetime, e.g. `12h`, `90m`, `2d`, `3600` (suffixes `s/m/h/d/w`, plain number = seconds). Clamped to the server max; defaults to the server default (48h). Expired sessions are terminated automatically.
+
+`--forge-token=<PAT>`
+:   Forge PAT attached to the session for collaborator lookup and token-injected clone. Required for SSO logins (which carry no forge token); falls back to `FORGE_TOKEN` env. The forge (github vs gitlab) is detected from the repository URL.
 
 `--allow=<USERS>`
 :   Comma-separated list of GitHub usernames allowed to join. Default: all repository collaborators

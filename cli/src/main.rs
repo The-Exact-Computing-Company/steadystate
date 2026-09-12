@@ -44,15 +44,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start interactive login (device flow, or PAT for providers without one)
+    /// Start interactive login (device flow, PAT, or OIDC browser flow)
     Login {
-        /// Authentication provider (e.g., github, gitlab, orchid, fake)
+        /// Authentication provider (e.g., github, gitlab, oidc, fake)
         #[arg(long, default_value = "github")]
         provider: String,
         /// PAT for providers without a device flow (gitlab). Falls back to
         /// GITLAB_TOKEN env, then an interactive hidden prompt.
         #[arg(long)]
         token: Option<String>,
+        /// OIDC: print the URL and paste the redirect instead of opening
+        /// a browser + localhost listener (headless/SSH sessions).
+        #[arg(long)]
+        no_browser: bool,
     },
     /// Show current logged-in user (if any)
     Whoami {
@@ -90,6 +94,11 @@ enum Commands {
         /// server max; defaults to the server default (48h).
         #[arg(long)]
         ttl: Option<String>,
+        /// Forge PAT attached to the session for collaborator lookup and
+        /// token-injected clone. Needed for SSO logins (no forge token
+        /// stored). Falls back to FORGE_TOKEN env.
+        #[arg(long)]
+        forge_token: Option<String>,
     },
     /// Join a remote session using a magic link or SSH URL
     Join {
@@ -366,7 +375,7 @@ fn parse_duration_secs(s: &str) -> Result<u64> {
     Ok(secs)
 }
 
-async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>, provider: Option<String>, ttl: Option<String>) -> Result<()> {
+async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, public: bool, env: Option<String>, mode: Option<String>, provider: Option<String>, ttl: Option<String>, forge_token: Option<String>) -> Result<()> {
     Url::parse(&repo).context(
         "Invalid repository URL. Provide a fully-qualified URL (e.g. https://github.com/user/repo).",
     )?;
@@ -456,23 +465,37 @@ async fn up(client: &Client, repo: String, json: bool, allow: Vec<String>, publi
         },
     };
 
-    // Get credentials to send with request
+    // Get credentials to send with request.
+    // OIDC sessions carry no forge token (SSO identity only), so the access
+    // token is optional here; --forge-token can still attach one.
     let session = read_session(None).await.context(
         "Not logged in. Please run 'steadystate login' first."
     )?;
-    
-    let access_token = get_access_token(&session.login, None).await?
-        .ok_or_else(|| anyhow::anyhow!(
-            "No access token found for {}. Please run 'steadystate login' again.",
-            session.login
-        ))?;
+
+    let access_token = get_access_token(&session.login, None).await?.filter(|t| !t.trim().is_empty());
 
     let session_provider = session.provider_or_default().to_string();
     let mut provider_creds = serde_json::Map::new();
     provider_creds.insert("login".to_string(), serde_json::Value::String(session.login.clone()));
-    provider_creds.insert("access_token".to_string(), serde_json::Value::String(access_token));
+    if let Some(t) = access_token {
+        provider_creds.insert("access_token".to_string(), serde_json::Value::String(t));
+    }
     let mut provider_config = serde_json::Map::new();
     provider_config.insert(session_provider, serde_json::Value::Object(provider_creds));
+
+    // Forge token bridge for SSO (or cross-forge) sessions: attaches a
+    // GitHub/GitLab PAT used for collaborator lookup + token-injected clone.
+    // --forge-token wins, FORGE_TOKEN env is the fallback.
+    let forge_token = forge_token
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| std::env::var("FORGE_TOKEN").ok().filter(|t| !t.trim().is_empty()));
+    if let Some(ft) = forge_token {
+        let forge = if repo.to_lowercase().contains("gitlab") { "gitlab" } else { "github" };
+        let mut forge_creds = serde_json::Map::new();
+        forge_creds.insert("login".to_string(), serde_json::Value::String(session.login.clone()));
+        forge_creds.insert("access_token".to_string(), serde_json::Value::String(ft.trim().to_string()));
+        provider_config.insert(forge.to_string(), serde_json::Value::Object(forge_creds));
+    }
 
     let payload = serde_json::json!({
         "repo_url": repo,
@@ -941,12 +964,19 @@ async fn main() -> Result<()> {
     let client = builder.build().context("create http client")?;
 
     match cmd {
-        Commands::Login { provider, token } => {
+        Commands::Login { provider, token, no_browser } => {
             // GitLab has no OAuth device flow: authenticate with a PAT.
+            // OIDC likewise: browser + localhost callback instead.
             let login_result = if provider == "gitlab" {
                 match auth::resolve_pat(token, "GITLAB_TOKEN", "GitLab Personal Access Token (read_user scope): ") {
                     Ok(pat) => auth::token_login(&client, &provider, &pat).await,
                     Err(e) => Err(e),
+                }
+            } else if provider == "oidc" {
+                if token.is_some() {
+                    Err(anyhow::anyhow!("--token is for --provider=gitlab; oidc uses the browser flow"))
+                } else {
+                    auth::oidc_login(&client, no_browser).await
                 }
             } else if token.is_some() {
                 Err(anyhow::anyhow!(
@@ -982,8 +1012,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Up { repo, json, allow, public, env, mode, provider, ttl } => {
-            if let Err(e) = up(&client, repo, json, allow, public, env, mode, provider, ttl).await {
+        Commands::Up { repo, json, allow, public, env, mode, provider, ttl, forge_token } => {
+            if let Err(e) = up(&client, repo, json, allow, public, env, mode, provider, ttl, forge_token).await {
                 let msg = format!("{:#}", e);
                 let usage_error = msg.contains("Invalid repository URL.");
 

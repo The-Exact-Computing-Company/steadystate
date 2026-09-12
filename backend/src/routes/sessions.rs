@@ -161,8 +161,9 @@ async fn create_session(
     state.persist_session(&session_id);
     tracing::info!("Session {} inserted into map, total sessions: {}", session_id, state.sessions.len());
 
-    // --- Inject the caller's forge token (github PAT/OAuth or gitlab PAT) ---
+    // --- Inject the caller's forge token (github PAT/OAuth, gitlab PAT) ---
     // Keyed by the JWT's provider claim, so any auth provider works here.
+    // Merged (not replaced) so CLI-supplied entries like --forge-token survive.
     if let Some(token) = state
         .provider_tokens
         .get(&(claims.provider.clone(), claims.sub.clone()))
@@ -173,7 +174,10 @@ async fn create_session(
             "access_token".to_string(),
             serde_json::Value::String(token.value().clone()),
         );
-        let mut outer = serde_json::Map::new();
+        let mut outer = match request.provider_config {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
         outer.insert(claims.provider.clone(), serde_json::Value::Object(creds));
         request.provider_config = Some(serde_json::Value::Object(outer));
     }

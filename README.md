@@ -50,13 +50,13 @@ users who want a minimal in-terminal editor without needing an SSH-aware GUI.
 
 ### 4. Authentication System
 
-The backend implements OAuth Device Flow authentication.
+The backend implements OAuth Device Flow authentication (GitHub),
+PAT login (GitLab), and browser-based OIDC login (enterprise SSO).
 The architecture is designed to support:
 
 * GitHub (MVP)
-* GitLab (future)
-* Orchid (future)
-* Enterprise identity providers (future)
+* GitLab (PAT)
+* Enterprise identity providers (generic OIDC)
 
 Authentication uses short-lived JWTs with long-lived refresh tokens stored securely by the CLI.
 
@@ -148,8 +148,7 @@ SteadyState supports two distinct modes for collaboration:
 
 * [x] GitHub OAuth Device Flow
 * [x] GitLab PAT login (`POST /auth/token`, `GITLAB_URL` configurable)
-* [ ] Orchid
-* [ ] Enterprise SSO
+* [x] Enterprise SSO (generic OIDC: `POST /auth/oidc/start|complete`, presets for google/entra/okta)
 
 ### Sessions
 

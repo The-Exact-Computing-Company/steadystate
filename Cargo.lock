@@ -2921,6 +2921,7 @@ name = "steadystate"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "crossterm 0.29.0",
@@ -2931,11 +2932,13 @@ dependencies = [
  "keyring",
  "once_cell",
  "open",
+ "rand 0.8.5",
  "ratatui",
  "reqwest",
  "rpassword",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
  "steadystate-common",
  "tempfile",

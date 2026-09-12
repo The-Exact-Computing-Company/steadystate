@@ -91,6 +91,30 @@ pub struct TokenIn {
     pub token: String,
 }
 
+/// OIDC login start: carries the CLI-generated PKCE challenge and its
+/// localhost callback URL. The backend stores both under a short-lived key.
+#[derive(Deserialize)]
+pub struct OidcStartIn {
+    pub code_challenge: String,
+    pub redirect_uri: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct OidcStartOut {
+    pub key: String,
+    pub auth_url: String,
+    pub expires_in: u64,
+}
+
+/// OIDC login completion: the code captured by the CLI's localhost
+/// listener plus the PKCE verifier. `redirect_uri` is the stored one.
+#[derive(Deserialize)]
+pub struct OidcCompleteIn {
+    pub key: String,
+    pub code: String,
+    pub verifier: String,
+}
+
 #[derive(Serialize)]
 pub struct WhoamiOut {
     pub login: String,

@@ -179,6 +179,32 @@ export HCLOUD_SSH_IDENTITY="$HOME/.ssh/id_ed25519"
 
 **Defaults:** `cx23` / `ubuntu-24.04` / `nbg1` / unset / unset
 
+### OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET
+
+Enterprise SSO via generic OpenID Connect. `OIDC_ISSUER` is a full
+`https://...` URL or a preset (`google`, `entra:{tenant}`, `okta:{domain}`).
+
+```
+export OIDC_ISSUER="entra:common"
+export OIDC_CLIENT_ID="your-client-id"
+export OIDC_CLIENT_SECRET="your-client-secret"
+```
+
+**Defaults:** Unset (OIDC provider disabled; `/auth/oidc/*` answers 503)
+
+### OIDC_SCOPES / OIDC_LOGIN_CLAIM
+
+Optional OIDC tuning: space-separated scopes and the userinfo claim used
+as the SteadyState login (`preferred_username` → `email` → `sub` fallback
+when unset).
+
+```
+export OIDC_SCOPES="openid profile email"
+export OIDC_LOGIN_CLAIM="preferred_username"
+```
+
+**Defaults:** `"openid profile email"` / `"preferred_username"`
+
 ### GITLAB_URL
 
 GitLab instance base URL for PAT login and session forge operations

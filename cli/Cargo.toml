@@ -30,6 +30,11 @@ keyring = { version = "3.6", features = ["apple-native", "windows-native", "linu
 # Hidden password/PAT prompts
 rpassword = "7"
 
+# OIDC PKCE challenge (S256)
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+
 # Platform directories (config, cache, etc.)
 dirs = "6.0"
 

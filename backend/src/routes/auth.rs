@@ -23,7 +23,9 @@ pub fn router() -> Router<Arc<AppState>> {
     let device = crate::rate_limit::auth_limit(
         Router::new()
             .route("/device", post(device_start))
-            .route("/poll", post(poll)),
+            .route("/poll", post(poll))
+            .route("/oidc/start", post(oidc_start))
+            .route("/oidc/complete", post(oidc_complete)),
     );
     let general = crate::rate_limit::general_limit(
         Router::new()
@@ -232,6 +234,104 @@ async fn validate_gitlab_token(
         .validate_token(token)
         .await
 }
+/// OIDC login start: store the CLI's PKCE challenge + callback URL and
+/// return the browser authorization URL.
+///
+/// # Returns
+/// * `200 OK` with `{ key, auth_url, expires_in }`.
+/// * `503` if OIDC is not configured on the server.
+pub async fn oidc_start(
+    State(state): State<Arc<AppState>>,
+    Json(inp): Json<OidcStartIn>,
+) -> Result<Json<OidcStartOut>, (StatusCode, Json<serde_json::Value>)> {
+    if inp.code_challenge.trim().is_empty() || inp.redirect_uri.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "code_challenge and redirect_uri are required" }))));
+    }
+    // Localhost (or explicit loopback) callbacks only — the verifier never
+    // leaves the user's machine, so a public redirect URL would leak codes.
+    let uri_ok = inp.redirect_uri.starts_with("http://127.0.0.1:")
+        || inp.redirect_uri.starts_with("http://localhost:")
+        || inp.redirect_uri.starts_with("http://[::1]:");
+    if !uri_ok {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "redirect_uri must be a localhost URL" }))));
+    }
+
+    let cfg = state.oidc().await.map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": format!("OIDC not configured: {}", e) })),
+        )
+    })?;
+
+    state.prune_oidc_pending();
+    let key = uuid::Uuid::new_v4().to_string();
+    let login_state = uuid::Uuid::new_v4().to_string();
+    let redirect_uri = inp.redirect_uri.trim().to_string();
+    let auth_url = cfg.authorization_url(&login_state, inp.code_challenge.trim(), &redirect_uri);
+    state.oidc_pending.insert(
+        key.clone(),
+        crate::auth::oidc::OidcPending {
+            state: login_state,
+            code_challenge: inp.code_challenge.trim().to_string(),
+            redirect_uri,
+            created_at: now(),
+        },
+    );
+    Ok(Json(OidcStartOut {
+        key,
+        auth_url,
+        expires_in: crate::auth::oidc::OIDC_PENDING_TTL_SECS,
+    }))
+}
+
+/// OIDC login completion: exchange code + verifier, mint SteadyState creds.
+///
+/// # Returns
+/// * `200 OK` with JWT + refresh token (completed-poll shape).
+/// * `400` for unknown/expired keys; `401`/`502` when the IdP rejects.
+pub async fn oidc_complete(
+    State(state): State<Arc<AppState>>,
+    Json(inp): Json<OidcCompleteIn>,
+) -> Result<Json<PollOut>, (StatusCode, Json<serde_json::Value>)> {
+    let pending = state
+        .oidc_pending
+        .remove(&inp.key)
+        .map(|(_, p)| p)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown or expired login key; restart login" }))))?;
+    if now().saturating_sub(pending.created_at) > crate::auth::oidc::OIDC_PENDING_TTL_SECS {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "login expired; restart login" }))));
+    }
+
+    let cfg = state.oidc().await.map_err(internal)?;
+
+    // The stored redirect_uri is the exact localhost callback the CLI used
+    // at authorize time; the IdP requires it verbatim at exchange time.
+    // Binding it server-side (rather than trusting a client-supplied value)
+    // keeps a stolen code useless without our PKCE verifier too.
+    let redirect_uri = pending.redirect_uri.clone();
+    let access_token = cfg
+        .exchange_code(&state.http, &inp.code, &inp.verifier, &redirect_uri)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))))?;
+    let identity = cfg
+        .fetch_identity(&state.http, &access_token)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))))?;
+
+    let jwt = state.jwt.sign(&identity.login, "oidc").map_err(internal)?;
+    let refresh_token =
+        state.issue_refresh_token(identity.login.clone(), ProviderId::from("oidc"));
+
+    info!("OIDC login complete for {} via {}", identity.login, cfg.issuer);
+    Ok(Json(PollOut {
+        status: Some("complete".into()),
+        jwt: Some(jwt),
+        refresh_token: Some(refresh_token),
+        login: Some(identity.login),
+        provider_access_token: None,
+        error: None,
+    }))
+}
 /// Refreshes an access token using a refresh token.
 ///
 /// # Arguments
@@ -434,5 +534,196 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+    }
+
+    /// Spin up a mock OIDC issuer (discovery + token + userinfo).
+    async fn mock_oidc_issuer() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock oidc");
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                axum::routing::get({
+                    let base = base.clone();
+                    move || async move {
+                        axum::Json(serde_json::json!({
+                            "authorization_endpoint": format!("{}/authorize", base),
+                            "token_endpoint": format!("{}/token", base),
+                            "userinfo_endpoint": format!("{}/userinfo", base),
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/token",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "access_token": "mock-access",
+                        "token_type": "Bearer",
+                    }))
+                }),
+            )
+            .route(
+                "/userinfo",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "sub": "sso-123",
+                        "preferred_username": "corpuser",
+                        "email": "corpuser@example.com",
+                    }))
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock oidc");
+        });
+        base
+    }
+
+    async fn test_state_with_oidc(base: &str) -> TestEnv {
+        let guard = lock_test_env();
+        let saved: Vec<(String, Option<String>)> = [
+            "JWT_SECRET",
+            "NOENV_FLAKE_PATH",
+            "STEADYSTATE_DB_PATH",
+            "HCLOUD_TOKEN",
+            "OIDC_ISSUER",
+            "OIDC_CLIENT_ID",
+            "OIDC_CLIENT_SECRET",
+        ]
+        .iter()
+        .map(|k| (k.to_string(), std::env::var(k).ok()))
+        .collect();
+        // SAFETY: serialized by the shared test-env lock; restored on drop.
+        unsafe {
+            std::env::set_var("JWT_SECRET", "test-secret-for-oidc-tests");
+            std::env::set_var("NOENV_FLAKE_PATH", "/tmp/dummy-flake");
+            std::env::set_var("STEADYSTATE_DB_PATH", ":memory:");
+            std::env::remove_var("HCLOUD_TOKEN");
+            std::env::set_var("OIDC_ISSUER", base);
+            std::env::set_var("OIDC_CLIENT_ID", "test-cid");
+            std::env::set_var("OIDC_CLIENT_SECRET", "test-csecret");
+        }
+        let state = AppState::try_new().await.expect("test AppState");
+        TestEnv { state, saved, _guard: guard }
+    }
+
+    #[tokio::test]
+    async fn oidc_start_complete_round_trip() {
+        let base = mock_oidc_issuer().await;
+        let env = test_state_with_oidc(&base).await;
+        let state = env.state.clone();
+
+        let out = oidc_start(
+            State(state.clone()),
+            Json(OidcStartIn {
+                code_challenge: "challenge-abc".to_string(),
+                redirect_uri: "http://127.0.0.1:9999/callback".to_string(),
+            }),
+        )
+        .await
+        .expect("oidc start")
+        .0;
+        assert!(!out.key.is_empty());
+        assert!(out.auth_url.contains("code_challenge=challenge-abc"));
+        assert!(out.auth_url.contains("127.0.0.1%3A9999") || out.auth_url.contains("redirect_uri="));
+
+        let out = oidc_complete(
+            State(state.clone()),
+            Json(OidcCompleteIn {
+                key: out.key,
+                code: "auth-code-xyz".to_string(),
+                verifier: "verifier-abc".to_string(),
+            }),
+        )
+        .await
+        .expect("oidc complete")
+        .0;
+        assert_eq!(out.status.as_deref(), Some("complete"));
+        assert_eq!(out.login.as_deref(), Some("corpuser"));
+        assert!(out.jwt.is_some());
+        assert!(out.refresh_token.is_some());
+
+        // Single-use key: replay fails.
+        let err = oidc_complete(
+            State(state),
+            Json(OidcCompleteIn {
+                key: "nope".to_string(),
+                code: "x".to_string(),
+                verifier: "y".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn oidc_start_rejects_non_localhost_redirect() {
+        let base = mock_oidc_issuer().await;
+        let env = test_state_with_oidc(&base).await;
+        let state = env.state.clone();
+
+        let err = oidc_start(
+            State(state),
+            Json(OidcStartIn {
+                code_challenge: "c".to_string(),
+                redirect_uri: "https://evil.example.com/cb".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn oidc_unconfigured_is_503() {
+        // No OIDC_* env at all (other than what try_new needs).
+        let _guard = lock_test_env();
+        let saved: Vec<(String, Option<String>)> = [
+            "JWT_SECRET",
+            "NOENV_FLAKE_PATH",
+            "STEADYSTATE_DB_PATH",
+            "HCLOUD_TOKEN",
+            "OIDC_ISSUER",
+            "OIDC_CLIENT_ID",
+            "OIDC_CLIENT_SECRET",
+        ]
+        .iter()
+        .map(|k| (k.to_string(), std::env::var(k).ok()))
+        .collect();
+        // SAFETY: serialized by the shared test-env lock.
+        unsafe {
+            std::env::set_var("JWT_SECRET", "test-secret-for-oidc-tests");
+            std::env::set_var("NOENV_FLAKE_PATH", "/tmp/dummy-flake");
+            std::env::set_var("STEADYSTATE_DB_PATH", ":memory:");
+            std::env::remove_var("HCLOUD_TOKEN");
+            std::env::remove_var("OIDC_ISSUER");
+            std::env::remove_var("OIDC_CLIENT_ID");
+            std::env::remove_var("OIDC_CLIENT_SECRET");
+        }
+        let state = AppState::try_new().await.expect("test AppState");
+
+        let err = oidc_start(
+            State(state),
+            Json(OidcStartIn {
+                code_challenge: "c".to_string(),
+                redirect_uri: "http://127.0.0.1:1/callback".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+
+        // SAFETY: still holding the shared lock.
+        unsafe {
+            for (k, old) in saved {
+                match old {
+                    Some(v) => std::env::set_var(&k, v),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
     }
 }

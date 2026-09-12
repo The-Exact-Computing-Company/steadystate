@@ -21,7 +21,7 @@ coming later) and manages **ephemeral SSH-accessible sessions** in the cloud.
 
 * **GitHub OAuth (Device Flow)** authentication
 * **GitLab PAT login** authentication (`POST /auth/token`, `GITLAB_URL` configurable)
-* **Modular authentication provider architecture** (GitLab, Orchid stubbed for future: GitLab device flow does not exist, hence PAT)
+* **Modular authentication provider architecture** (GitHub device flow, GitLab PAT, OIDC browser flow)
 * **JWT + Refresh token** issuing and verification
 * **Axum-based REST API**, written in Rust
 * **Nix-based dev environment** for reproducible builds
@@ -202,33 +202,30 @@ cargo run
 ## Extending Authentication
 
 The authentication system is **provider-agnostic**.
-To add a new provider (e.g., GitLab or Orchid):
+To add a new provider:
 
-1. Create a file in `src/providers/<provider>.rs`
-2. Implement the `AuthProvider` trait
-3. Register it in `main.rs` under the `/auth/device` dispatcher
+1. Create a file in `src/auth/<provider>.rs`
+2. Implement the `AuthProvider` trait (device flow) and/or a dedicated
+   route + validation like GitLab PAT (`POST /auth/token`) or OIDC
+   (`POST /auth/oidc/start|complete` in `src/auth/oidc.rs`)
+3. Register its factory in `register_builtin_providers` (`src/auth/mod.rs`)
 
-Example:
-
-```rust
-pub trait AuthProvider {
-    fn name(&self) -> &'static str;
-    async fn start_device_flow(&self) -> Result<DeviceFlowStart>;
-    async fn poll_device_flow(&self, device_code: &str) -> Result<UserIdentity>;
-}
-```
-
-This allows SteadyState to support new identity providers without changing the CLI.
+Not every provider fits the device flow (GitLab and OIDC don't have one),
+so the trait is only one of three supported login shapes. Pick the shape
+that matches the IdP rather than forcing the trait.
 
 ---
 
 ## Roadmap
 
 * [x] GitHub OAuth device flow
+* [x] GitLab PAT login + forge integration
+* [x] OIDC enterprise SSO (browser + localhost callback)
 * [x] JWT issuance and verification
-* [x] `--noenv` and `ne` editor integration for quick pair-programming
-* [ ] Persistent refresh token storage (SQLite or Postgres)
-* [ ] `/sessions` endpoint (Hetzner VM orchestration)
+* [x] SQLite persistence for sessions + refresh tokens
+* [x] 48h session expiry with reaper + per-user caps
+* [x] Local + Hetzner compute providers (pair + collab)
+* [x] Creator-only terminate, GET redaction, auth rate limits
 * [ ] Web dashboard for session management
 
 ---

@@ -3,7 +3,7 @@
 pub mod provider;
 pub mod github;
 pub mod gitlab;
-pub mod orchid;
+pub mod oidc;
 pub mod fake;
 
 use std::sync::Arc;
@@ -15,5 +15,5 @@ pub fn register_builtin_providers(state: &AppState) {
     state.register_provider_factory(Arc::new(github::GitHubFactory));
     state.register_provider_factory(Arc::new(fake::FakeFactory));
     state.register_provider_factory(Arc::new(gitlab::GitLabFactory));
-    state.register_provider_factory(Arc::new(orchid::OrchidFactory));
+    state.register_provider_factory(Arc::new(oidc::OidcFactory));
 }

@@ -20,7 +20,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 
 | Command | Description |
 | --- | --- |
-| `steadystate login [--provider=github] [--token ...]` | Start the OAuth device flow and store the resulting session. GitLab uses a PAT: `--token`, `GITLAB_TOKEN`, or hidden prompt (`read_user` scope). |
+| `steadystate login [--provider=github] [--token ...]` | Start the OAuth device flow and store the resulting session. GitLab uses a PAT: `--token`, `GITLAB_TOKEN`, or hidden prompt (`read_user` scope). OIDC uses a browser flow: `--provider=oidc [--no-browser]`. |
 | `steadystate whoami` | Show the currently authenticated user. Add `--json` for machine-readable output. |
 | `steadystate refresh` | Force-refresh the JWT using the stored refresh token. |
 | `steadystate logout` | Revoke the refresh token (if possible) and clear local session files. |
@@ -34,6 +34,7 @@ Alternatively, run the CLI directly with `cargo run -- <command>`.
 - `--env`: required. `noenv` (minimal tools), `python` (auto-detected version + uv), `flake` (repo's `flake.nix`), `tproject` (tlang project: `t update` then `nix develop`), `auto` (detect `tproject.toml` > `flake.nix` > `legacy-nix`), `legacy-nix`, `legacy-nix[filename]`.
 - `--mode`: required. `collab` (isolated worktrees + merge) or `pair` (shared tmux terminal).
 - `--provider`: optional. `local` (default) or `hetzner` (provisions a Hetzner Cloud server; backend needs `HCLOUD_TOKEN`).
+- `--forge-token`: optional PAT for collaborator lookup + clone auth (needed for SSO logins; `FORGE_TOKEN` env fallback).
 - `--ttl`: optional lifetime (`12h`, `90m`, `2d`, …). Clamped to the server max; default 48h. Expired sessions are reaped automatically.
 - `--allow`: comma-separated GitHub usernames allowed to join (default: repo collaborators). `--public`: anyone with the link can connect.
 

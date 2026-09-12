@@ -8,6 +8,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::auth;
+use crate::auth::oidc::OidcPending;
 use crate::auth::provider::{AuthProviderDyn, AuthProviderFactoryDyn};
 use crate::compute::{ComputeProvider, LocalComputeProvider, LocalProviderConfig, HetznerComputeProvider};
 use crate::jwt::JwtKeys;
@@ -38,10 +39,6 @@ pub struct Config {
     pub gitlab_client_id: Option<String>,
     #[allow(dead_code)]
     pub gitlab_client_secret: Option<String>,
-    #[allow(dead_code)]
-    pub orchid_client_id: Option<String>,
-    #[allow(dead_code)]
-    pub orchid_client_secret: Option<String>,
     
     // Timeouts & TTLs
     #[allow(dead_code)]
@@ -68,8 +65,6 @@ impl Config {
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             gitlab_client_id: std::env::var("GITLAB_CLIENT_ID").ok(),
             gitlab_client_secret: std::env::var("GITLAB_CLIENT_SECRET").ok(),
-            orchid_client_id: std::env::var("ORCHID_CLIENT_ID").ok(),
-            orchid_client_secret: std::env::var("ORCHID_CLIENT_SECRET").ok(),
             
             device_poll_interval: std::env::var("DEVICE_POLL_MAX_INTERVAL_SECS")
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL),
@@ -111,9 +106,12 @@ pub struct AppState {
 
     // Auth state
     pub device_pending: Arc<DashMap<String, PendingDevice>>,
+    pub oidc_pending: Arc<DashMap<String, OidcPending>>,
     pub refresh_store: Arc<DashMap<String, RefreshRecord>>,
     pub providers: Arc<DashMap<ProviderId, AuthProviderDyn>>,
     pub provider_factories: Arc<DashMap<String, AuthProviderFactoryDyn>>,
+    // Lazily-initialized OIDC config (discovery runs once; restart to reload).
+    pub oidc_config: Arc<tokio::sync::OnceCell<Arc<crate::auth::oidc::OidcConfig>>>,
     // Key: (provider, login) -> access_token
     pub provider_tokens: Arc<DashMap<(String, String), String>>,
 
@@ -215,6 +213,7 @@ impl AppState {
             jwt,
             config,
             device_pending: Arc::new(DashMap::new()),
+            oidc_pending: Arc::new(DashMap::new()),
             refresh_store,
             providers: Arc::new(DashMap::new()),
             provider_factories: Arc::new(DashMap::new()),
@@ -222,6 +221,7 @@ impl AppState {
             sessions,
             compute_providers: Arc::new(compute_providers),
             storage,
+            oidc_config: Arc::new(tokio::sync::OnceCell::new()),
         });
 
         // 4. Register Auth Providers
@@ -307,6 +307,24 @@ impl AppState {
                 tracing::warn!("Failed to persist session {}: {:#}", id, e);
             }
         }
+    }
+
+    /// Load (once) the OIDC configuration, running discovery on first use.
+    /// Returns a 503-style error when OIDC is not configured.
+    pub async fn oidc(&self) -> anyhow::Result<Arc<crate::auth::oidc::OidcConfig>> {
+        self.oidc_config
+            .get_or_try_init(|| async {
+                let cfg = crate::auth::oidc::OidcConfig::from_env(&self.http).await?;
+                Ok::<_, anyhow::Error>(Arc::new(cfg))
+            })
+            .await
+            .cloned()
+    }
+
+    /// Remove expired OIDC pending logins. Called lazily on start/complete.
+    pub fn prune_oidc_pending(&self) {
+        let cutoff = now().saturating_sub(crate::auth::oidc::OIDC_PENDING_TTL_SECS);
+        self.oidc_pending.retain(|_, p| p.created_at >= cutoff);
     }
 
     /// Remove a refresh token from both live and durable stores.
