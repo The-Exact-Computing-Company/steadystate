@@ -879,33 +879,73 @@ impl ComputeProvider for LocalComputeProvider {
     ) -> Result<SessionStartResult> {
         let workspace = self.setup_workspace(session_id).await?;
 
-        match request.mode.as_deref() {
+        let result = match request.mode.as_deref() {
             Some("collab") => {
                 self.setup_collab_mode(&workspace, request, session_id)
                     .await
             }
             Some("pair") | None => self.setup_pair_mode(&workspace, request, session_id).await,
             Some(mode) => Err(anyhow!("Unknown mode: {}", mode)),
+        };
+
+        if result.is_err() {
+            // Partial failure: kill any process we started and remove the
+            // workspace so failed sessions do not leak directories or a
+            // still-listening sshd.
+            if let Some((_, ls)) = self.state.live_sessions.remove(session_id) {
+                let _ = self
+                    .executor
+                    .exec_shell(&format!("kill -KILL {} 2>/dev/null", ls.pid))
+                    .await;
+            }
+            if let Err(cleanup_err) = self.executor.remove_all(&workspace.root).await {
+                tracing::warn!(
+                    "Failed to clean up workspace for failed session {}: {:#}",
+                    session_id,
+                    cleanup_err
+                );
+            }
         }
+        result
     }
 
     async fn terminate_session(&self, session: &Session) -> Result<()> {
-        if let Some((_, local_session)) = self.state.live_sessions.remove(&session.id) {
-            // Kill process
-            if let Err(e) = self
-                .executor
-                .exec_shell(&format!("kill -TERM {}", local_session.pid))
-                .await
-            {
-                tracing::warn!("Failed to kill process {}: {}", local_session.pid, e);
-            }
+        // Live handle gives us the pid; without one (e.g. after a restart)
+        // the workspace path is still deterministic, so clean it regardless.
+        let live = self.state.live_sessions.remove(&session.id);
+        let workspace_root = live
+            .as_ref()
+            .map(|(_, ls)| ls.workspace_root.clone())
+            .unwrap_or_else(|| self.config.session_root.join(&session.id));
 
-            // Cleanup workspace
-            self.executor
-                .remove_all(&local_session.workspace_root)
-                .await?;
+        if let Some((_, ls)) = live {
+            let pid = ls.pid;
+            let _ = self.executor.exec_shell(&format!("kill -TERM {}", pid)).await;
+            // Give the process a moment to exit, then escalate to KILL.
+            let mut gone = false;
+            for _ in 0..15 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                match self
+                    .executor
+                    .exec_shell(&format!("kill -0 {} 2>/dev/null", pid))
+                    .await
+                {
+                    Ok(o) if !o.exit_status.success() => {
+                        gone = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if !gone {
+                tracing::warn!("Process {} did not exit on TERM; sending KILL", pid);
+                let _ = self.executor.exec_shell(&format!("kill -KILL {}", pid)).await;
+            }
         }
 
+        if self.executor.exists(&workspace_root).await.unwrap_or(false) {
+            self.executor.remove_all(&workspace_root).await?;
+        }
         Ok(())
     }
 

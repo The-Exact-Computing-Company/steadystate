@@ -535,6 +535,38 @@ impl HetznerComputeProvider {
             .join(" ");
         Ok((port, host_pub))
     }
+
+    /// Run the post-create provisioning steps (wait for boot, SSH, remote
+    /// setup). Returns `(result, public_ip, sshd_port)` on success.
+    async fn provision_created_server(
+        &self,
+        server: super::api::HServer,
+        session_id: &str,
+        request: &SessionRequest,
+        user: &str,
+    ) -> Result<(SessionStartResult, String, u16)> {
+        let server = self.api.wait_running(server.id).await?;
+        let ip = server.public_net.ipv4.ip.clone();
+        self.wait_ssh(&ip, 22).await?;
+
+        let admin = self.admin_executor(&ip);
+        // Best-effort: ensure session user exists (cloud-init usually handles it).
+        let _ = admin
+            .exec_shell(&format!(
+                "id {} >/dev/null 2>&1 || useradd -m -s /bin/bash {}",
+                user, user
+            ))
+            .await;
+
+        let result = self.remote_setup(&admin, &ip, session_id, request).await?;
+        let port = result
+            .endpoint
+            .as_ref()
+            .and_then(|ep| ep.rsplit(':').next())
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(22);
+        Ok((result, ip, port))
+    }
 }
 
 fn shell_quote(s: &str) -> String {
@@ -573,79 +605,72 @@ impl ComputeProvider for HetznerComputeProvider {
         request: &SessionRequest,
     ) -> Result<SessionStartResult> {
         let user = ssh_session_user();
-        let short = &session_id[..8.min(session_id.len())];
+        let short: String = session_id.chars().take(8).collect();
         let name = format!("steady-{}", short);
         let server = self
             .api
             .create_server(&name, &self.config, Some(cloud_init_script(&user)))
             .await?;
-        let server = self.api.wait_running(server.id).await?;
-        let ip = server.public_net.ipv4.ip.clone();
-        self.wait_ssh(&ip, 22).await?;
+        let server_id = server.id;
 
-        let admin = self.admin_executor(&ip);
-        // Best-effort: ensure session user exists (cloud-init usually handles it).
-        let _ = admin
-            .exec_shell(&format!(
-                "id {} >/dev/null 2>&1 || useradd -m -s /bin/bash {}",
-                user, user
-            ))
+        // Everything after create_server must either succeed or delete the
+        // VM; otherwise a timeout/error here orphans a billable server.
+        let result = self
+            .provision_created_server(server, session_id, request, &user)
             .await;
 
-        let result = match self.remote_setup(&admin, &ip, session_id, request).await {
-            Ok(result) => result,
+        match result {
+            Ok((result, ip, port)) => {
+                self.sessions.insert(
+                    session_id.to_string(),
+                    RemoteSession {
+                        server_id,
+                        ip,
+                        session_sshd_port: port,
+                    },
+                );
+                Ok(result)
+            }
             Err(e) => {
-                // The VM exists but was never recorded: delete it here or it
-                // bills forever with no handle to clean it up.
                 tracing::warn!(
-                    "Setup failed for hetzner server {} ({}); deleting it: {:#}",
-                    server.id,
-                    ip,
+                    "Provisioning failed for hetzner server {}; deleting it: {:#}",
+                    server_id,
                     e
                 );
-                if let Err(del_err) = self.api.delete_server(server.id).await {
+                if let Err(del_err) = self.api.delete_server(server_id).await {
                     tracing::error!(
-                        "ORPHANED hetzner server {} ({}): setup failed ({:#}) and delete failed ({:#}). Delete it manually in hcloud.",
-                        server.id,
-                        ip,
+                        "ORPHANED hetzner server {}: provisioning failed ({:#}) and delete failed ({:#}). Delete it manually in hcloud.",
+                        server_id,
                         e,
                         del_err
                     );
                 }
-                return Err(e);
+                Err(e)
             }
-        };
-
-        // Record for terminate/health. On failure to parse, still record the
-        // server id so terminate_session can always clean up the VM.
-        let port = result
-            .endpoint
-            .as_ref()
-            .and_then(|ep| ep.rsplit(':').next())
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(22);
-        self.sessions.insert(
-            session_id.to_string(),
-            RemoteSession {
-                server_id: server.id,
-                ip: ip.clone(),
-                session_sshd_port: port,
-            },
-        );
-        Ok(result)
+        }
     }
 
     async fn terminate_session(&self, session: &Session) -> Result<()> {
-        if let Some((_, rs)) = self.sessions.remove(&session.id) {
-            tracing::info!(
-                "Deleting hetzner server {} ({}:{})",
-                rs.server_id,
-                rs.ip,
-                rs.session_sshd_port
-            );
-            self.api.delete_server(rs.server_id).await?;
+        match self.sessions.remove(&session.id) {
+            Some((_, rs)) => {
+                tracing::info!(
+                    "Deleting hetzner server {} ({}:{})",
+                    rs.server_id,
+                    rs.ip,
+                    rs.session_sshd_port
+                );
+                self.api.delete_server(rs.server_id).await?;
+                Ok(())
+            }
+            // No live handle (backend restarted, or provisioning failed before
+            // the handle was recorded). Report an error instead of a false
+            // success: the caller marks the session Failed and an operator can
+            // reconcile the VM, rather than pretending it was terminated.
+            None => Err(anyhow!(
+                "no live handle for hetzner session (backend may have restarted); \
+                 reconcile manually with `hcloud server list` (labels: steadystate=session)"
+            )),
         }
-        Ok(())
     }
 
     async fn health_check(&self, session: &Session) -> Result<SessionHealth> {
