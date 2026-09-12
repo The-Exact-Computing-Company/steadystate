@@ -148,7 +148,7 @@ impl HetznerApi {
 pub fn cloud_init_script(ssh_user: &str) -> String {
     format!(
         r#"#cloud-config
-packages: [curl, git, openssh-server, sudo]
+packages: [curl, git, openssh-server, sudo, tmux]
 users:
   - name: {user}
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -249,6 +249,7 @@ mod tests {
         assert!(script.starts_with("#cloud-config"));
         assert!(script.contains("name: steadystate"));
         assert!(script.contains("openssh-server"));
+        assert!(script.contains("tmux"));
         assert!(script.contains("nix-installer"));
         // Must not hard-fail cloud-init if nix install fails (idempotent reruns).
         assert!(script.contains("|| true"));

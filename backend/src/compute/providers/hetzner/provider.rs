@@ -69,19 +69,31 @@ impl HetznerComputeProvider {
         (None, None)
     }
 
-    async fn remote_setup(
+    /// Resolve the session mode, mirroring the local provider:
+    /// explicit `collab` stays collab, `pair`/absent means pair.
+    fn resolve_mode(mode: Option<&str>) -> Result<&'static str> {
+        match mode {
+            Some("collab") => Ok("collab"),
+            Some("pair") | None => Ok("pair"),
+            Some(other) => Err(anyhow!("Unknown mode: {}", other)),
+        }
+    }
+
+    /// Shared preamble: workspace dirs, shallow clone, env resolution
+    /// (including `t update` for tlang projects), and optional GitHub
+    /// token injection for passwordless push.
+    /// Returns `(root, repo_path, env_resolved)`.
+    async fn remote_preamble(
         &self,
         ex: &dyn RemoteExecutor,
-        public_ip: &str,
         session_id: &str,
         request: &SessionRequest,
-    ) -> Result<SessionStartResult> {
+    ) -> Result<(String, String, String)> {
         let root = format!("/home/{}/.steadystate/sessions/{}", ssh_session_user(), session_id);
         let repo_path = format!("{}/repo", root);
         ex.mkdir_p(PathBuf::from(&root).as_path(), 0o700).await?;
         ex.mkdir_p(PathBuf::from(&repo_path).as_path(), 0o700).await?;
 
-        let git = GitOps::new(ex);
         let clone_out = ex.exec_shell(&format!(
             "git clone --depth 1 {} '{}' 2>&1 || git -C '{}' pull --ff-only 2>&1",
             shell_quote(&request.repo_url), repo_path, repo_path
@@ -109,20 +121,67 @@ impl HetznerComputeProvider {
             let _ = tproject::check_min_version(ex, PathBuf::from(&repo_path).as_path()).await;
         }
 
-        let canonical = format!("{}/canonical", root);
-        git.clone(&repo_path, &PathBuf::from(&canonical), None, None).await?;
-        let branch_name = format!("{}_collab_{}", chrono::Local::now().format("%Y%m%d"), session_id);
-        git.checkout_new_branch(&PathBuf::from(&canonical), &branch_name).await?;
+        // Token-inject origin for passwordless push, same as local setups.
+        if let (_, Some(token)) = Self::extract_github(request) {
+            if request.repo_url.starts_with("https://") {
+                if let Ok(mut url) = url::Url::parse(&request.repo_url) {
+                    let _ = url.set_username("x-access-token");
+                    let _ = url.set_password(Some(&token));
+                    let git = GitOps::new(ex);
+                    if let Err(e) = git.set_remote_url(&PathBuf::from(&repo_path), "origin", url.as_str()).await {
+                        tracing::warn!("Failed to configure remote git auth: {}", e);
+                    }
+                }
+            }
+        }
 
+        Ok((root, repo_path, env_resolved))
+    }
+
+    async fn remote_authorized_keys(
+        &self,
+        request: &SessionRequest,
+    ) -> Vec<crate::compute::common::ssh_keys::AuthorizedKey> {
         let (creator_login, github_token) = Self::extract_github(request);
-        let authorized_keys = self.keys
+        self.keys
             .build_authorized_keys_for_repo(
                 creator_login.as_deref(),
                 request.allowed_users.as_deref(),
                 Some(&request.repo_url),
                 github_token.as_deref(),
             )
-            .await;
+            .await
+    }
+
+    async fn remote_setup(
+        &self,
+        ex: &dyn RemoteExecutor,
+        public_ip: &str,
+        session_id: &str,
+        request: &SessionRequest,
+    ) -> Result<SessionStartResult> {
+        match Self::resolve_mode(request.mode.as_deref())? {
+            "collab" => self.remote_setup_collab(ex, public_ip, session_id, request).await,
+            _ => self.remote_setup_pair(ex, public_ip, session_id, request).await,
+        }
+    }
+
+    async fn remote_setup_collab(
+        &self,
+        ex: &dyn RemoteExecutor,
+        public_ip: &str,
+        session_id: &str,
+        request: &SessionRequest,
+    ) -> Result<SessionStartResult> {
+        let (root, repo_path, env_resolved) = self.remote_preamble(ex, session_id, request).await?;
+
+        let git = GitOps::new(ex);
+        let canonical = format!("{}/canonical", root);
+        git.clone(&repo_path, &PathBuf::from(&canonical), None, None).await?;
+        let branch_name = format!("{}_collab_{}", chrono::Local::now().format("%Y%m%d"), session_id);
+        git.checkout_new_branch(&PathBuf::from(&canonical), &branch_name).await?;
+
+        let authorized_keys = self.remote_authorized_keys(request).await;
 
         let bin = format!("{}/bin", root);
         ex.mkdir_p(PathBuf::from(&bin).as_path(), 0o755).await?;
@@ -146,7 +205,8 @@ impl HetznerComputeProvider {
         ex.write_file(PathBuf::from(format!("{}/bin/steadystate-wrapper", root)).as_path(), wrapper.as_bytes(), 0o755).await?;
 
         // Session info for dashboard.
-        let (port, host_pub) = self.launch_remote_sshd(ex, &root, &authorized_keys).await?;
+        let forced_command = format!("{}/bin/steadystate-wrapper {{user}}", root);
+        let (port, host_pub) = self.launch_remote_sshd(ex, &root, &authorized_keys, &forced_command).await?;
         let user = ssh_session_user();
         let invite = format!("ssh://{}@{}:{}", user, public_ip, port);
         let magic_link = format!(
@@ -173,11 +233,109 @@ impl HetznerComputeProvider {
         })
     }
 
+    /// Materialize `{root}/flake` on the remote host for `noenv`/`python`,
+    /// mirroring the local provider's `setup_environment`. Returns the
+    /// flake path to bake into wrappers.
+    async fn remote_env_flake(
+        ex: &dyn RemoteExecutor,
+        root: &str,
+        repo_path: &str,
+        env_resolved: &str,
+    ) -> Result<String> {
+        const NOENV_FLAKE_URL: &str = "https://raw.githubusercontent.com/The-Exact-Computing-Company/steadystate/main/backend/flakes/noenv";
+
+        match env_resolved {
+            "noenv" => {
+                let flake_dest = format!("{}/flake", root);
+                ex.mkdir_p(PathBuf::from(&flake_dest).as_path(), 0o755).await?;
+                // Remote host has curl (installed by cloud-init).
+                for file in ["flake.nix", "flake.lock"] {
+                    let out = ex.exec_shell(&format!(
+                        "curl -fsSL {}/{} -o '{}'",
+                        NOENV_FLAKE_URL,
+                        file,
+                        format!("{}/{}", flake_dest, file),
+                    )).await?;
+                    if !out.exit_status.success() {
+                        return Err(anyhow!("failed to fetch noenv {}: {}", file, out.stderr));
+                    }
+                }
+                Ok(flake_dest)
+            }
+            "python" => {
+                use crate::compute::common::python::{detect_python_version, generate_python_flake};
+                let version = detect_python_version(ex, PathBuf::from(repo_path).as_path()).await?;
+                let content = generate_python_flake(version);
+                let flake_dest = format!("{}/flake", root);
+                ex.mkdir_p(PathBuf::from(&flake_dest).as_path(), 0o755).await?;
+                ex.write_file(
+                    PathBuf::from(format!("{}/flake.nix", flake_dest)).as_path(),
+                    content.as_bytes(),
+                    0o644,
+                ).await?;
+                tracing::info!("Generated remote Python flake with {}", version.nix_attr());
+                Ok(flake_dest)
+            }
+            _ => Ok("$REPO".to_string()),
+        }
+    }
+
+    /// Pair mode: everyone shares one repo checkout inside a shared tmux
+    /// session (via `pair-wrapper` as the SSH forced command). No canonical
+    /// repo, no branches — mirrors the local pair flow.
+    async fn remote_setup_pair(
+        &self,
+        ex: &dyn RemoteExecutor,
+        public_ip: &str,
+        session_id: &str,
+        request: &SessionRequest,
+    ) -> Result<SessionStartResult> {
+        let (root, repo_path, env_resolved) = self.remote_preamble(ex, session_id, request).await?;
+
+        let authorized_keys = self.remote_authorized_keys(request).await;
+
+        let bin = format!("{}/bin", root);
+        ex.mkdir_p(PathBuf::from(&bin).as_path(), 0o755).await?;
+        ex.write_file(PathBuf::from(format!("{}/activity-log", root)).as_path(), &[], 0o666).await?;
+
+        // Bake the env flake path into the wrapper (materializes {root}/flake
+        // for noenv/python; other envs resolve at runtime against the checkout).
+        let flake_path = Self::remote_env_flake(ex, &root, &repo_path, &env_resolved).await?;
+        let template = scripts::pair_wrapper_script();
+        let wrapper = {
+            let mut vars: HashMap<&str, &str> = HashMap::new();
+            vars.insert("session_root", root.as_str());
+            vars.insert("session_id", session_id);
+            vars.insert("environment", env_resolved.as_str());
+            vars.insert("flake_path", flake_path.as_str());
+            template.render(&vars)
+        };
+        ex.write_file(PathBuf::from(format!("{}/bin/pair-wrapper", root)).as_path(), wrapper.as_bytes(), 0o755).await?;
+
+        let forced_command = format!("{}/bin/pair-wrapper {{user}}", root);
+        let (port, host_pub) = self.launch_remote_sshd(ex, &root, &authorized_keys, &forced_command).await?;
+        let user = ssh_session_user();
+        let invite = format!("ssh://{}@{}:{}", user, public_ip, port);
+        let magic_link = format!(
+            "steadystate://pair/{}?ssh={}&host_key={}",
+            session_id,
+            urlencoding::encode(&invite),
+            urlencoding::encode(&host_pub)
+        );
+
+        Ok(SessionStartResult {
+            endpoint: Some(invite),
+            magic_link: Some(magic_link),
+            host_public_key: Some(host_pub),
+        })
+    }
+
     async fn launch_remote_sshd(
         &self,
         ex: &dyn RemoteExecutor,
         root: &str,
         authorized_keys: &[crate::compute::common::ssh_keys::AuthorizedKey],
+        forced_command: &str,
     ) -> Result<(u16, String)> {
         let ssh_dir = format!("{}/ssh", root);
         ex.mkdir_p(PathBuf::from(&ssh_dir).as_path(), 0o700).await?;
@@ -192,8 +350,7 @@ impl HetznerComputeProvider {
         }
 
         let auth_keys_path = format!("{}/authorized_keys", ssh_dir);
-        let wrapper_tpl = format!("{}/bin/steadystate-wrapper {{user}}", root);
-        let content = self.keys.generate_authorized_keys_file(authorized_keys, Some(&wrapper_tpl));
+        let content = self.keys.generate_authorized_keys_file(authorized_keys, Some(forced_command));
         ex.write_file(PathBuf::from(&auth_keys_path).as_path(), content.as_bytes(), 0o600).await?;
 
         // Deterministic high port from root hash.
@@ -235,6 +392,40 @@ impl HetznerComputeProvider {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_mode_matches_local() {
+        // Mirrors LocalComputeProvider::start_session dispatch.
+        assert_eq!(HetznerComputeProvider::resolve_mode(Some("collab")).unwrap(), "collab");
+        assert_eq!(HetznerComputeProvider::resolve_mode(Some("pair")).unwrap(), "pair");
+        assert_eq!(HetznerComputeProvider::resolve_mode(None).unwrap(), "pair");
+        assert!(HetznerComputeProvider::resolve_mode(Some("solo")).is_err());
+        assert!(HetznerComputeProvider::resolve_mode(Some("")).is_err());
+    }
+
+    #[test]
+    fn test_pair_wrapper_renders_without_placeholders() {
+        let template = scripts::pair_wrapper_script();
+        let mut vars: HashMap<&str, &str> = HashMap::new();
+        vars.insert("session_root", "/home/steady/.steadystate/sessions/abc");
+        vars.insert("session_id", "abc123");
+        vars.insert("environment", "tproject");
+        vars.insert("flake_path", "$REPO");
+        let out = template.render(&vars);
+        assert!(!out.contains("{{session_root}}"));
+        assert!(!out.contains("{{session_id}}"));
+        assert!(!out.contains("{{environment}}"));
+        assert!(!out.contains("{{flake_path}}"));
+        assert!(out.contains("tmux new-session -A"));
+        // TMUX_SESSION is composed at runtime: pair-${SESSION_ID:0:8}.
+        assert!(out.contains("SESSION_ID=\"abc123\""));
+        assert!(out.contains("pair-${SESSION_ID:0:8}"));
+    }
 }
 
 #[async_trait]
